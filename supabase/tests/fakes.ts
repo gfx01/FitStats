@@ -25,7 +25,7 @@ export const tables: Record<string, Row[]> = {
   fs_user_settings: [{ id: 1, sex: "unspecified", max_hr_override: null, sleep_need_min: 480, step_goal: 10000, backfill_days: 730 }],
   fs_sync_state: [{
     id: 1, backfill_oldest: null, backfill_target: null, backfill_done: false, backfill_empty_chunks: 0,
-    last_recent_sync_at: null, recent_fingerprint: null, lock_until: null,
+    last_recent_sync_at: null, recent_fingerprint: null, stats_dirty: false, lock_until: null,
   }],
   fs_days: [], fs_sleep: [], fs_exercise: [], fs_intraday: [], fs_samples: [], fs_cache: [],
   fs_coach_threads: [], fs_coach_messages: [],

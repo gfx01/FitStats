@@ -59,7 +59,7 @@ test("full sync: backfill, scores and stats", async () => {
   assert.equal(calls.length, 0, "fresh recent sync and finished backfill -> no API calls");
 });
 
-test("recent sync: unchanged data writes nothing, new data updates rows, scores and stats", async () => {
+test("recent sync: unchanged data writes nothing; new data updates rows and scores, stats within the hour", async () => {
   const { runSync, clockFor } = await import("../functions/fitstats/lib/sync.ts");
   const { addDays } = await import("../functions/fitstats/lib/util.ts");
   const fingerprint = tables.fs_sync_state[0].recent_fingerprint;
@@ -85,16 +85,27 @@ test("recent sync: unchanged data writes nothing, new data updates rows, scores 
   assert.deepEqual(dbWrites.filter((w) => !/fs_sync_state|fs_account/.test(w)), [], "no data rows, scores or stats written");
   assert.equal(tables.fs_sync_state[0].recent_fingerprint, fingerprint);
 
-  // New steps at Google: rows, scores and stats follow.
+  // New steps at Google: rows and scores follow at once; stats were built moments ago,
+  // so their rebuild is owed rather than done (it reads the whole history).
   fakeData.extraSteps = 1234;
   dbWrites.length = 0;
   const changed = await runSync("app", true, 95_000);
   assert.equal(changed.status, "ok");
   assert.notEqual(changed.ranges[0].unchanged, true);
-  assert.ok(dbWrites.includes("POST fs_days") && dbWrites.includes("POST fs_cache"), dbWrites.join(", "));
+  assert.ok(dbWrites.includes("POST fs_days"), dbWrites.join(", "));
+  assert.ok(!dbWrites.includes("POST fs_cache"), "stats rebuild throttled");
   assert.equal(day().steps, stepsBefore + 1234);
   assert.equal(day().recovery, recoveryBefore, "scores recomputed (steps do not move recovery)");
-  assert.notEqual(JSON.stringify(stepsStats()), statsBefore, "stats rebuilt");
+  assert.equal(JSON.stringify(stepsStats()), statsBefore);
+  assert.equal(tables.fs_sync_state[0].stats_dirty, true);
   assert.notEqual(tables.fs_sync_state[0].recent_fingerprint, fingerprint);
+
+  // An hour later the next run rebuilds them, even though the recent data is unchanged.
+  const cache = tables.fs_cache.find((c) => c.key === "stats")!;
+  cache.updated_at = new Date(Date.now() - 61 * 60_000).toISOString();
+  const later = await runSync("cron", true, 95_000);
+  assert.equal(later.ranges[0].unchanged, true);
+  assert.notEqual(JSON.stringify(stepsStats()), statsBefore, "stats rebuilt");
+  assert.equal(tables.fs_sync_state[0].stats_dirty, false);
   fakeData.extraSteps = 0;
 });

@@ -58,6 +58,7 @@ interface SyncState {
   backfill_empty_chunks: number;
   last_recent_sync_at: string | null;
   recent_fingerprint: string | null;
+  stats_dirty: boolean;
 }
 
 interface TaskResult {
@@ -100,6 +101,9 @@ const EMPTY_CHUNKS_TO_STOP = 8;
 const RECENT_DAYS = 3;
 /** Cron runs every 5 minutes; anything older than this is fetched again. */
 const RECENT_STALE_MS = 4 * 60_000;
+/** Recent changes rebuild the statistics cache at most this often: it reads the whole
+ * history, which counts as egress. A new day or imported history rebuilds it at once. */
+const STATS_MAX_AGE_MS = 60 * 60_000;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -564,6 +568,11 @@ export async function recomputeIntraday(from: Ymd, to: Ymd, settings: UserSettin
   return count;
 }
 
+async function statsBuiltAt(): Promise<number> {
+  const row = await db.selectOne<{ updated_at: string }>("fs_cache", "select=updated_at&key=eq.stats");
+  return row ? Date.parse(row.updated_at) : 0;
+}
+
 export async function rebuildStats(today: Ymd, settings: UserSettings): Promise<void> {
   const days = await db.select<DayRow>("fs_days", "select=*&order=date.asc");
   const stats = buildStats(days, today, settings);
@@ -602,21 +611,22 @@ export async function runSync(reason: string, force: boolean, budgetMs = 95_000)
 
     const recentStale = !state.last_recent_sync_at || Date.now() - Date.parse(state.last_recent_sync_at) > RECENT_STALE_MS;
     if (force || recentStale) {
-      // Recent days are finished (scores and stats included) before any backfill, so the
-      // app can show them as soon as last_recent_sync_at moves. Devices come first, so the
-      // band's last sync time the app shows is never newer than the data fetched here.
+      // Recent days are finished (scores included) before any backfill, so the app can
+      // show them as soon as last_recent_sync_at moves. Devices come first, so the band's
+      // last sync time the app shows is never newer than the data fetched here.
       await refreshDevices(client);
       const from = addDays(today, -RECENT_DAYS);
       const recent = await syncRange(client, from, addDays(today, 1), clock, acc, settings, log, state.recent_fingerprint ?? null);
       if (!recent.unchanged) {
         await recomputeScores(from, today, settings);
-        await rebuildStats(today, settings);
+        state.stats_dirty = true;
       }
       state.last_recent_sync_at = nowIso();
       state.recent_fingerprint = recent.fingerprint;
       await db.update("fs_sync_state", "id=eq.1", {
         last_recent_sync_at: state.last_recent_sync_at,
         recent_fingerprint: state.recent_fingerprint,
+        stats_dirty: state.stats_dirty,
         updated_at: nowIso(),
       });
     }
@@ -646,9 +656,13 @@ export async function runSync(reason: string, force: boolean, budgetMs = 95_000)
       });
     }
 
-    if (backfilledFrom) {
-      await recomputeScores(backfilledFrom, today, settings);
-      await rebuildStats(today, settings);
+    if (backfilledFrom) await recomputeScores(backfilledFrom, today, settings);
+    if (backfilledFrom || state.stats_dirty) {
+      const built = await statsBuiltAt();
+      if (backfilledFrom || built < clock.midnightMs(today) || Date.now() - built > STATS_MAX_AGE_MS) {
+        await rebuildStats(today, settings);
+        state.stats_dirty = false;
+      }
     }
     if (log.ranges.some((r) => r.failed.length > 0)) log.status = "partial";
 
@@ -658,6 +672,7 @@ export async function runSync(reason: string, force: boolean, budgetMs = 95_000)
       backfill_done: state.backfill_done,
       backfill_empty_chunks: state.backfill_empty_chunks ?? 0,
       last_recent_sync_at: state.last_recent_sync_at,
+      stats_dirty: state.stats_dirty ?? false,
       updated_at: nowIso(),
     });
     return log;
