@@ -81,13 +81,24 @@ struct GlanceLink<Content: View>: View {
     }
 }
 
+/// Icon, title and an optional note on the right. When they don't all fit (a small card), the
+/// note gets shorter or goes, so the title is never cut off.
 struct GlanceHeader: View {
     let title: String
     let icon: String
     let tint: Color
     var trailing: String? = nil
+    var shortTrailing: String? = nil
 
     var body: some View {
+        ViewThatFits(in: .horizontal) {
+            row(trailing, fixed: true)
+            if let shortTrailing { row(shortTrailing, fixed: true) }
+            row(nil, fixed: false)
+        }
+    }
+
+    private func row(_ note: String?, fixed: Bool) -> some View {
         HStack(spacing: 5) {
             Image(systemName: icon)
                 .font(.caption2.weight(.bold))
@@ -97,13 +108,15 @@ struct GlanceHeader: View {
                 .tracking(0.8)
                 .foregroundStyle(Theme.secondary)
                 .lineLimit(1)
-                .minimumScaleFactor(0.8)
+                .minimumScaleFactor(fixed ? 1 : 0.8)
+                .fixedSize(horizontal: fixed, vertical: false)
             Spacer(minLength: 4)
-            if let trailing {
-                Text(trailing)
+            if let note {
+                Text(note)
                     .font(.caption2)
                     .foregroundStyle(Theme.tertiary)
                     .lineLimit(1)
+                    .fixedSize()
             }
         }
     }
@@ -598,6 +611,10 @@ struct VitalsGlance: View {
     @EnvironmentObject var model: AppModel
 
     private static let keys = ["rhr", "hrv_rmssd", "spo2_avg", "resp_rate", "skin_temp_dev", "vo2max"]
+    /// Names that fit next to the value in a small card.
+    private static let tinyLabels = [
+        "rhr": "RHR", "hrv_rmssd": "HRV", "spo2_avg": "SpO₂", "resp_rate": "Breath", "skin_temp_dev": "Skin", "vo2max": "VO₂",
+    ]
     private static let columns = [
         GridItem(.flexible(), spacing: 8, alignment: .topLeading),
         GridItem(.flexible(), spacing: 8, alignment: .topLeading),
@@ -644,7 +661,7 @@ struct VitalsGlance: View {
                     .font(.caption2)
                     .foregroundStyle(def.category.color)
                     .frame(width: 14)
-                Text(def.shortLabel)
+                Text(Self.tinyLabels[def.key] ?? def.shortLabel)
                     .font(.caption)
                     .foregroundStyle(Theme.secondary)
                     .lineLimit(1)
@@ -697,7 +714,8 @@ struct ActivityGlance: View {
         let progress = min(1, (steps ?? 0) / max(goal, 1))
         GlanceLink(route: .metric("steps")) {
             GlanceFrame {
-                GlanceHeader(title: "Activity", icon: "figure.walk", tint: Theme.strain, trailing: date >= model.today ? "So far today" : nil)
+                GlanceHeader(title: "Activity", icon: "figure.walk", tint: Theme.strain,
+                             trailing: date >= model.today ? "So far today" : nil, shortTrailing: date >= model.today ? "So far" : nil)
                 if size == .small {
                     HStack {
                         Spacer(minLength: 0)
@@ -866,6 +884,9 @@ struct WorkoutsGlance: View {
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("workout-row")
                 }
+                if exercises.count == 1, let only = exercises.first {
+                    effort(only)
+                }
                 if exercises.count > 2 {
                     NavigationLink(value: DetailRoute.homeCard(.workouts, date)) {
                         Text("+\(exercises.count - 2) more")
@@ -877,6 +898,22 @@ struct WorkoutsGlance: View {
                 Spacer(minLength: 0)
             }
         }
+    }
+
+    /// Strain, average and peak heart rate and zone minutes, the ones recorded.
+    private func effort(_ x: Exercise) -> some View {
+        var stats: [(String, String)] = []
+        if let v = x.strain { stats.append(("Strain", Format.number(v, decimals: 1))) }
+        if let v = x.avgHr { stats.append(("Avg HR", "\(Int(v.rounded()))")) }
+        if let v = x.hrMax { stats.append(("Max HR", "\(Int(v.rounded()))")) }
+        if let v = x.azm, v > 0 { stats.append(("Zone min", "\(Int(v.rounded()))")) }
+        return HStack(alignment: .top, spacing: 0) {
+            ForEach(Array(stats.enumerated()), id: \.offset) { _, stat in
+                GlanceStat(title: stat.0, value: stat.1, size: 17)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(.top, 6)
     }
 
     private func smallWorkout(_ x: Exercise, more: Int) -> some View {
@@ -1193,7 +1230,8 @@ struct ThisWeekGlance: View {
         let defs = Self.keys.filter(model.recorded.contains).compactMap { MetricCatalog.def($0) }
         GlanceLink(route: .homeCard(.thisWeek, date)) {
             GlanceFrame(spacing: 6) {
-                GlanceHeader(title: "This week", icon: "calendar", tint: Theme.strain, trailing: "daily avg vs last week")
+                GlanceHeader(title: "This week", icon: "calendar", tint: Theme.strain,
+                             trailing: "daily avg vs last week", shortTrailing: "vs last week")
                 if defs.isEmpty {
                     GlanceMessage(icon: "calendar", text: "No data yet.")
                 } else if size == .small {
@@ -1280,7 +1318,8 @@ struct ZoneMinutesGlance: View {
         let progress = min(1, total / Self.target)
         GlanceLink(route: .metric("azm_total")) {
             GlanceFrame {
-                GlanceHeader(title: "Zone minutes", icon: "flame.fill", tint: Theme.heart, trailing: date >= model.today ? "7 days so far" : "7 days")
+                GlanceHeader(title: "Zone minutes", icon: "flame.fill", tint: Theme.heart,
+                             trailing: date >= model.today ? "7 days so far" : "7 days", shortTrailing: "7 days")
                 if values.allSatisfy({ $0 == nil }) {
                     GlanceMessage(icon: "flame", text: "No zone minutes yet.")
                 } else if size == .small {
@@ -1404,13 +1443,11 @@ struct InsightGlance: View {
                     Text(first.title)
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.white)
-                        .lineLimit(size == .small ? 5 : 2)
-                    if size == .medium {
-                        Text(first.body)
-                            .font(.caption)
-                            .foregroundStyle(Theme.secondary)
-                            .lineLimit(4)
-                    }
+                        .lineLimit(2)
+                    Text(first.body)
+                        .font(.caption)
+                        .foregroundStyle(Theme.secondary)
+                        .lineLimit(4)
                     Spacer(minLength: 0)
                 } else {
                     GlanceMessage(icon: "sparkles", text: model.stats == nil ? "Insights appear once a few days have synced." : "No insights yet.")

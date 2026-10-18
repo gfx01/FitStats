@@ -224,13 +224,14 @@ final class ScreenshotTests: XCTestCase {
             let addCards = app.buttons["home-add-cards"]
             if addCards.exists { addCards.tap() }
             shot("39-home-add-previews")
+            // Last night is the first card in the list after a reset, so it's on screen here.
+            let add = app.buttons["home-add-lastNight"]
+            if add.waitForExistence(timeout: 3), add.isHittable { add.tap() } else { XCTFail("home-add-lastNight not reachable") }
+            sleep(1)
             app.swipeUp()
             shot("48-home-add-previews-2")
             app.swipeUp()
             shot("49-home-add-previews-3")
-            let add = app.buttons["home-add-lastNight"]
-            for _ in 0..<8 where !(add.exists && add.isHittable) { app.swipeUp() }
-            if add.exists, add.isHittable { add.tap() } else { XCTFail("home-add-lastNight not reachable") }
         } else {
             XCTFail("home-reset not reachable")
         }
