@@ -46,6 +46,7 @@ export interface UserSettings {
   sleep_need_min: number;
   step_goal: number;
   backfill_days: number;
+  coach_model?: string | null;
 }
 
 interface SyncState {
@@ -96,7 +97,7 @@ export async function loadAccount(): Promise<Account | null> {
 
 export async function loadSettings(): Promise<UserSettings> {
   const s = await db.selectOne<UserSettings>("fs_user_settings", "select=*&id=eq.1");
-  return s ?? { sex: "unspecified", max_hr_override: null, sleep_need_min: 480, step_goal: 10000, backfill_days: 730 };
+  return s ?? { sex: "unspecified", max_hr_override: null, sleep_need_min: 480, step_goal: 10000, backfill_days: 730, coach_model: null };
 }
 
 export function clockFor(account: Account | null): LocalClock {

@@ -2,7 +2,8 @@
 
 A Bevel-style iPhone app for a Fitbit Air. It shows Recovery, Strain, Sleep
 and Stress scores, plus trends, records, streaks and correlations for every
-metric the Google Health API provides.
+metric the Google Health API provides, and a Claude-powered coach that answers
+questions about your data.
 
 **To install and connect, follow [SETUP.md](SETUP.md).**
 
@@ -14,7 +15,8 @@ Fitbit Air → Google Health app → Google Health API v4
                          Supabase Edge Function `fitstats`
                            ├─ OAuth (Google web client, PKCE)
                            ├─ sync + history backfill → fs_* tables
-                           └─ scores + statistics → fs_days / fs_cache
+                           ├─ scores + statistics → fs_days / fs_cache
+                           └─ coach → Claude API (streams to the app)
                                         │  (x-app-key)
                               iOS app (SwiftUI, Sideloadly)
 ```
@@ -23,7 +25,7 @@ Fitbit Air → Google Health app → Google Health API v4
 | --- | --- |
 | `supabase/migrations/` | Tables (`fs_*`, RLS on, no anon access), sync lock, cron schedule |
 | `supabase/functions/fitstats/` | Edge Function: routes, Google client, sync engine, scores, stats |
-| `supabase/tests/` | `node:test` suites, including an end-to-end sync against fake Google and PostgREST servers |
+| `supabase/tests/` | `node:test` suites, including an end-to-end sync and coach run against fake Google, Claude and PostgREST servers |
 | `ios/` | XcodeGen project (`project.yml`) and the SwiftUI app |
 | `.github/workflows/ios.yml` | Builds an unsigned IPA on macOS and publishes it as the `build-latest` release |
 
@@ -32,7 +34,7 @@ Fitbit Air → Google Health app → Google Health API v4
 Run the server logic tests (Node 22+):
 
 ```sh
-node --experimental-strip-types --test supabase/tests/logic.test.ts supabase/tests/sync.test.ts
+node --experimental-strip-types --test supabase/tests/logic.test.ts supabase/tests/sync.test.ts supabase/tests/coach.test.ts
 ```
 
 Deploy the function with the Supabase CLI:

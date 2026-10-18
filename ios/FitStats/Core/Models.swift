@@ -53,6 +53,7 @@ struct UserSettings: Codable, Equatable {
     var sleepNeedMin: Int
     var stepGoal: Int
     var backfillDays: Int
+    var coachModel: String?
 
     enum CodingKeys: String, CodingKey {
         case sex
@@ -60,6 +61,7 @@ struct UserSettings: Codable, Equatable {
         case sleepNeedMin = "sleep_need_min"
         case stepGoal = "step_goal"
         case backfillDays = "backfill_days"
+        case coachModel = "coach_model"
     }
 
     static let defaults = UserSettings(sex: "unspecified", maxHrOverride: nil, sleepNeedMin: 480, stepGoal: 10000, backfillDays: 730)
@@ -72,6 +74,7 @@ struct UserSettings: Codable, Equatable {
         try c.encode(sleepNeedMin, forKey: .sleepNeedMin)
         try c.encode(stepGoal, forKey: .stepGoal)
         try c.encode(backfillDays, forKey: .backfillDays)
+        try c.encodeIfPresent(coachModel, forKey: .coachModel)
     }
 }
 

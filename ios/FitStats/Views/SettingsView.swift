@@ -2,7 +2,9 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var coach: CoachStore
     @State private var draft = UserSettings.defaults
+    @State private var coachModel = ""
     @State private var useMaxHr = false
     @State private var saving = false
     @State private var exportURL: URL?
@@ -18,6 +20,7 @@ struct SettingsView: View {
                 syncSection
                 deviceSection
                 preferencesSection
+                coachSection
                 dataSection
                 dangerSection
                 aboutSection
@@ -26,6 +29,8 @@ struct SettingsView: View {
             .navigationTitle("Settings")
             .onAppear(perform: loadDraft)
             .onChange(of: model.status?.settings) { _, _ in loadDraft() }
+            .task { if coach.status == nil { await coach.refresh() } }
+            .onChange(of: coach.status?.model) { _, new in coachModel = new ?? "" }
             .confirmationDialog("Disconnect Google?", isPresented: $confirmDisconnect, titleVisibility: .visible) {
                 Button("Disconnect", role: .destructive) { Task { await model.disconnect(wipe: false) } }
             } message: {
@@ -46,6 +51,40 @@ struct SettingsView: View {
     }
 
     // MARK: sections
+
+    @ViewBuilder private var coachSection: some View {
+        Section("Coach") {
+            if let status = coach.status {
+                KeyValueRow(key: "Claude API key", value: status.configured ? "Added" : "Missing",
+                            color: status.configured ? Theme.recoveryGreen : Theme.recoveryYellow)
+                Picker("Model", selection: $coachModel) {
+                    ForEach(status.models) { m in Text(m.label).tag(m.id) }
+                }
+                .onChange(of: coachModel) { _, new in
+                    guard !new.isEmpty, new != coach.status?.model else { return }
+                    Task { await coach.setModel(new) }
+                }
+                if let note = status.models.first(where: { $0.id == coachModel })?.note {
+                    Text(note).font(.caption).foregroundStyle(Theme.tertiary)
+                }
+                if let u = status.usage {
+                    KeyValueRow(key: "This month", value: "\(u.requests) API calls · \(costText(u.costUsd))")
+                    KeyValueRow(key: "Tokens", value: "\(Format.number(Double(u.input + u.cacheRead + u.cacheWrite))) in · \(Format.number(Double(u.output))) out")
+                }
+                Text("Cost is estimated from Anthropic's list prices; the Anthropic Console shows your actual bill. The coach answers at most \(status.dailyLimit ?? 100) messages a day.")
+                    .font(.caption)
+                    .foregroundStyle(Theme.tertiary)
+            } else {
+                Text("Loading…").foregroundStyle(Theme.secondary)
+            }
+        }
+        .onAppear { coachModel = coach.status?.model ?? "" }
+    }
+
+    private func costText(_ usd: Double) -> String {
+        if usd > 0 && usd < 0.01 { return "under $0.01" }
+        return String(format: "$%.2f", usd)
+    }
 
     private var accountSection: some View {
         Section("Google Health") {

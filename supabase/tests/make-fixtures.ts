@@ -67,4 +67,18 @@ for (let i = 0; i < 7; i++) {
     samples,
   });
 }
-console.log(`fixtures for ${today} written to ${out} (${days.length} days)`);
+// Coach: the real coach code against the fake Claude API (see fakes.ts).
+const coach = await import("../functions/fitstats/lib/coach.ts");
+const ask = async (body: unknown) => {
+  const res = await coach.handleCoach(new Request("https://fixtures.invalid/coach", { method: "POST", body: JSON.stringify(body) }));
+  const text = await res.text();
+  if (!text.includes('"type":"done"')) throw new Error(`coach fixture failed: ${text.slice(0, 500)}`);
+};
+await ask({ message: "How has my sleep been this week, and is it affecting my HRV?" });
+await ask({ kind: "brief" });
+write("coach-status.json", await coach.coachStatus());
+write("coach-threads.json", await coach.coachThreads());
+write("coach-thread.json", await (await coach.coachThread(String(tables.fs_coach_threads[0].id))).json());
+write("coach-brief.json", await coach.coachBrief());
+
+console.log(`fixtures for ${today} written to ${out} (${days.length} days, ${tables.fs_coach_messages.length} coach messages)`);

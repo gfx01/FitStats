@@ -141,11 +141,7 @@ struct SleepDetailView: View {
                 }
             }
             if let stages = main?.stages, !stages.isEmpty {
-                Card {
-                    SectionHeader(title: "Stages")
-                    HypnogramChart(stages: stages, zone: model.zone)
-                    if let day { StageBreakdown(day: day) }
-                }
+                SleepStagesCard(date: date, layout: HypnogramLayout(stages: stages), day: day)
             }
             BreakdownCard(breakdown: ScoreBreakdown(day?.json("score_details")?["sleep"]), color: Theme.sleep,
                           emptyText: "No main sleep recorded for this night.")
@@ -173,34 +169,6 @@ struct SleepDetailView: View {
             let need = Double(model.status?.settings.sleepNeedMin ?? 480)
             TrendCard(def: MetricCatalog.def("sleep_asleep_min")!, endDate: date, days: 14, color: Theme.sleep, referenceLine: need)
             TrendCard(def: MetricCatalog.def("sleep_score")!, endDate: date, color: Theme.sleep)
-        }
-    }
-}
-
-private struct StageBreakdown: View {
-    let day: DayRecord
-
-    // Stage shares are of time asleep (as in the sleep score), so awake time gets no percentage.
-    var body: some View {
-        let asleep = max(1, day.double("sleep_asleep_min") ?? 1)
-        VStack(spacing: 8) {
-            row("Deep", day.double("sleep_deep_min"), Theme.stageDeep, share: asleep)
-            row("REM", day.double("sleep_rem_min"), Theme.stageRem, share: asleep)
-            row("Light", day.double("sleep_light_min"), Theme.stageLight, share: asleep)
-            row("Awake", day.double("sleep_awake_min"), Theme.stageAwake, share: nil)
-        }
-    }
-
-    private func row(_ name: String, _ minutes: Double?, _ color: Color, share asleep: Double?) -> some View {
-        HStack {
-            Circle().fill(color).frame(width: 8, height: 8)
-            Text(name).font(.subheadline)
-            Spacer()
-            Text(Format.duration(minutes)).font(.subheadline.monospacedDigit())
-            Text(minutes.flatMap { m in asleep.map { "\(Int((m / $0 * 100).rounded()))%" } } ?? "")
-                .font(.caption)
-                .foregroundStyle(Theme.tertiary)
-                .frame(width: 40, alignment: .trailing)
         }
     }
 }

@@ -22,6 +22,7 @@ enum Theme {
     static let stageRem = Color(red: 0.36, green: 0.80, blue: 1.00)
     static let stageLight = Color(red: 0.47, green: 0.52, blue: 1.00)
     static let stageDeep = Color(red: 0.42, green: 0.26, blue: 0.90)
+    static let stageRestless = Color(red: 1.00, green: 0.78, blue: 0.42)
 
     static func recoveryColor(_ v: Double?) -> Color {
         guard let v else { return tertiary }

@@ -86,6 +86,46 @@ Nothing needs to be redeployed.
 
 ---
 
+## 5. Coach (optional, uses the Claude API)
+
+The **Coach** tab chats with Claude about your data and writes a daily
+briefing. You pay Anthropic per use, with no subscription. The key stays on
+your Supabase server; the app never sees it.
+
+1. Sign in to the Anthropic Console at <https://platform.claude.com> and add
+   credits under billing.
+2. Create an API key (it starts with `sk-ant-`). Don't paste it anywhere
+   except the next step: not in a chat and not in the app.
+3. On the same Supabase secrets page as step 2, add:
+
+   | Name | Value |
+   | --- | --- |
+   | `ANTHROPIC_API_KEY` | your key |
+
+4. Open the Coach tab. You choose the model in **Settings → Coach**:
+
+   | Model | Price per million tokens (input / output) | My estimate per question |
+   | --- | --- | --- |
+   | Claude Sonnet 5.5 (default) | $2 / $10 | about 1–5 ¢ |
+   | Claude Opus 5.5 | $4 / $20 | about 2–10 ¢ |
+   | Claude Haiku 5.5 | $0.10 / $0.50 | well under 1 ¢ |
+
+   Prices are from Anthropic's pricing page as of October 2026. The
+   per-question figures are my estimates, not measurements. A question sends
+   about 5,000 tokens of instructions and data summary, which are cached for
+   5 minutes so follow-ups cost less. Claude may look up more data, and its
+   hidden thinking is billed as output. **Settings → Coach** shows this
+   month's estimated cost from real token counts. The Console shows the exact
+   bill, and you can set a spend limit there. The server also stops at 100
+   coach messages a day.
+
+What the coach sends to Anthropic: your question, earlier messages in the
+same conversation, a summary of your last 14 days and 30/90-day averages,
+plus whatever it looks up with its tools (any metric, day or workout in your
+FitStats database).
+
+---
+
 ## Weekly upkeep (honest version)
 
 - **Apple:** apps installed with a free Apple ID expire after **7 days**.
@@ -110,6 +150,9 @@ Nothing needs to be redeployed.
 | "Access blocked" / `access_denied` | Add your Google account as a test user (step 1.4). |
 | "Some Google Health permissions were not granted" | Reconnect and tick every permission box. |
 | "Google access has expired" | Tap Reconnect (see Weekly upkeep). |
+| Coach: "The coach needs a Claude API key" | Add `ANTHROPIC_API_KEY` (step 5), then tap Check again. |
+| Coach: "Anthropic rejected the API key" | The key was mistyped or revoked; create a new one and replace the secret. |
+| Coach: "… isn't available for this API key" | Pick another model in Settings → Coach. |
 
 ## What is stored, and where
 
@@ -120,8 +163,10 @@ Nothing needs to be redeployed.
   - Your other tables in that project (`efbb.*`, `apex_*`) are untouched.
 - The app proves who it is with a random key created when you sign in. The key
   is stored in the iPhone Keychain.
+- Coach conversations are stored in `fs_coach_threads` / `fs_coach_messages`.
+  Swipe a conversation away in the Coach history to delete it.
 - **Settings → Delete all synced data** removes everything FitStats stored on
-  the server.
+  the server, coach conversations included.
 
 ## What the scores are
 

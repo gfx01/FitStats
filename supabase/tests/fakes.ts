@@ -1,15 +1,17 @@
-// Fake Google Health API + in-memory PostgREST used by the sync test and the
-// app screenshot fixtures. Importing this module installs a fake global fetch.
+// Fake Google Health API, fake Claude API and in-memory PostgREST used by the
+// tests and the app screenshot fixtures. Importing this module installs a fake
+// global fetch.
 import assert from "node:assert/strict";
 
 export type Row = Record<string, unknown>;
 
 const SUPABASE_URL = "https://example.supabase.co";
-const env: Record<string, string> = {
+export const env: Record<string, string> = {
   SUPABASE_URL,
   SUPABASE_SERVICE_ROLE_KEY: "sb_secret_test",
   GOOGLE_CLIENT_ID: "cid",
   GOOGLE_CLIENT_SECRET: "csecret",
+  ANTHROPIC_API_KEY: "sk-ant-test",
 };
 (globalThis as unknown as { Deno: unknown }).Deno = { env: { get: (k: string) => env[k] } };
 
@@ -23,6 +25,7 @@ export const tables: Record<string, Row[]> = {
   fs_user_settings: [{ id: 1, sex: "unspecified", max_hr_override: null, sleep_need_min: 480, step_goal: 10000, backfill_days: 730 }],
   fs_sync_state: [{ id: 1, backfill_oldest: null, backfill_target: null, backfill_done: false, backfill_empty_chunks: 0, last_recent_sync_at: null, lock_until: null }],
   fs_days: [], fs_sleep: [], fs_exercise: [], fs_intraday: [], fs_samples: [], fs_cache: [],
+  fs_coach_threads: [], fs_coach_messages: [],
 };
 
 function matches(row: Row, key: string, expr: string): boolean {
@@ -347,9 +350,118 @@ function googleFetch(url: URL, init: RequestInit): Response {
   throw new Error(`unhandled ${method} ${path}`);
 }
 
+// ----------------------------------------------------------- fake Claude API
+
+/** Request bodies sent to the Messages API, for assertions. */
+export const claudeRequests: Row[] = [];
+/** Set to an HTTP status to make the next Messages API call fail. */
+export const claudeFailures: number[] = [];
+
+function sseResponse(events: Row[]): Response {
+  const bytes = new TextEncoder().encode(events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(""));
+  // Odd-sized chunks so events straddle reads, as they do over the network.
+  const stream = new ReadableStream<Uint8Array>({
+    start(c) {
+      for (let i = 0; i < bytes.length; i += 37) c.enqueue(bytes.slice(i, i + 37));
+      c.close();
+    },
+  });
+  return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+}
+
+function textEvents(index: number, text: string): Row[] {
+  const pieces = text.match(/.{1,24}/gs) ?? [];
+  return [
+    { type: "content_block_start", index, content_block: { type: "text", text: "" } },
+    ...pieces.map((t) => ({ type: "content_block_delta", index, delta: { type: "text_delta", text: t } })),
+    { type: "content_block_stop", index },
+  ];
+}
+
+function message(model: string, usage: Row, blocks: Row[], stop: string, output: number): Row[] {
+  return [
+    { type: "message_start", message: { id: "msg_fake", type: "message", role: "assistant", content: [], model, stop_reason: null, usage: { ...usage, output_tokens: 1 } } },
+    { type: "ping" },
+    ...blocks,
+    { type: "message_delta", delta: { stop_reason: stop, stop_sequence: null }, usage: { output_tokens: output } },
+    { type: "message_stop" },
+  ];
+}
+
+const avg = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : NaN);
+const hm = (min: number) => `${Math.floor(min / 60)}h ${Math.round(min % 60)}m`;
+
+/**
+ * Chat: one tool round (thinking + a short text + get_daily_metrics), then an answer
+ * computed from the tool result, so tests see real data flow through. Briefing: a
+ * single answer built from the data summary in the system prompt.
+ */
+function claudeFetch(init: RequestInit): Response {
+  const h = init.headers as Record<string, string>;
+  assert.equal(h["x-api-key"], "sk-ant-test");
+  assert.equal(h["anthropic-version"], "2023-06-01");
+  const body = JSON.parse(String(init.body)) as Row;
+  claudeRequests.push(body);
+  const status = claudeFailures.shift();
+  if (status) {
+    return Response.json({ type: "error", error: { type: status === 401 ? "authentication_error" : "api_error", message: "fake failure" } }, { status });
+  }
+  assert.equal(body.stream, true);
+  const model = String(body.model);
+  const system = body.system as Row[];
+  const summary = String(system[1].text);
+  const messages = body.messages as Row[];
+  const last = messages[messages.length - 1];
+  const usage1 = { input_tokens: 40, cache_creation_input_tokens: 5200, cache_read_input_tokens: 0 };
+
+  if (typeof last.content === "string" && last.content.startsWith("Write my briefing")) {
+    const recovery = /\(today\): recovery (\d+)/.exec(summary)?.[1];
+    const target = /Suggested strain for today: (\d+)–(\d+)/.exec(summary);
+    const need = /sleep need (\d+h \d+m)/.exec(summary)?.[1] ?? "8h 0m";
+    const text = `**Recovery** ${recovery ?? "not in yet"}${recovery ? " — HRV is below your baseline, resting heart rate is normal." : ""}\n` +
+      `**Today** Aim for strain ${target ? `${target[1]}–${target[2]}` : "in the middle range"}: a steady 45-minute run or a gym session, nothing all-out.\n` +
+      `**Tonight** Lights out by 22:45 to get your ${need} before your usual 06:50 wake-up.\n` +
+      `**Trend** Steps are up 13% over the last week.`;
+    return sseResponse(message(model, usage1, textEvents(0, text), "end_turn", 160));
+  }
+
+  const results = Array.isArray(last.content) ? (last.content as Row[]).filter((c) => c.type === "tool_result") : [];
+  if (!results.length) {
+    const today = /^Now: \w+ (\d{4}-\d{2}-\d{2})/m.exec(summary)![1];
+    const from = new Date(Date.parse(`${today}T00:00:00Z`) - 6 * 86_400_000).toISOString().slice(0, 10);
+    const input = JSON.stringify({ from, to: today, metrics: ["hrv_rmssd", "sleep_asleep_min"] });
+    return sseResponse(message(model, usage1, [
+      { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } },
+      { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "" } },
+      { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "sig-round-1" } },
+      { type: "content_block_stop", index: 0 },
+      ...textEvents(1, "Let me look at your last week."),
+      { type: "content_block_start", index: 2, content_block: { type: "tool_use", id: "toolu_1", name: "get_daily_metrics", input: {} } },
+      { type: "content_block_delta", index: 2, delta: { type: "input_json_delta", partial_json: input.slice(0, 20) } },
+      { type: "content_block_delta", index: 2, delta: { type: "input_json_delta", partial_json: input.slice(20) } },
+      { type: "content_block_stop", index: 2 },
+    ], "tool_use", 210));
+  }
+
+  // Round 2: the assistant turn must come back unchanged, thinking block included.
+  const assistant = messages[messages.length - 2];
+  const blocks = assistant.content as Row[];
+  assert.deepEqual(blocks[0], { type: "thinking", thinking: "", signature: "sig-round-1" });
+  assert.equal(blocks[2].type, "tool_use");
+  assert.equal(results[0].tool_use_id, "toolu_1");
+  const data = JSON.parse(String(results[0].content)) as { days: Row[] };
+  const hrv = avg(data.days.map((d) => d.hrv_rmssd).filter((v): v is number => typeof v === "number"));
+  const sleep = avg(data.days.map((d) => d.sleep_asleep_min).filter((v): v is number => typeof v === "number"));
+  const text = `Your HRV averaged **${Math.round(hrv)} ms** over the last 7 nights, and you slept **${hm(sleep)}** a night on average.\n\n` +
+    `- Your two shortest nights were followed by your lowest HRV readings, so sleep looks like the lever here.\n` +
+    `- Try to get to bed 30 minutes earlier for the next three nights and see if HRV moves back toward your baseline.`;
+  return sseResponse(message(model, { input_tokens: 1400, cache_creation_input_tokens: 0, cache_read_input_tokens: 5200 }, textEvents(0, text), "end_turn", 140));
+}
+
 globalThis.fetch = (async (input: string | URL | Request, init: RequestInit = {}) => {
   const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
   if (url.origin === SUPABASE_URL) return postgrest(url, init);
+  if (url.hostname === "api.anthropic.com") return claudeFetch(init);
   return googleFetch(url, init);
 }) as typeof fetch;
 

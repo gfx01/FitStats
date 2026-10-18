@@ -18,6 +18,7 @@ final class AppModel: ObservableObject {
     @Published var noticeMessage: String?
 
     let baseURL: URL
+    let coach = CoachStore()
     private let authenticator = WebAuthenticator()
     private var lastRefresh: Date?
     /// API-shaped JSON used instead of the server for CI screenshots (see supabase/tests/make-fixtures.ts).
@@ -28,9 +29,15 @@ final class AppModel: ObservableObject {
         baseURL = URL(string: configured ?? "https://zkxnbcrayjwkeyxlungk.supabase.co/functions/v1/fitstats")!
         let fixtures = ProcessInfo.processInfo.environment["FITSTATS_FIXTURES"] ?? ""
         fixtureDir = fixtures.isEmpty ? nil : URL(fileURLWithPath: fixtures)
-        if fixtureDir != nil {
+        coach.apiProvider = { [weak self] in self?.api }
+        coach.onUnauthorized = { [weak self] in
+            self?.signOutLocally()
+            self?.connectMessage = "This app key is no longer valid. Connect Google again."
+        }
+        if let fixtureDir {
             appKey = "fixture"
             loadFixtures()
+            coach.loadFixtures(from: fixtureDir)
             return
         }
         appKey = KeyStore.read()
@@ -226,6 +233,7 @@ final class AppModel: ObservableObject {
         days = []
         stats = nil
         dayDetails = [:]
+        coach.reset()
     }
 
     private func handle(_ error: Error) {

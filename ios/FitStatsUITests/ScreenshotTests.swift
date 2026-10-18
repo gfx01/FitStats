@@ -96,9 +96,27 @@ final class ScreenshotTests: XCTestCase {
         app.swipeUp()
         shot("18-insights-2")
 
-        app.tabBars.buttons["Settings"].tap()
-        shot("19-settings")
+        app.tabBars.buttons["Coach"].tap()
+        shot("19-coach")
         app.swipeUp()
-        shot("20-settings-2")
+        shot("20-coach-2")
+        let history = app.buttons["coach-history"]
+        if history.waitForExistence(timeout: 5) {
+            history.tap()
+            let thread = app.buttons["coach-thread"].firstMatch
+            if thread.waitForExistence(timeout: 5) {
+                thread.tap()
+                shot("21-coach-chat")
+            } else {
+                XCTFail("no coach conversation in the history sheet")
+            }
+        }
+
+        app.tabBars.buttons["Settings"].tap()
+        shot("22-settings")
+        app.swipeUp()
+        shot("23-settings-2")
+        app.swipeUp()
+        shot("24-settings-3")
     }
 }

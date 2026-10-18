@@ -11,6 +11,12 @@ enum APIError: LocalizedError {
         case .unauthorized:
             return "This app is no longer authorised. Connect Google again."
         case .server(let code, let body):
+            // Coach and setup errors carry a readable `message`; show that alone.
+            if let data = body.data(using: .utf8),
+               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let message = object["message"] as? String {
+                return message
+            }
             return "Server error \(code): \(body.prefix(200))"
         case .transport(let error):
             return "Network problem: \(error.localizedDescription)"
@@ -75,5 +81,61 @@ struct APIClient {
 
     func post(_ route: String, query: [String: String] = [:], body: Data? = nil) async throws -> Data {
         try await raw(route, method: "POST", query: query, body: body ?? Data("{}".utf8))
+    }
+
+    /// Replies can pause while Claude thinks or runs tools; the server sends keep-alives.
+    private static let streamSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 120
+        config.timeoutIntervalForResource = 300
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: config)
+    }()
+
+    /// POST that streams server-sent events (`data: {json}` lines) as they arrive.
+    func events(_ route: String, body: Data) -> AsyncThrowingStream<CoachEvent, Error> {
+        let request: URLRequest = {
+            var r = URLRequest(url: Self.url(base: baseURL, route: route))
+            r.httpMethod = "POST"
+            r.httpBody = body
+            r.setValue(key, forHTTPHeaderField: "x-app-key")
+            r.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            r.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+            return r
+        }()
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let (bytes, response) = try await Self.streamSession.bytes(for: request)
+                    let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+                    if code == 401 { throw APIError.unauthorized }
+                    guard (200..<300).contains(code) else {
+                        var text = ""
+                        for try await line in bytes.lines {
+                            text += line
+                            if text.count > 4000 { break }
+                        }
+                        throw APIError.server(code, text)
+                    }
+                    let decoder = JSONDecoder()
+                    for try await line in bytes.lines where line.hasPrefix("data:") {
+                        let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                        if let event = try? decoder.decode(CoachEvent.self, from: Data(payload.utf8)) {
+                            continuation.yield(event)
+                        }
+                    }
+                    continuation.finish()
+                } catch let error as APIError {
+                    continuation.finish(throwing: error)
+                } catch {
+                    if Task.isCancelled || (error as? URLError)?.code == .cancelled {
+                        continuation.finish(throwing: CancellationError())
+                    } else {
+                        continuation.finish(throwing: APIError.transport(error))
+                    }
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
     }
 }

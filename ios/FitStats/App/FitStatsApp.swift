@@ -9,6 +9,7 @@ struct FitStatsApp: App {
         WindowGroup {
             RootView()
                 .environmentObject(model)
+                .environmentObject(model.coach)
                 .preferredColorScheme(.dark)
                 .tint(Theme.recoveryGreen)
                 .onOpenURL { url in model.handleCallback(url) }
@@ -43,6 +44,8 @@ struct MainTabs: View {
                 .tabItem { Label("Today", systemImage: "circle.circle.fill") }
             TrendsView()
                 .tabItem { Label("Trends", systemImage: "chart.xyaxis.line") }
+            CoachView()
+                .tabItem { Label("Coach", systemImage: "bubble.left.and.bubble.right.fill") }
             InsightsView()
                 .tabItem { Label("Insights", systemImage: "sparkles") }
             SettingsView()

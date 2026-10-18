@@ -7,7 +7,10 @@
 //   health             unauthenticated setup check
 //   status | days | day | stats | sync | settings | disconnect
 //                      app routes, authenticated with x-app-key
+//   coach | coach_status | coach_threads | coach_thread | coach_delete | coach_brief
+//                      Claude coach (lib/coach.ts), also x-app-key
 
+import { coachBrief, coachDelete, coachStatus, coachThread, coachThreads, handleCoach, isCoachModel } from "./lib/coach.ts";
 import * as db from "./lib/db.ts";
 import { decodeIdToken, exchangeCode, GOOGLE_AUTH_URL, HEALTH_SCOPES, HealthClient, OAUTH_SCOPES } from "./lib/google.ts";
 import {
@@ -21,7 +24,7 @@ import {
 } from "./lib/sync.ts";
 import { addDays } from "./lib/util.ts";
 
-const VERSION = "1.0.2";
+const VERSION = "1.1.0";
 const APP_SCHEME = "fitstats://";
 const DEFAULT_APP_REDIRECT = "fitstats://connected";
 
@@ -302,6 +305,7 @@ async function saveSettings(req: Request): Promise<Response> {
   const patch: Row = { updated_at: new Date().toISOString() };
   if (typeof body.sex === "string") patch.sex = body.sex;
   if ("max_hr_override" in body) patch.max_hr_override = intOrNull(body.max_hr_override);
+  if (isCoachModel(body.coach_model)) patch.coach_model = body.coach_model;
   for (const k of ["sleep_need_min", "step_goal", "backfill_days"]) {
     const v = intOrNull(body[k]);
     if (v !== null) patch[k] = v;
@@ -318,11 +322,15 @@ async function saveSettings(req: Request): Promise<Response> {
   const acc = await loadAccount();
   const today = clockFor(acc).today();
   const intradayChanged = settings.sex !== current.sex || settings.max_hr_override !== current.max_hr_override;
-  background((async () => {
-    if (intradayChanged && acc) await recomputeIntraday(addDays(today, -settings.backfill_days), today, settings, acc);
-    await recomputeScores(addDays(today, -settings.backfill_days), today, settings);
-    await rebuildStats(today, settings);
-  })());
+  const scoresChanged = intradayChanged || settings.sleep_need_min !== current.sleep_need_min ||
+    settings.step_goal !== current.step_goal || settings.backfill_days !== current.backfill_days;
+  if (scoresChanged) {
+    background((async () => {
+      if (intradayChanged && acc) await recomputeIntraday(addDays(today, -settings.backfill_days), today, settings, acc);
+      await recomputeScores(addDays(today, -settings.backfill_days), today, settings);
+      await rebuildStats(today, settings);
+    })());
+  }
   return json({ settings });
 }
 
@@ -335,7 +343,7 @@ async function disconnect(params: URLSearchParams): Promise<Response> {
     updated_at: new Date().toISOString(),
   });
   if (params.get("wipe") === "true") {
-    for (const t of ["fs_days", "fs_sleep", "fs_exercise", "fs_intraday", "fs_samples", "fs_cache"]) {
+    for (const t of ["fs_days", "fs_sleep", "fs_exercise", "fs_intraday", "fs_samples", "fs_cache", "fs_coach_messages", "fs_coach_threads"]) {
       await db.remove(t, t === "fs_samples" ? "metric=not.is.null" : t === "fs_cache" ? "key=not.is.null" : t === "fs_days" || t === "fs_intraday" ? "date=not.is.null" : "id=not.is.null");
     }
     await db.update("fs_account", "id=eq.1", { google_sub: null, google_email: null, profile: null, google_settings: null, devices: null });
@@ -394,6 +402,20 @@ Deno.serve(async (req: Request) => {
       case "disconnect":
         if (req.method !== "POST") return json({ error: "use POST" }, 405);
         return await disconnect(params);
+      case "coach":
+        if (req.method !== "POST") return json({ error: "use POST" }, 405);
+        return await handleCoach(req);
+      case "coach_status":
+        return json(await coachStatus());
+      case "coach_threads":
+        return json(await coachThreads());
+      case "coach_thread":
+        return await coachThread(params.get("id") ?? "");
+      case "coach_delete":
+        if (req.method !== "POST") return json({ error: "use POST" }, 405);
+        return await coachDelete(params.get("id") ?? "");
+      case "coach_brief":
+        return json(await coachBrief());
       default:
         return json({ error: "unknown route" }, 404);
     }
