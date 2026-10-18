@@ -16,6 +16,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var recorded: Set<String> = []
     @Published private(set) var journal: [String: JournalEntry] = [:]
     @Published private(set) var journalTags: [JournalTag] = []
+    /// Days whose detail (minute data, sessions) failed to load, so screens stop showing a spinner.
+    @Published private(set) var failedDays: Set<String> = []
     @Published private(set) var stats: StatsPayload?
     @Published private(set) var dayDetails: [String: DayDetail] = [:]
     @Published private(set) var isRefreshing = false
@@ -186,7 +188,12 @@ final class AppModel: ObservableObject {
                 applyJournal(result.0)
                 DiskCache.save(result.1, as: "journal.json")
             }
-            dayDetails[s.today] = nil
+            // Today's minute data grows with every sync. Replace it rather than drop it: the Today
+            // screen only loads a day when it appears, so a dropped detail never came back.
+            if let result = try? await api.fetch(DayDetail.self, "day", query: ["date": s.today]) {
+                dayDetails[s.today] = result.0
+                failedDays.remove(s.today)
+            }
             lastRefresh = Date()
             errorMessage = nil
         } catch {
@@ -216,8 +223,10 @@ final class AppModel: ObservableObject {
         do {
             let (detail, _) = try await api.fetch(DayDetail.self, "day", query: ["date": date])
             dayDetails[date] = detail
+            failedDays.remove(date)
             return detail
         } catch {
+            if !error.isCancellation { failedDays.insert(date) }
             handle(error)
             return dayDetails[date]
         }
@@ -293,6 +302,7 @@ final class AppModel: ObservableObject {
         journal = [:]
         journalTags = []
         dayDetails = [:]
+        failedDays = []
         coach.reset()
     }
 

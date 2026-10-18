@@ -318,6 +318,14 @@ struct TodayView: View {
             }
             if let hr = detail?.intraday?.hr, hr.contains(where: { $0 != nil }) {
                 HeartRateDayChart(hr: hr, rhr: day.double("rhr"))
+            } else if detail == nil && model.failedDays.contains(date) {
+                Button {
+                    Task { await model.loadDay(date, force: true) }
+                } label: {
+                    Label("Couldn't load the minute data. Tap to try again.", systemImage: "arrow.clockwise")
+                        .font(.footnote)
+                }
+                .frame(maxWidth: .infinity, minHeight: 120)
             } else if detail == nil {
                 ProgressView().frame(maxWidth: .infinity, minHeight: 120)
             } else {
