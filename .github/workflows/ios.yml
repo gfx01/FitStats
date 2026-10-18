@@ -1,0 +1,67 @@
+name: iOS build (unsigned IPA)
+
+on:
+  push:
+    branches: [main, "claude/**"]
+    paths: ["ios/**", ".github/workflows/ios.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Xcode
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Build (no code signing)
+        working-directory: ios
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project FitStats.xcodeproj \
+            -scheme FitStats \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee build.log | grep -E "error:|warning: |BUILD (SUCCEEDED|FAILED)" || true
+          test -d build/Build/Products/Release-iphoneos/FitStats.app
+
+      - name: Compiler errors
+        if: failure()
+        working-directory: ios
+        run: grep -E "error:" build.log | sort -u | head -150 || true
+
+      - name: Package IPA
+        working-directory: ios
+        run: |
+          rm -rf Payload FitStats.ipa
+          mkdir Payload
+          cp -R build/Build/Products/Release-iphoneos/FitStats.app Payload/
+          zip -qry FitStats.ipa Payload
+          ls -lh FitStats.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: FitStats-ipa
+          path: ios/FitStats.ipa
+          retention-days: 30

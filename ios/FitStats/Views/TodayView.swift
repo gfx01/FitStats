@@ -1,0 +1,353 @@
+import SwiftUI
+
+enum DetailRoute: Hashable {
+    case recovery(String)
+    case strain(String)
+    case sleep(String)
+    case stress(String)
+    case metric(String)
+}
+
+struct DetailDestination: View {
+    let route: DetailRoute
+
+    var body: some View {
+        switch route {
+        case .recovery(let d): RecoveryDetailView(date: d)
+        case .strain(let d): StrainDetailView(date: d)
+        case .sleep(let d): SleepDetailView(date: d)
+        case .stress(let d): StressDetailView(date: d)
+        case .metric(let key):
+            if let def = MetricCatalog.def(key) {
+                MetricDetailView(def: def)
+            } else {
+                EmptyStateView(icon: "questionmark", title: "Unknown metric", message: key)
+            }
+        }
+    }
+}
+
+struct TodayView: View {
+    @EnvironmentObject private var model: AppModel
+    @State private var selected: String?
+
+    private var date: String { selected ?? model.today }
+    private var day: DayRecord? { model.daysByDate[date] }
+    private var detail: DayDetail? { model.dayDetails[date] }
+
+    private let grid = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 14) {
+                    header
+                    banners
+                    if let day {
+                        scoresCard(day)
+                        vitalsCard(day)
+                        activityCard(day)
+                        heartCard(day)
+                        workoutsCard
+                    } else {
+                        Card {
+                            EmptyStateView(
+                                icon: "clock.arrow.circlepath",
+                                title: "No data for this day",
+                                message: model.days.isEmpty
+                                    ? "Your history is still syncing. Pull down to refresh in a minute."
+                                    : "Nothing was recorded on \(Format.longDay(date))."
+                            )
+                        }
+                    }
+                    footer
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 32)
+            }
+            .refreshable {
+                await model.refreshAll(force: true)
+                await model.loadDay(date, force: true)
+            }
+            .screenBackground()
+            .task(id: date) { await model.loadDay(date) }
+            .navigationDestination(for: DetailRoute.self) { DetailDestination(route: $0) }
+            .toolbar(.hidden, for: .navigationBar)
+        }
+    }
+
+    // MARK: header & banners
+
+    private var header: some View {
+        HStack {
+            Button { shift(-1) } label: {
+                Image(systemName: "chevron.left").frame(width: 36, height: 36)
+            }
+            Spacer()
+            VStack(spacing: 2) {
+                Text(Format.prettyDay(date, today: model.today)).font(.title3.bold())
+                Text(Format.longDay(date)).font(.caption).foregroundStyle(Theme.secondary)
+            }
+            Spacer()
+            Button { shift(1) } label: {
+                Image(systemName: "chevron.right").frame(width: 36, height: 36)
+            }
+            .disabled(date >= model.today)
+            .opacity(date >= model.today ? 0.3 : 1)
+        }
+        .font(.headline)
+        .foregroundStyle(.white)
+        .padding(.top, 6)
+    }
+
+    private func shift(_ n: Int) {
+        let next = Format.addDays(date, n)
+        selected = next >= model.today ? nil : next
+    }
+
+    @ViewBuilder private var banners: some View {
+        if model.needsReconnect {
+            Banner(icon: "exclamationmark.triangle.fill",
+                   text: "Google access has expired, so new data is not syncing.",
+                   color: Theme.recoveryRed, actionTitle: "Reconnect") {
+                Task { await model.connect() }
+            }
+        }
+        if let sync = model.status?.sync, !sync.backfillDone, let p = sync.backfillProgress {
+            Banner(icon: "arrow.triangle.2.circlepath",
+                   text: "Importing your history… \(Int((p * 100).rounded()))% (the server keeps going in the background)",
+                   color: Theme.strain)
+        }
+        if let notice = model.noticeMessage {
+            Banner(icon: "info.circle.fill", text: notice, color: Theme.stress, actionTitle: "OK") {
+                model.noticeMessage = nil
+            }
+        }
+        if let error = model.errorMessage {
+            Banner(icon: "wifi.exclamationmark", text: error, color: Theme.recoveryYellow, actionTitle: "Dismiss") {
+                model.errorMessage = nil
+            }
+        }
+    }
+
+    // MARK: scores
+
+    private func strainTarget(_ day: DayRecord) -> ClosedRange<Double>? {
+        guard let arr = day.json("score_details")?["strainTarget"]?.array, arr.count == 2,
+              let lo = arr[0].double, let hi = arr[1].double, lo <= hi else { return nil }
+        return lo...hi
+    }
+
+    private func scoresCard(_ day: DayRecord) -> some View {
+        let recovery = day.double("recovery")
+        let breakdown = ScoreBreakdown(day.json("score_details")?["recovery"])
+        let caption = recovery != nil
+            ? Theme.recoveryLabel(recovery)
+            : (breakdown.status == "calibrating" ? "Calibrating" : "No data")
+        return Card {
+            NavigationLink(value: DetailRoute.recovery(date)) {
+                HStack(spacing: 18) {
+                    ScoreRing(title: "Recovery", value: recovery, maxValue: 100,
+                              color: Theme.recoveryColor(recovery), caption: caption,
+                              size: 128, lineWidth: 14, suffix: "%")
+                    recoverySummary(day)
+                }
+            }
+            .buttonStyle(.plain)
+            Divider().overlay(Theme.track)
+            HStack(alignment: .top) {
+                smallRing(.strain(date), "Strain", day.double("strain"), Theme.strain, Theme.strainEnd,
+                          strainTarget(day).map { "Goal \(Int($0.lowerBound))–\(Int($0.upperBound))" },
+                          target: strainTarget(day))
+                Spacer(minLength: 4)
+                smallRing(.sleep(date), "Sleep", day.double("sleep_score"), Theme.sleep, nil,
+                          Format.duration(day.double("sleep_asleep_min")))
+                Spacer(minLength: 4)
+                smallRing(.stress(date), "Stress", day.double("stress"), Theme.stressColor(day.double("stress")), nil,
+                          Theme.stressLabel(day.double("stress")))
+            }
+        }
+    }
+
+    private func smallRing(_ route: DetailRoute, _ title: String, _ value: Double?, _ color: Color, _ end: Color?,
+                           _ caption: String?, target: ClosedRange<Double>? = nil) -> some View {
+        NavigationLink(value: route) {
+            ScoreRing(title: title, value: value, maxValue: 100, color: color, endColor: end,
+                      caption: caption, size: 88, lineWidth: 9, target: target)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func recoverySummary(_ day: DayRecord) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            summaryRow("HRV", key: "hrv_rmssd", day)
+            summaryRow("Resting HR", key: "rhr", day)
+            summaryRow("Sleep", key: "sleep_asleep_min", day)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func summaryRow(_ title: String, key: String, _ day: DayRecord) -> some View {
+        let def = MetricCatalog.def(key)!
+        let value = def.value(day)
+        let base = model.baseline(def, before: date)
+        var change: Double? = nil
+        if let value, let base, base != 0 { change = (value - base) / abs(base) * 100 }
+        return VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.caption).foregroundStyle(Theme.secondary)
+            HStack(spacing: 6) {
+                Text(def.formatted(value)).font(Theme.number(17, weight: .semibold))
+                DeltaBadge(change: change, better: def.better)
+            }
+        }
+    }
+
+    // MARK: vitals & activity
+
+    private func tile(_ key: String, _ day: DayRecord) -> some View {
+        let def = MetricCatalog.def(key)!
+        let value = def.value(day)
+        let base = model.baseline(def, before: date)
+        var change: Double? = nil
+        if def.format != .clock, key != "skin_temp_dev", let value, let base, base != 0 {
+            change = (value - base) / abs(base) * 100
+        }
+        return NavigationLink(value: DetailRoute.metric(key)) {
+            MetricTile(title: def.label, value: def.formatted(value),
+                       sub: base.map { "30d avg \(def.formatted($0, withUnit: false))" },
+                       icon: def.icon, color: def.category.color, change: change, better: def.better)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func vitalsCard(_ day: DayRecord) -> some View {
+        Card {
+            SectionHeader(title: "Vitals", subtitle: "Measured overnight, compared with your 30-day average")
+            LazyVGrid(columns: grid, spacing: 10) {
+                ForEach(["rhr", "hrv_rmssd", "spo2_avg", "resp_rate", "skin_temp_dev", "vo2max"], id: \.self) { key in
+                    tile(key, day)
+                }
+            }
+        }
+    }
+
+    private func activityCard(_ day: DayRecord) -> some View {
+        let steps = day.double("steps")
+        let goal = Double(model.status?.settings.stepGoal ?? 10000)
+        return Card {
+            SectionHeader(title: "Activity")
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(Format.number(steps)).font(Theme.number(34))
+                Text("steps").foregroundStyle(Theme.secondary)
+                Spacer()
+                Text("Goal \(Format.number(goal))").font(.caption).foregroundStyle(Theme.tertiary)
+            }
+            ProgressView(value: min(1, (steps ?? 0) / max(goal, 1)))
+                .tint(Theme.strain)
+            LazyVGrid(columns: grid, spacing: 10) {
+                ForEach(["calories_total", "calories_active", "azm_total", "distance_km", "floors", "active_min_total"], id: \.self) { key in
+                    tile(key, day)
+                }
+            }
+        }
+    }
+
+    // MARK: heart & workouts
+
+    private func heartCard(_ day: DayRecord) -> some View {
+        Card {
+            HStack {
+                SectionHeader(title: "Heart rate")
+                Spacer()
+                Text("\(Format.number(day.double("hr_min"))) – \(Format.number(day.double("hr_max"))) bpm")
+                    .font(.caption)
+                    .foregroundStyle(Theme.secondary)
+            }
+            if let hr = detail?.intraday?.hr, hr.contains(where: { $0 != nil }) {
+                HeartRateDayChart(hr: hr, rhr: day.double("rhr"))
+            } else if detail == nil {
+                ProgressView().frame(maxWidth: .infinity, minHeight: 120)
+            } else {
+                Text("No minute-level heart rate for this day.")
+                    .font(.footnote)
+                    .foregroundStyle(Theme.tertiary)
+            }
+        }
+    }
+
+    @ViewBuilder private var workoutsCard: some View {
+        if let exercises = detail?.exercises, !exercises.isEmpty {
+            Card {
+                SectionHeader(title: "Workouts")
+                ForEach(exercises) { WorkoutRow(exercise: $0, zone: model.zone) }
+            }
+        }
+    }
+
+    private var footer: some View {
+        HStack {
+            if model.isSyncing || model.isRefreshing { ProgressView().scaleEffect(0.8) }
+            Text("Synced \(Format.relative(model.status?.sync.lastRunAt))")
+                .font(.caption)
+                .foregroundStyle(Theme.tertiary)
+            Spacer()
+            Button {
+                Task { await model.syncNow() }
+            } label: {
+                Label("Sync now", systemImage: "arrow.clockwise").font(.caption.weight(.semibold))
+            }
+            .disabled(model.isSyncing)
+        }
+        .padding(.top, 4)
+    }
+}
+
+struct WorkoutRow: View {
+    let exercise: Exercise
+    var zone: TimeZone?
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.title3)
+                .frame(width: 40, height: 40)
+                .background(Circle().fill(Theme.strain.opacity(0.18)))
+                .foregroundStyle(Theme.strain)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(exercise.name ?? (exercise.exerciseType ?? "Workout").capitalized)
+                    .font(.subheadline.weight(.semibold))
+                Text(subtitle).font(.caption).foregroundStyle(Theme.secondary)
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 3) {
+                Text(Format.duration((exercise.activeDurationS ?? exercise.durationS).map { $0 / 60 }))
+                    .font(Theme.number(15, weight: .semibold))
+                if let hr = exercise.avgHr {
+                    Text("\(Int(hr)) bpm avg").font(.caption2).foregroundStyle(Theme.tertiary)
+                }
+            }
+        }
+    }
+
+    private var subtitle: String {
+        var parts: [String] = []
+        if let start = Format.timestamp(exercise.startTime) { parts.append(Format.time(start, zone: zone)) }
+        if let kcal = exercise.calories { parts.append("\(Int(kcal)) kcal") }
+        if let m = exercise.distanceM, m > 0 { parts.append(String(format: "%.2f km", m / 1000)) }
+        if let azm = exercise.azm, azm > 0 { parts.append("\(Int(azm)) AZM") }
+        return parts.joined(separator: " · ")
+    }
+
+    private var icon: String {
+        switch exercise.exerciseType ?? "" {
+        case "RUNNING", "TREADMILL", "TRAIL_RUN", "INCLINE_RUN": return "figure.run"
+        case "WALKING", "HIKING", "POWER_WALKING", "TREADMILL_WALK", "INCLINE_WALK": return "figure.walk"
+        case "BIKING", "OUTDOOR_BIKE", "STATIONARY_BIKE", "SPINNING", "MOUNTAIN_BIKE": return "figure.outdoor.cycle"
+        case "SWIMMING", "SWIMMING_POOL", "SWIMMING_OPEN_WATER": return "figure.pool.swim"
+        case "STRENGTH_TRAINING", "WEIGHTLIFTING", "WEIGHTS", "FREE_WEIGHTS", "POWERLIFTING": return "dumbbell.fill"
+        case "YOGA", "PILATES", "STRETCHING": return "figure.yoga"
+        case "HIIT", "CROSSFIT", "CIRCUIT_TRAINING", "TABATA_WORKOUT": return "bolt.heart.fill"
+        default: return "figure.mixed.cardio"
+        }
+    }
+}

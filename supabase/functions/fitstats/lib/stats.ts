@@ -1,0 +1,509 @@
+// Statistics over fs_days: per-metric ranges, weekday patterns, records,
+// streaks, lagged correlations and plain-language insights.
+
+import type { DayRow } from "./scores.ts";
+import { addDays, daysBetween, mean, median, round, stdDev, weekdayIndex, type Ymd } from "./util.ts";
+
+export interface MetricDef {
+  key: string;
+  label: string;
+  unit: string;
+  decimals: number;
+  category: "scores" | "activity" | "heart" | "sleep" | "vitals" | "body";
+  /** "sum" metrics are day totals (today is partial and excluded from stats). */
+  agg: "sum" | "avg";
+  better: "higher" | "lower" | null;
+  format?: "duration" | "clock" | "percent";
+  get: (d: DayRow) => number | null;
+}
+
+function col(key: string) {
+  return (d: DayRow) => {
+    const v = d[key];
+    return typeof v === "number" && Number.isFinite(v) ? v : null;
+  };
+}
+
+function sumCols(...keys: string[]) {
+  return (d: DayRow) => {
+    let any = false;
+    let s = 0;
+    for (const k of keys) {
+      const v = d[k];
+      if (typeof v === "number" && Number.isFinite(v)) {
+        s += v;
+        any = true;
+      }
+    }
+    return any ? s : null;
+  };
+}
+
+function ratio(numKey: string, denKey: string, scale = 100) {
+  return (d: DayRow) => {
+    const a = d[numKey], b = d[denKey];
+    return typeof a === "number" && typeof b === "number" && b > 0 ? (a / b) * scale : null;
+  };
+}
+
+export const METRICS: MetricDef[] = [
+  // scores
+  { key: "recovery", label: "Recovery", unit: "%", decimals: 0, category: "scores", agg: "avg", better: "higher", get: col("recovery") },
+  { key: "strain", label: "Strain", unit: "", decimals: 1, category: "scores", agg: "sum", better: null, get: col("strain") },
+  { key: "sleep_score", label: "Sleep score", unit: "", decimals: 0, category: "scores", agg: "avg", better: "higher", get: col("sleep_score") },
+  { key: "stress", label: "Stress", unit: "", decimals: 0, category: "scores", agg: "sum", better: "lower", get: col("stress") },
+  // activity
+  { key: "steps", label: "Steps", unit: "", decimals: 0, category: "activity", agg: "sum", better: "higher", get: col("steps") },
+  {
+    key: "distance_km", label: "Distance", unit: "km", decimals: 2, category: "activity", agg: "sum", better: "higher",
+    get: (d) => (typeof d.distance_m === "number" ? d.distance_m / 1000 : null),
+  },
+  { key: "floors", label: "Floors", unit: "", decimals: 0, category: "activity", agg: "sum", better: "higher", get: col("floors") },
+  { key: "calories_total", label: "Calories burned", unit: "kcal", decimals: 0, category: "activity", agg: "sum", better: null, get: col("calories_total") },
+  { key: "calories_active", label: "Active calories", unit: "kcal", decimals: 0, category: "activity", agg: "sum", better: "higher", get: col("calories_active") },
+  { key: "azm_total", label: "Active Zone Minutes", unit: "min", decimals: 0, category: "activity", agg: "sum", better: "higher", get: sumCols("azm_fat_burn", "azm_cardio", "azm_peak") },
+  { key: "active_min_total", label: "Active minutes", unit: "min", decimals: 0, category: "activity", agg: "sum", better: "higher", get: sumCols("active_light_min", "active_moderate_min", "active_vigorous_min") },
+  { key: "active_vigorous_min", label: "Vigorous minutes", unit: "min", decimals: 0, category: "activity", agg: "sum", better: "higher", get: col("active_vigorous_min") },
+  {
+    key: "sedentary_h", label: "Sedentary time", unit: "h", decimals: 1, category: "activity", agg: "sum", better: "lower",
+    get: (d) => (typeof d.sedentary_min === "number" ? d.sedentary_min / 60 : null),
+  },
+  { key: "trimp", label: "Training load (TRIMP)", unit: "", decimals: 0, category: "activity", agg: "sum", better: null, get: col("trimp") },
+  // heart
+  { key: "rhr", label: "Resting heart rate", unit: "bpm", decimals: 0, category: "heart", agg: "avg", better: "lower", get: col("rhr") },
+  { key: "hrv_rmssd", label: "HRV (RMSSD)", unit: "ms", decimals: 0, category: "heart", agg: "avg", better: "higher", get: col("hrv_rmssd") },
+  { key: "hrv_deep_rmssd", label: "Deep-sleep HRV", unit: "ms", decimals: 0, category: "heart", agg: "avg", better: "higher", get: col("hrv_deep_rmssd") },
+  { key: "non_rem_hr", label: "Non-REM heart rate", unit: "bpm", decimals: 0, category: "heart", agg: "avg", better: "lower", get: col("non_rem_hr") },
+  { key: "hr_avg", label: "Average heart rate", unit: "bpm", decimals: 0, category: "heart", agg: "sum", better: null, get: col("hr_avg") },
+  { key: "hr_max", label: "Max heart rate", unit: "bpm", decimals: 0, category: "heart", agg: "sum", better: null, get: col("hr_max") },
+  { key: "zone_cardio_min", label: "Cardio + peak zone", unit: "min", decimals: 0, category: "heart", agg: "sum", better: "higher", get: sumCols("zone_vigorous_min", "zone_peak_min") },
+  { key: "vo2max", label: "Cardio fitness (VO₂ max)", unit: "ml/kg/min", decimals: 1, category: "heart", agg: "avg", better: "higher", get: col("vo2max") },
+  // sleep
+  { key: "sleep_asleep_min", label: "Time asleep", unit: "min", decimals: 0, category: "sleep", agg: "avg", better: "higher", format: "duration", get: col("sleep_asleep_min") },
+  { key: "sleep_in_bed_min", label: "Time in bed", unit: "min", decimals: 0, category: "sleep", agg: "avg", better: null, format: "duration", get: col("sleep_in_bed_min") },
+  { key: "sleep_deep_min", label: "Deep sleep", unit: "min", decimals: 0, category: "sleep", agg: "avg", better: "higher", format: "duration", get: col("sleep_deep_min") },
+  { key: "sleep_rem_min", label: "REM sleep", unit: "min", decimals: 0, category: "sleep", agg: "avg", better: "higher", format: "duration", get: col("sleep_rem_min") },
+  { key: "sleep_light_min", label: "Light sleep", unit: "min", decimals: 0, category: "sleep", agg: "avg", better: null, format: "duration", get: col("sleep_light_min") },
+  { key: "sleep_awake_min", label: "Awake during sleep", unit: "min", decimals: 0, category: "sleep", agg: "avg", better: "lower", format: "duration", get: col("sleep_awake_min") },
+  { key: "deep_pct", label: "Deep sleep share", unit: "%", decimals: 0, category: "sleep", agg: "avg", better: "higher", format: "percent", get: ratio("sleep_deep_min", "sleep_asleep_min") },
+  { key: "rem_pct", label: "REM sleep share", unit: "%", decimals: 0, category: "sleep", agg: "avg", better: "higher", format: "percent", get: ratio("sleep_rem_min", "sleep_asleep_min") },
+  {
+    key: "sleep_efficiency", label: "Sleep efficiency", unit: "%", decimals: 0, category: "sleep", agg: "avg", better: "higher", format: "percent",
+    get: (d) => (typeof d.sleep_efficiency === "number" ? d.sleep_efficiency * 100 : null),
+  },
+  { key: "sleep_awakenings", label: "Awakenings", unit: "", decimals: 0, category: "sleep", agg: "avg", better: "lower", get: col("sleep_awakenings") },
+  { key: "sleep_bedtime_min", label: "Bedtime", unit: "", decimals: 0, category: "sleep", agg: "avg", better: null, format: "clock", get: col("sleep_bedtime_min") },
+  { key: "sleep_waketime_min", label: "Wake time", unit: "", decimals: 0, category: "sleep", agg: "avg", better: null, format: "clock", get: col("sleep_waketime_min") },
+  { key: "nap_min", label: "Naps", unit: "min", decimals: 0, category: "sleep", agg: "avg", better: null, format: "duration", get: col("nap_min") },
+  // vitals
+  { key: "spo2_avg", label: "Blood oxygen (SpO₂)", unit: "%", decimals: 1, category: "vitals", agg: "avg", better: "higher", get: col("spo2_avg") },
+  { key: "resp_rate", label: "Breathing rate", unit: "/min", decimals: 1, category: "vitals", agg: "avg", better: null, get: col("resp_rate") },
+  {
+    key: "skin_temp_dev", label: "Skin temperature variation", unit: "°C", decimals: 2, category: "vitals", agg: "avg", better: null,
+    get: (d) => (typeof d.skin_temp_c === "number" && typeof d.skin_temp_baseline_c === "number" ? d.skin_temp_c - d.skin_temp_baseline_c : null),
+  },
+  // body
+  { key: "weight_kg", label: "Weight", unit: "kg", decimals: 1, category: "body", agg: "avg", better: null, get: col("weight_kg") },
+  { key: "body_fat_pct", label: "Body fat", unit: "%", decimals: 1, category: "body", agg: "avg", better: "lower", get: col("body_fat_pct") },
+];
+
+export const METRIC_BY_KEY = new Map(METRICS.map((m) => [m.key, m]));
+
+export interface RangeStats {
+  days: number | null;
+  n: number;
+  mean: number | null;
+  median: number | null;
+  min: number | null;
+  minDate: Ymd | null;
+  max: number | null;
+  maxDate: Ymd | null;
+  sd: number | null;
+  sum: number | null;
+  slopePerWeek: number | null;
+  prevMean: number | null;
+  changePct: number | null;
+}
+
+export interface MetricStats {
+  key: string;
+  latest: number | null;
+  latestDate: Ymd | null;
+  ranges: Record<string, RangeStats>;
+  weekday: (number | null)[];
+  best: { value: number; date: Ymd } | null;
+  worst: { value: number; date: Ymd } | null;
+}
+
+export const RANGES: [string, number | null][] = [["7", 7], ["30", 30], ["90", 90], ["365", 365], ["all", null]];
+
+type Point = { date: Ymd; v: number };
+
+function seriesFor(def: MetricDef, days: DayRow[], today: Ymd): Point[] {
+  const out: Point[] = [];
+  for (const d of days) {
+    if (def.agg === "sum" && d.date >= today) continue; // today's totals are still growing
+    const v = def.get(d);
+    if (v !== null) out.push({ date: d.date, v });
+  }
+  return out;
+}
+
+function linearSlope(points: Point[], origin: Ymd): number | null {
+  if (points.length < 3) return null;
+  const xs = points.map((p) => daysBetween(origin, p.date));
+  const ys = points.map((p) => p.v);
+  const mx = mean(xs)!, my = mean(ys)!;
+  let sxx = 0, sxy = 0;
+  for (let i = 0; i < xs.length; i++) {
+    sxx += (xs[i] - mx) * (xs[i] - mx);
+    sxy += (xs[i] - mx) * (ys[i] - my);
+  }
+  return sxx > 0 ? sxy / sxx : null;
+}
+
+function rangeStats(def: MetricDef, series: Point[], start: Ymd | null, end: Ymd, days: number | null): RangeStats {
+  const pts = series.filter((p) => (start === null || p.date >= start) && p.date < end);
+  const vals = pts.map((p) => p.v);
+  let minP: Point | null = null, maxP: Point | null = null;
+  for (const p of pts) {
+    if (!minP || p.v < minP.v) minP = p;
+    if (!maxP || p.v > maxP.v) maxP = p;
+  }
+  let prevMean: number | null = null;
+  if (start !== null && days !== null) {
+    const prevStart = addDays(start, -days);
+    const prev = series.filter((p) => p.date >= prevStart && p.date < start).map((p) => p.v);
+    if (prev.length >= Math.max(2, Math.floor(days / 4))) prevMean = mean(prev);
+  }
+  const m = mean(vals);
+  const d = def.decimals + 1;
+  const slope = linearSlope(pts, start ?? (pts[0]?.date ?? end));
+  return {
+    days,
+    n: vals.length,
+    mean: round(m, d),
+    median: round(median(vals), d),
+    min: minP ? round(minP.v, d) : null,
+    minDate: minP?.date ?? null,
+    max: maxP ? round(maxP.v, d) : null,
+    maxDate: maxP?.date ?? null,
+    sd: round(stdDev(vals), d),
+    sum: def.agg === "sum" && vals.length ? round(vals.reduce((a, b) => a + b, 0), d) : null,
+    slopePerWeek: slope === null ? null : round(slope * 7, d),
+    prevMean: round(prevMean, d),
+    changePct: m !== null && prevMean !== null && prevMean !== 0 ? round(((m - prevMean) / Math.abs(prevMean)) * 100, 1) : null,
+  };
+}
+
+export function metricStats(def: MetricDef, days: DayRow[], today: Ymd): MetricStats {
+  const series = seriesFor(def, days, today);
+  const end = addDays(today, 1);
+  const ranges: Record<string, RangeStats> = {};
+  for (const [name, len] of RANGES) {
+    ranges[name] = rangeStats(def, series, len === null ? null : addDays(today, -(len - 1)), end, len);
+  }
+  const wdStart = addDays(today, -89);
+  const buckets: number[][] = [[], [], [], [], [], [], []];
+  for (const p of series) if (p.date >= wdStart) buckets[weekdayIndex(p.date)].push(p.v);
+  const weekday = buckets.map((b) => (b.length >= 2 ? round(mean(b), def.decimals + 1) : null));
+
+  let best: Point | null = null, worst: Point | null = null;
+  if (def.better) {
+    for (const p of series) {
+      const better = def.better === "higher" ? (a: number, b: number) => a > b : (a: number, b: number) => a < b;
+      if (!best || better(p.v, best.v)) best = p;
+      if (!worst || better(worst.v, p.v)) worst = p;
+    }
+  }
+  const latestPoint = [...days].reverse().find((d) => def.get(d) !== null);
+  return {
+    key: def.key,
+    latest: latestPoint ? round(def.get(latestPoint), def.decimals + 1) : null,
+    latestDate: latestPoint?.date ?? null,
+    ranges,
+    weekday,
+    best: best ? { value: round(best.v, def.decimals + 1)!, date: best.date } : null,
+    worst: worst ? { value: round(worst.v, def.decimals + 1)!, date: worst.date } : null,
+  };
+}
+
+// -------------------------------------------------------------------- streaks
+
+export interface Streak {
+  key: string;
+  label: string;
+  current: number;
+  longest: number;
+  longestEnd: Ymd | null;
+}
+
+export function streak(
+  key: string,
+  label: string,
+  days: DayRow[],
+  today: Ymd,
+  test: (d: DayRow) => boolean | null,
+  includeToday: boolean,
+): Streak {
+  const byDate = new Map(days.map((d) => [d.date, d]));
+  const first = days.length ? days[0].date : today;
+  const last = includeToday ? today : addDays(today, -1);
+  let run = 0, longest = 0;
+  let longestEnd: Ymd | null = null;
+  for (let d = first; d <= last; d = addDays(d, 1)) {
+    const row = byDate.get(d);
+    const ok = row ? test(row) : null;
+    if (ok === true) {
+      run++;
+      if (run > longest) {
+        longest = run;
+        longestEnd = d;
+      }
+    } else {
+      run = 0;
+    }
+  }
+  // An incomplete today does not break the current streak.
+  let current = 0;
+  for (let d = last; d >= first; d = addDays(d, -1)) {
+    const row = byDate.get(d);
+    if (row && test(row) === true) current++;
+    else break;
+  }
+  return { key, label, current, longest, longestEnd };
+}
+
+// --------------------------------------------------------------- correlations
+
+export interface Correlation {
+  x: string;
+  y: string;
+  lag: number;
+  title: string;
+  r: number | null;
+  n: number;
+  slope: number | null;
+  strength: "none" | "weak" | "moderate" | "strong" | "insufficient";
+}
+
+export const CORRELATION_PAIRS: { x: string; y: string; lag: number; title: string }[] = [
+  { x: "strain", y: "recovery", lag: 1, title: "Strain → next-day recovery" },
+  { x: "strain", y: "hrv_rmssd", lag: 1, title: "Strain → next-night HRV" },
+  { x: "sleep_asleep_min", y: "recovery", lag: 0, title: "Time asleep → recovery" },
+  { x: "sleep_asleep_min", y: "hrv_rmssd", lag: 0, title: "Time asleep → HRV" },
+  { x: "sleep_bedtime_min", y: "sleep_score", lag: 0, title: "Later bedtime → sleep score" },
+  { x: "steps", y: "sleep_score", lag: 1, title: "Steps → that night's sleep score" },
+  { x: "azm_total", y: "sleep_deep_min", lag: 1, title: "Active Zone Minutes → deep sleep" },
+  { x: "stress", y: "sleep_score", lag: 1, title: "Stress → that night's sleep score" },
+  { x: "sleep_asleep_min", y: "stress", lag: 0, title: "Time asleep → same-day stress" },
+  { x: "azm_total", y: "rhr", lag: 1, title: "Active Zone Minutes → next resting HR" },
+];
+
+export function pearson(xs: number[], ys: number[]): number | null {
+  if (xs.length < 3) return null;
+  const mx = mean(xs)!, my = mean(ys)!;
+  let sxx = 0, syy = 0, sxy = 0;
+  for (let i = 0; i < xs.length; i++) {
+    sxx += (xs[i] - mx) ** 2;
+    syy += (ys[i] - my) ** 2;
+    sxy += (xs[i] - mx) * (ys[i] - my);
+  }
+  if (sxx === 0 || syy === 0) return null;
+  return sxy / Math.sqrt(sxx * syy);
+}
+
+function strengthOf(r: number | null, n: number): Correlation["strength"] {
+  if (r === null || n < 14) return "insufficient";
+  const a = Math.abs(r);
+  if (a < 0.1) return "none";
+  if (a < 0.3) return "weak";
+  if (a < 0.5) return "moderate";
+  return "strong";
+}
+
+/** Pairs x on day D−lag with y on day D over the last `windowDays` days. */
+export function correlations(days: DayRow[], today: Ymd, windowDays = 180): Correlation[] {
+  const byDate = new Map(days.map((d) => [d.date, d]));
+  const start = addDays(today, -(windowDays - 1));
+  return CORRELATION_PAIRS.map((pair) => {
+    const dx = METRIC_BY_KEY.get(pair.x)!, dy = METRIC_BY_KEY.get(pair.y)!;
+    const xs: number[] = [], ys: number[] = [];
+    for (let d = start; d <= today; d = addDays(d, 1)) {
+      const xd = addDays(d, -pair.lag);
+      if (dx.agg === "sum" && xd >= today) continue;
+      if (dy.agg === "sum" && d >= today) continue;
+      const xr = byDate.get(xd), yr = byDate.get(d);
+      if (!xr || !yr) continue;
+      const xv = dx.get(xr), yv = dy.get(yr);
+      if (xv === null || yv === null) continue;
+      xs.push(xv);
+      ys.push(yv);
+    }
+    const r = pearson(xs, ys);
+    let slope: number | null = null;
+    if (r !== null) {
+      const sx = stdDev(xs), sy = stdDev(ys);
+      if (sx && sy) slope = (r * sy) / sx;
+    }
+    return { ...pair, r: round(r, 2), n: xs.length, slope: round(slope, 3), strength: strengthOf(r, xs.length) };
+  });
+}
+
+// ------------------------------------------------------------------- insights
+
+export interface Insight {
+  id: string;
+  title: string;
+  body: string;
+  tone: "positive" | "negative" | "neutral";
+  metric?: string;
+}
+
+function pctChange(a: number | null, b: number | null): number | null {
+  return a !== null && b !== null && b !== 0 ? ((a - b) / Math.abs(b)) * 100 : null;
+}
+
+function windowMean(def: MetricDef, days: DayRow[], from: Ymd, toExclusive: Ymd): number | null {
+  const vals = days.filter((d) => d.date >= from && d.date < toExclusive).map(def.get).filter((v): v is number => v !== null);
+  return vals.length >= 3 ? mean(vals) : null;
+}
+
+function fmtDuration(min: number): string {
+  const h = Math.floor(Math.abs(min) / 60), m = Math.round(Math.abs(min) % 60);
+  return h ? `${h}h ${m}m` : `${m}m`;
+}
+
+export function insights(
+  days: DayRow[],
+  today: Ymd,
+  settings: { sleep_need_min: number; step_goal: number },
+  corr: Correlation[],
+): Insight[] {
+  const out: Insight[] = [];
+  const end = addDays(today, 1);
+  const yesterdayEnd = today;
+
+  const compare = (key: string, label: string, sumType: boolean) => {
+    const def = METRIC_BY_KEY.get(key)!;
+    const stop = sumType ? yesterdayEnd : end;
+    const w7 = windowMean(def, days, addDays(stop, -7), stop);
+    const w30 = windowMean(def, days, addDays(stop, -30), stop);
+    const ch = pctChange(w7, w30);
+    if (ch === null || Math.abs(ch) < 3) return;
+    const good = def.better === null ? null : (def.better === "higher") === ch > 0;
+    out.push({
+      id: `trend_${key}`,
+      title: `${label} ${ch > 0 ? "up" : "down"} ${Math.abs(ch).toFixed(0)}%`,
+      body: `Your 7-day average ${label.toLowerCase()} is ${round(w7, def.decimals)}${def.unit ? " " + def.unit : ""}, versus ${round(w30, def.decimals)}${def.unit ? " " + def.unit : ""} over 30 days.`,
+      tone: good === null ? "neutral" : good ? "positive" : "negative",
+      metric: key,
+    });
+  };
+  compare("hrv_rmssd", "HRV", false);
+  compare("rhr", "Resting heart rate", false);
+  compare("recovery", "Recovery", false);
+  compare("steps", "Steps", true);
+
+  // Sleep debt over the last 7 nights.
+  const sleepDef = METRIC_BY_KEY.get("sleep_asleep_min")!;
+  let debt = 0, nights = 0;
+  for (let d = addDays(today, -6); d <= today; d = addDays(d, 1)) {
+    const row = days.find((x) => x.date === d);
+    const v = row ? sleepDef.get(row) : null;
+    if (v === null) continue;
+    nights++;
+    debt += Math.max(0, settings.sleep_need_min - v);
+  }
+  if (nights >= 3) {
+    out.push({
+      id: "sleep_debt",
+      title: debt < 30 ? "Sleep need met" : `Sleep debt ${fmtDuration(debt)}`,
+      body: `Over the last ${nights} tracked nights you were ${fmtDuration(debt)} short of your ${fmtDuration(settings.sleep_need_min)} sleep need in total.`,
+      tone: debt < 30 ? "positive" : debt > 180 ? "negative" : "neutral",
+      metric: "sleep_asleep_min",
+    });
+  }
+
+  // Best weekday for sleep score over 90 days.
+  const ss = metricStats(METRIC_BY_KEY.get("sleep_score")!, days, today);
+  const wd = ss.weekday.map((v, i) => ({ v, i })).filter((x) => x.v !== null) as { v: number; i: number }[];
+  if (wd.length >= 5) {
+    const names = ["Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays", "Sundays"];
+    const best = wd.reduce((a, b) => (b.v > a.v ? b : a));
+    const worst = wd.reduce((a, b) => (b.v < a.v ? b : a));
+    if (best.v - worst.v >= 5) {
+      out.push({
+        id: "sleep_weekday",
+        title: `You sleep best on ${names[best.i].replace(/s$/, "")} nights`,
+        body: `Average sleep score: ${names[best.i]} ${best.v.toFixed(0)}, ${names[worst.i]} ${worst.v.toFixed(0)} (last 90 days, by wake-up day).`,
+        tone: "neutral",
+        metric: "sleep_score",
+      });
+    }
+  }
+
+  const strongest = corr
+    .filter((c) => c.strength === "moderate" || c.strength === "strong")
+    .sort((a, b) => Math.abs(b.r ?? 0) - Math.abs(a.r ?? 0))[0];
+  if (strongest) {
+    out.push({
+      id: `corr_${strongest.x}_${strongest.y}`,
+      title: strongest.title,
+      body: `${strongest.strength === "strong" ? "Strong" : "Moderate"} ${strongest.r! > 0 ? "positive" : "negative"} link (r = ${strongest.r}, ${strongest.n} days). Correlation, not proof of cause.`,
+      tone: "neutral",
+      metric: strongest.y,
+    });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------- build
+
+export interface StatsPayload {
+  generatedAt: string;
+  today: Ymd;
+  firstDate: Ymd | null;
+  dayCount: number;
+  metrics: Record<string, MetricStats>;
+  streaks: Streak[];
+  correlations: Correlation[];
+  insights: Insight[];
+}
+
+export function buildStats(
+  daysUnsorted: DayRow[],
+  today: Ymd,
+  settings: { sleep_need_min: number; step_goal: number },
+): StatsPayload {
+  const days = [...daysUnsorted].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  const metrics: Record<string, MetricStats> = {};
+  for (const def of METRICS) metrics[def.key] = metricStats(def, days, today);
+  const azm = METRIC_BY_KEY.get("azm_total")!;
+  const asleep = METRIC_BY_KEY.get("sleep_asleep_min")!;
+  const streaks = [
+    streak("steps_goal", `${settings.step_goal.toLocaleString("en-US")}+ steps`, days, today,
+      (d) => (typeof d.steps === "number" ? d.steps >= settings.step_goal : null), false),
+    streak("sleep_7h", "7h+ sleep", days, today, (d) => {
+      const v = asleep.get(d);
+      return v === null ? null : v >= 420;
+    }, true),
+    streak("azm_22", "22+ Active Zone Minutes", days, today, (d) => {
+      const v = azm.get(d);
+      return v === null ? null : v >= 22;
+    }, false),
+    streak("recovery_green", "Green recovery (67+)", days, today,
+      (d) => (typeof d.recovery === "number" ? d.recovery >= 67 : null), true),
+  ];
+  const corr = correlations(days, today);
+  return {
+    generatedAt: new Date().toISOString(),
+    today,
+    firstDate: days.length ? days[0].date : null,
+    dayCount: days.length,
+    metrics,
+    streaks,
+    correlations: corr,
+    insights: insights(days, today, settings, corr),
+  };
+}
