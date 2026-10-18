@@ -49,6 +49,30 @@ enum Format {
         return f
     }()
 
+    private static let weekdayLetterFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.timeZone = utc
+        f.dateFormat = "EEEEE"
+        return f
+    }()
+
+    private static let dayNumberFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.timeZone = utc
+        f.dateFormat = "d"
+        return f
+    }()
+
+    static func weekdayLetter(_ ymd: String) -> String {
+        guard let d = date(ymd) else { return "" }
+        return weekdayLetterFormatter.string(from: d)
+    }
+
+    static func dayNumber(_ ymd: String) -> String {
+        guard let d = date(ymd) else { return "" }
+        return dayNumberFormatter.string(from: d)
+    }
+
     static func prettyDay(_ ymd: String, today: String) -> String {
         if ymd == today { return "Today" }
         if ymd == addDays(today, -1) { return "Yesterday" }

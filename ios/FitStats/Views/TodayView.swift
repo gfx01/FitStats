@@ -42,6 +42,7 @@ struct TodayView: View {
             ScrollView {
                 VStack(spacing: 14) {
                     header
+                    WeekStrip(today: model.today, selected: $selected) { model.daysByDate[$0]?.double("recovery") }
                     banners
                     if let day {
                         scoresCard(day)
@@ -301,6 +302,49 @@ struct TodayView: View {
             .disabled(model.isSyncing)
         }
         .padding(.top, 4)
+    }
+}
+
+/// Last seven days with a small recovery ring each; tapping one selects it.
+struct WeekStrip: View {
+    let today: String
+    @Binding var selected: String?
+    let recoveryFor: (String) -> Double?
+
+    var body: some View {
+        let current = selected ?? today
+        HStack(spacing: 4) {
+            ForEach((0..<7).reversed(), id: \.self) { offset in
+                let date = Format.addDays(today, -offset)
+                let recovery = recoveryFor(date)
+                Button {
+                    selected = date == today ? nil : date
+                } label: {
+                    VStack(spacing: 5) {
+                        Text(Format.weekdayLetter(date))
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(Theme.tertiary)
+                        ZStack {
+                            Circle().stroke(Theme.track, lineWidth: 3)
+                            Circle()
+                                .trim(from: 0, to: min(1, (recovery ?? 0) / 100))
+                                .stroke(Theme.recoveryColor(recovery), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                                .rotationEffect(.degrees(-90))
+                            Text(Format.dayNumber(date)).font(.caption.weight(.semibold))
+                        }
+                        .frame(width: 32, height: 32)
+                    }
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(date == current ? Color.white.opacity(0.09) : Color.clear)
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("day-\(date)")
+            }
+        }
     }
 }
 

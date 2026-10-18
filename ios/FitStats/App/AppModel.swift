@@ -129,10 +129,25 @@ final class AppModel: ObservableObject {
             let (s, sData) = try await api.fetch(StatusResponse.self, "status")
             status = s
             DiskCache.save(sData, as: "status.json")
-            let from = Format.addDays(s.today, -min(max(s.settings.backfillDays, 90), 1825))
+            // Full history at most every 12 h (or on pull-to-refresh); otherwise only recent days.
+            let lastFull = UserDefaults.standard.double(forKey: "lastFullDaysFetch")
+            let needFull = force || days.isEmpty || Date().timeIntervalSince1970 - lastFull > 12 * 3600
+            let from = needFull
+                ? Format.addDays(s.today, -min(max(s.settings.backfillDays, 90), 1825))
+                : Format.addDays(s.today, -10)
             let (d, dData) = try await api.fetch(DaysResponse.self, "days", query: ["from": from, "to": s.today])
-            days = d.days
-            DiskCache.save(dData, as: "days.json")
+            if needFull {
+                days = d.days
+                DiskCache.save(dData, as: "days.json")
+                UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "lastFullDaysFetch")
+            } else {
+                var merged = days.filter { $0.date < from }
+                merged.append(contentsOf: d.days)
+                days = merged
+                if let all = try? JSONEncoder().encode(DaysResponse(from: merged.first?.date ?? from, to: s.today, today: s.today, days: merged)) {
+                    DiskCache.save(all, as: "days.json")
+                }
+            }
             if let result = try? await api.fetch(StatsPayload.self, "stats") {
                 stats = result.0
                 DiskCache.save(result.1, as: "stats.json")
@@ -205,6 +220,7 @@ final class AppModel: ObservableObject {
     func signOutLocally() {
         KeyStore.delete()
         DiskCache.clear()
+        UserDefaults.standard.removeObject(forKey: "lastFullDaysFetch")
         appKey = nil
         status = nil
         days = []
