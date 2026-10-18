@@ -62,6 +62,8 @@ test("full sync: backfill, scores and stats", async () => {
   assert.equal(typeof dv.fitstats, "number");
   assert.equal(typeof dv.wearables, "number");
   assert.deepEqual(Object.keys(dv.by_source as Row), ["FITBIT|PASSIVELY_MEASURED|Fitbit Air"]);
+  // Band only: every merge is the band's count.
+  for (const v of Object.values(dv.merges as Row)) assert.equal(v, minuteSum);
 
   // The run log keeps what each request returned ([points, dates] for daily types).
   const counts = log.ranges.find((r) => r.counts)!.counts!;
