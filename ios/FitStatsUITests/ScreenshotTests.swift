@@ -145,4 +145,43 @@ final class ScreenshotTests: XCTestCase {
             XCTFail("no workout in the last 7 days of fixtures")
         }
     }
+
+    /// Every Home card (FITSTATS_HOME_CARDS=all), then the Home editor opened by holding a card.
+    func test03HomeCards() {
+        let fixtures = ProcessInfo.processInfo.environment["FITSTATS_FIXTURES"] ?? ""
+        XCTAssertFalse(fixtures.isEmpty, "FITSTATS_FIXTURES is not set")
+        let app = XCUIApplication()
+        app.launchEnvironment["FITSTATS_FIXTURES"] = fixtures
+        app.launchEnvironment["FITSTATS_HOME_CARDS"] = "all"
+        app.launch()
+        XCTAssertTrue(app.buttons["ring-recovery"].waitForExistence(timeout: 15), "Today screen did not load")
+
+        shot("30-home-all")
+        for index in 1...7 {
+            app.swipeUp()
+            shot("3\(index)-home-all-\(index + 1)")
+        }
+        for _ in 0..<10 { app.swipeDown() }
+
+        let card = app.descendants(matching: .any).matching(identifier: "home-card-scores").firstMatch
+        guard card.waitForExistence(timeout: 5) else {
+            XCTFail("missing home-card-scores")
+            return
+        }
+        card.press(forDuration: 0.8)
+        let done = app.buttons["home-done"]
+        XCTAssertTrue(done.waitForExistence(timeout: 5), "Home editor did not open")
+        shot("38-home-editor")
+        let list = app.collectionViews.containing(.any, identifier: "home-shown-scores").firstMatch
+        if list.exists { list.swipeUp() } else { app.swipeUp() }
+        // Every card is on Home in this mode, so "More cards" is empty. Reset (kept in memory
+        // only in this mode, nothing is stored) fills it with the add rows.
+        let reset = app.buttons["home-reset"]
+        if reset.waitForExistence(timeout: 2), reset.isHittable {
+            reset.tap()
+            _ = app.buttons["home-add-lastNight"].waitForExistence(timeout: 2)
+        }
+        shot("39-home-editor-2")
+        if done.exists { done.tap() }
+    }
 }

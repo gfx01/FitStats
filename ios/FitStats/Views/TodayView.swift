@@ -31,7 +31,14 @@ struct DetailDestination: View {
 
 struct TodayView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var coach: CoachStore
     @State private var selected: String?
+    /// The cards on Home, in order (Views/Home/HomeLayout.swift).
+    @AppStorage(HomeLayout.storageKey) private var storedCards = ""
+    /// Every card while CI takes screenshots (FITSTATS_HOME_CARDS=all); edits then stay in memory.
+    @State private var fixtureCards: [HomeCard]? = HomeLayout.fixtureCards
+    @State private var editingHome = false
+    @State private var editHaptic = 0
 
     private var date: String { selected ?? model.today }
     private var day: DayRecord? { model.daysByDate[date] }
@@ -45,15 +52,7 @@ struct TodayView: View {
                 VStack(spacing: 14) {
                     WeekStrip(today: model.today, selected: $selected) { model.daysByDate[$0]?.double("recovery") }
                     banners
-                    if let day {
-                        scoresCard(day)
-                        if date == model.today { SleepPlanCard(plan: model.sleepPlan) }
-                        JournalCard(date: date)
-                        vitalsCard(day)
-                        activityCard(day)
-                        heartCard(day)
-                        workoutsCard
-                    } else {
+                    if day == nil {
                         Card {
                             EmptyStateView(
                                 icon: "clock.arrow.circlepath",
@@ -63,11 +62,24 @@ struct TodayView: View {
                                     : "Nothing was recorded on \(Format.longDay(date))."
                             )
                         }
+                    } else if visibleCards.isEmpty {
+                        Card {
+                            EmptyStateView(
+                                icon: "square.grid.2x2",
+                                title: "Nothing on Home for this day",
+                                message: "Your Home cards only show on today. Tap Edit Home screen to add cards for past days."
+                            )
+                        }
                     }
+                    ForEach(visibleCards) { card in
+                        homeCard(card, day: day)
+                    }
+                    editHomeButton
                     footer
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 32)
+                .sensoryFeedback(.impact(weight: .medium), trigger: editHaptic)
             }
             .refreshable {
                 await model.pullToRefresh()
@@ -78,7 +90,124 @@ struct TodayView: View {
             .navigationDestination(for: DetailRoute.self) { DetailDestination(route: $0) }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { header }
+            .sheet(isPresented: $editingHome) {
+                HomeEditorView(cards: homeLayout)
+                    .environmentObject(model)
+                    .environmentObject(coach)
+            }
         }
+    }
+
+    // MARK: home cards
+
+    private var homeCards: [HomeCard] {
+        fixtureCards ?? HomeLayout.decode(storedCards)
+    }
+
+    /// The Home cards Today draws for this day, so a skipped card never leaves an empty
+    /// container (with its gesture) behind.
+    private var visibleCards: [HomeCard] {
+        homeCards.filter { card in isVisible(card) }
+    }
+
+    /// Cards built from this day's record. The other cards take only the date and handle a
+    /// missing day themselves.
+    private static let dayRecordCards: Set<HomeCard> = [.scores, .tonight, .journal, .vitals, .activity, .heartRate, .workouts]
+
+    /// Today-only cards are skipped on past days. A day without a record skips the cards that
+    /// need it, and while the history is still syncing (no days at all) only the empty state
+    /// shows.
+    private func isVisible(_ card: HomeCard) -> Bool {
+        if card.todayOnly && date != model.today { return false }
+        if day == nil {
+            if model.days.isEmpty { return false }
+            if Self.dayRecordCards.contains(card) { return false }
+        }
+        return true
+    }
+
+    private var homeLayout: Binding<[HomeCard]> {
+        Binding(
+            get: { fixtureCards ?? HomeLayout.decode(storedCards) },
+            set: { cards in
+                if fixtureCards != nil {
+                    fixtureCards = cards
+                } else {
+                    storedCards = HomeLayout.encode(cards)
+                }
+            }
+        )
+    }
+
+    /// One card in its container: holding it for a moment opens the Home editor. The long
+    /// press is high priority so it wins over the links inside, but it fails as soon as the
+    /// finger lifts or moves, so taps still reach those links and the page still scrolls.
+    private func homeCard(_ card: HomeCard, day: DayRecord?) -> some View {
+        homeCardContent(card, day: day)
+            .highPriorityGesture(
+                LongPressGesture(minimumDuration: 0.45).onEnded { _ in
+                    editHaptic += 1
+                    editingHome = true
+                }
+            )
+            .accessibilityElement(children: .contain)
+            .accessibilityAction(named: Text("Edit Home screen")) { editingHome = true }
+            .accessibilityIdentifier("home-card-\(card.rawValue)")
+    }
+
+    /// `visibleCards` already skips today-only cards on past days and the day-record cards
+    /// when there is no record; the checks here only keep each case safe on its own.
+    @ViewBuilder private func homeCardContent(_ card: HomeCard, day: DayRecord?) -> some View {
+        switch card {
+        case .scores:
+            if let day { scoresCard(day) }
+        case .tonight:
+            if day != nil && date == model.today { SleepPlanCard(plan: model.sleepPlan) }
+        case .journal:
+            if day != nil { JournalCard(date: date) }
+        case .vitals:
+            if let day { vitalsCard(day) }
+        case .activity:
+            if let day { activityCard(day) }
+        case .heartRate:
+            if let day { heartCard(day) }
+        case .workouts:
+            if day != nil { workoutsCard }
+        case .lastNight:
+            LastNightCard(date: date)
+        case .recoveryTrend:
+            RecoveryTrendCard(date: date)
+        case .hrvTrend:
+            HRVTrendCard(date: date)
+        case .restingHrTrend:
+            RestingHRTrendCard(date: date)
+        case .stressDay:
+            StressDayCard(date: date)
+        case .thisWeek:
+            ThisWeekCard(date: date)
+        case .weeklyZoneMinutes:
+            WeeklyZoneMinutesCard(date: date)
+        case .streaks:
+            StreaksCard(date: date)
+        case .topInsight:
+            TopInsightCard(date: date)
+        case .coachBrief:
+            if date == model.today { CoachBriefCard(date: date) }
+        case .body:
+            BodyCard(date: date)
+        }
+    }
+
+    private var editHomeButton: some View {
+        Button {
+            editingHome = true
+        } label: {
+            Label("Edit Home screen", systemImage: "slider.horizontal.3")
+                .font(.caption.weight(.semibold))
+        }
+        .accessibilityIdentifier("home-edit")
+        .frame(maxWidth: .infinity)
+        .padding(.top, 4)
     }
 
     // MARK: header & banners
