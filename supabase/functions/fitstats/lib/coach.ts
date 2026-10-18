@@ -9,7 +9,7 @@ import { sleepPlan } from "./planner.ts";
 import type { DayRow } from "./scores.ts";
 import { fmtValue, lowerFirst, METRIC_BY_KEY, METRICS, type MetricDef } from "./stats.ts";
 import { type Account, clockFor, loadAccount, loadSettings, type UserSettings } from "./sync.ts";
-import { type Json, maxHeartRate } from "./transform.ts";
+import { fallAsleepMinutes, type Json, maxHeartRate } from "./transform.ts";
 import { addDays, daysBetween, round, type Ymd } from "./util.ts";
 
 type Row = Record<string, unknown>;
@@ -491,7 +491,8 @@ export async function runTool(name: string, input: Json, ctx: Ctx, stats: Json |
         sleep_sessions: sleeps.map((s) => ({
           main: s.is_main, nap: s.is_nap, start: localTime(s.start_time, ctx.tz), end: localTime(s.end_time, ctx.tz),
           asleep_min: s.minutes_asleep, awake_min: s.minutes_awake, deep_min: s.deep_min, light_min: s.light_min,
-          rem_min: s.rem_min, awakenings: s.awake_count, fell_asleep_after_min: s.minutes_to_fall_asleep,
+          rem_min: s.rem_min, awakenings: s.awake_count,
+          fell_asleep_after_min: fallAsleepMinutes(s),
         })),
         workouts: workouts.map((w) => workoutSummary(w, ctx.tz)),
         hourly_heart_rate: hourlyHr,

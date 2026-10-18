@@ -386,6 +386,22 @@ export function minutesFromMidnight(epochMsValue: number, offsetSeconds: number,
   return Math.round((local - anchorMs) / 60000);
 }
 
+/**
+ * Minutes from getting into bed to the first sleep stage. Google reports 0 for
+ * automatically detected sleep (Fitbit does not measure it), so when it does,
+ * the awake (or restless) stretch at the start of the session is used instead.
+ * Null when there are no stages to measure from.
+ */
+export function fallAsleepMinutes(s: { start_time?: unknown; minutes_to_fall_asleep?: unknown; stages?: unknown }): number | null {
+  if (typeof s.minutes_to_fall_asleep === "number" && s.minutes_to_fall_asleep > 0) return s.minutes_to_fall_asleep;
+  const startMs = typeof s.start_time === "string" ? Date.parse(s.start_time) : NaN;
+  if (!Number.isFinite(startMs) || !Array.isArray(s.stages)) return null;
+  const first = (s.stages as unknown[]).find((st): st is [number, number, number] =>
+    Array.isArray(st) && typeof st[0] === "number" && typeof st[1] === "number" && st[0] !== STAGE_CODE.AWAKE && st[0] !== STAGE_CODE.RESTLESS);
+  if (!first) return null;
+  return Math.max(0, Math.round((first[1] * 1000 - startMs) / 60000));
+}
+
 /** fs_days sleep columns for one date from all sessions that ended on it. */
 export function sleepDayPatch(date: Ymd, sessions: SleepRow[], clock: LocalClock): DayPatch {
   const ofDay = sessions.filter((s) => s.date === date);
@@ -418,7 +434,7 @@ export function sleepDayPatch(date: Ymd, sessions: SleepRow[], clock: LocalClock
     sleep_deep_min: main.deep_min,
     sleep_light_min: main.light_min,
     sleep_rem_min: main.rem_min,
-    sleep_latency_min: main.minutes_to_fall_asleep,
+    sleep_latency_min: fallAsleepMinutes(main),
     sleep_awakenings: main.awake_count,
     sleep_efficiency: asleep !== null && inBed > 0 ? Math.min(1, asleep / inBed) : null,
     sleep_bedtime_min: minutesFromMidnight(startMs, startOff, date),

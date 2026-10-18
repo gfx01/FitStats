@@ -14,6 +14,7 @@ import {
 import {
   dailyPointsToPatches,
   exercisePointToRow,
+  fallAsleepMinutes,
   maxHeartRate,
   minutesBetween,
   placeMinuteRollups,
@@ -456,4 +457,15 @@ test("sleep plan: need from strain, debt and naps; bedtime from the usual wake t
   assert.equal(few.efficiency, 0.9);
   assert.equal(few.wakeMin, null);
   assert.equal(few.bedtimeMin, null);
+});
+
+test("sleep: time to fall asleep from the stages when Google reports 0", () => {
+  const start = "2026-10-17T21:30:00.000Z";
+  const t = Date.parse(start) / 1000;
+  const stages = [[0, t, t + 420], [1, t + 420, t + 1800], [0, t + 1800, t + 1900], [2, t + 1900, t + 3000]];
+  assert.equal(fallAsleepMinutes({ start_time: start, minutes_to_fall_asleep: 0, stages }), 7);
+  assert.equal(fallAsleepMinutes({ start_time: start, minutes_to_fall_asleep: 12, stages }), 12, "a real value wins");
+  assert.equal(fallAsleepMinutes({ start_time: start, minutes_to_fall_asleep: 0, stages: [[1, t, t + 600]] }), 0, "asleep from the start");
+  assert.equal(fallAsleepMinutes({ start_time: start, minutes_to_fall_asleep: 0, stages: [] }), null, "nothing to measure");
+  assert.equal(fallAsleepMinutes({ start_time: start, minutes_to_fall_asleep: 0, stages: [[5, t, t + 300], [4, t + 300, t + 900]] }), 5, "classic: restless counts as not yet asleep");
 });

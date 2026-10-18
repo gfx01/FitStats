@@ -147,7 +147,8 @@ struct SleepDetailView: View {
                           emptyText: "No main sleep recorded for this night.")
             Card {
                 SectionHeader(title: "Night details")
-                KeyValueRow(key: "Time to fall asleep", value: Format.duration(day?.double("sleep_latency_min")))
+                // Estimated from the awake stretch before the first sleep stage (Fitbit reports 0).
+                KeyValueRow(key: "Time to fall asleep", value: day?.double("sleep_latency_min").map { "≈ \(Format.duration($0))" } ?? "–")
                 KeyValueRow(key: "Awakenings", value: Format.number(day?.double("sleep_awakenings")))
                 KeyValueRow(key: "Awake time", value: Format.duration(day?.double("sleep_awake_min")))
                 KeyValueRow(key: "Naps", value: Format.duration(day?.double("nap_min")))

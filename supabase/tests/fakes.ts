@@ -253,7 +253,7 @@ function sleepFor(date: string): Row | null {
         minutesAsleep: String(inPeriod - awake),
         minutesInSleepPeriod: String(inPeriod),
         minutesAwake: String(awake),
-        minutesToFallAsleep: String(Math.round((Date.parse(stages[0].endTime) - start) / 60000)),
+        minutesToFallAsleep: "0", // what Google sends for automatically detected sleep
         stagesSummary: ["DEEP", "REM", "LIGHT", "AWAKE"].map((type) => ({
           type, minutes: String(Math.round(minutes[type] ?? 0)), count: String(counts[type] ?? 0),
         })),
