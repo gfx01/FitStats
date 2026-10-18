@@ -39,6 +39,7 @@ import {
   computeWorkoutLoad,
   coolDownMinutes,
   despike,
+  sedentaryMask,
   strainTarget,
   stressBaseline,
 } from "../functions/fitstats/lib/scores.ts";
@@ -361,6 +362,15 @@ test("scores: stress is relative to your usual still heart rate, and only sedent
   const withoutMask = computeStress(active, steps, 55, 197, none, 0.14);
   assert.equal(withMask.minutes, 420);
   assert.ok(withMask.stress! < withoutMask.stress!, `${withMask.stress} < ${withoutMask.stress}`);
+
+  // Google's real format: each sedentary period's whole duration at the minute it starts.
+  const periods = new Array(1440).fill(null);
+  periods[480] = 420 * 60; // 08:00 for 7 hours
+  const fromPeriods = computeStress(active, steps, 55, 197, none, 0.14, periods);
+  assert.equal(fromPeriods.minutes, 420, "the period covers 08:00-15:00, not just its first minute");
+  assert.equal(fromPeriods.stress, withMask.stress);
+  assert.deepEqual(sedentaryMask([null, 90, null, null, 50, 30])!.slice(0, 6), [false, true, true, false, true, false]);
+  assert.equal(sedentaryMask(new Array(1440).fill(null)), null);
 
   // Baseline: the median of the previous 30 days' still levels, fixed until there are 7.
   const still = new Map<string, number>();

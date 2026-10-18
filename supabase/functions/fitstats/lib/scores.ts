@@ -145,7 +145,7 @@ export const STRESS_SPAN_HRR = 0.15;
 export const STRESS_BASELINE_HRR = 0.14;
 export const STRESS_BASELINE_DAYS = 30;
 export const STRESS_BASELINE_MIN_DAYS = 7;
-/** Seconds of a minute Fitbit must count as sedentary for the minute to be still. */
+/** Seconds of a minute Fitbit must count as sedentary for the minute to be still (per-minute data). */
 export const SEDENTARY_MIN_S = 45;
 /** Workouts and the recovery after them are left out of stress for 30–180 minutes after the end. */
 export const COOL_DOWN_MIN = 30;
@@ -200,15 +200,25 @@ export function coolDownMinutes(
   return COOL_DOWN_MAX;
 }
 
-/** Minute sedentary seconds are usable when the day has some and none is over a minute. */
-function sedentaryUsable(sedentary: (number | null)[] | null): boolean {
-  let any = false;
-  for (const v of sedentary ?? []) {
-    if (v === null || v === undefined) continue;
-    if (v > 60) return false;
-    any = true;
+/**
+ * The minutes Fitbit counted as sedentary, or null without any. Google's 60 s rollUp puts
+ * each sedentary period's whole duration in the minute it starts (periods of 10 minutes or
+ * more, adding up to the day's sedentary time), so a value over 60 s covers the minutes
+ * after it too; a value up to 60 s is that minute's own seconds.
+ */
+export function sedentaryMask(sedentary: (number | null)[] | null): boolean[] | null {
+  if (!sedentary?.some((v) => typeof v === "number" && v > 0)) return null;
+  const mask = new Array(MINUTES_PER_DAY).fill(false);
+  for (let m = 0; m < MINUTES_PER_DAY; m++) {
+    const v = sedentary[m];
+    if (typeof v !== "number" || v <= 0) continue;
+    if (v <= 60) {
+      if (v >= SEDENTARY_MIN_S) mask[m] = true;
+      continue;
+    }
+    for (let k = m; k < Math.min(MINUTES_PER_DAY, m + Math.round(v / 60)); k++) mask[k] = true;
   }
-  return any;
+  return mask;
 }
 
 /**
@@ -233,7 +243,7 @@ export function computeStress(
   const hourlyCount = new Array(24).fill(0);
   const reserve = maxHr - rhr;
   const hasSteps = steps.some((s) => s !== null && s !== undefined);
-  const useSedentary = sedentaryUsable(sedentary);
+  const still = sedentaryMask(sedentary);
   const hrrs: number[] = [];
   let sum = 0;
   if (reserve >= 20 && hasSteps) {
@@ -248,7 +258,7 @@ export function computeStress(
         }
       }
       if (moving) continue;
-      if (useSedentary && (sedentary![m] ?? 0) < SEDENTARY_MIN_S) continue;
+      if (still && !still[m]) continue;
       const hrr = (bpm - rhr) / reserve;
       const s = clamp((hrr - baselineHrr) / STRESS_SPAN_HRR, 0, 1);
       sum += s;

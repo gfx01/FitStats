@@ -1,8 +1,8 @@
 -- Heart rate: stress stillness, recovery and baseline, and the max heart rate in use
 -- (lib/sync.ts, lib/scores.ts computeStress).
 
--- sedentary: seconds of each local minute Fitbit counted as sedentary (sedentary-period
--- rolled up in 60 s windows). Stress counts a minute only when it has 45 s or more,
+-- sedentary: sedentary-period rolled up in 60 s windows; Google puts each period's whole duration
+-- at the minute it starts (lib/scores.ts sedentaryMask). Stress counts only sedentary minutes
 -- on days that have this data.
 alter table public.fs_intraday
   add column if not exists sedentary smallint[];

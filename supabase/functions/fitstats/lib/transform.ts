@@ -591,7 +591,7 @@ export function exercisePointToRow(p: Json, clock: LocalClock): ExerciseRow | nu
 export interface IntradayDay {
   hr: (number | null)[];
   steps: (number | null)[];
-  /** Seconds of each minute Fitbit counted as sedentary. */
+  /** Sedentary seconds by minute as Google's 60 s rollUp returns them: each period's whole duration at the minute it starts (scores.ts sedentaryMask). */
   sedentary: (number | null)[];
 }
 
