@@ -206,6 +206,12 @@ struct Exercise: Codable, Identifiable {
     let recordingMethod: String?
     let sourcePlatform: String?
     let sourceDevice: String?
+    /// Heart-rate recovery: the mean of the last 2 minute HR values in the window (after spikes are
+    /// smoothed), and how far heart rate fell 1 and 2 minutes after it. Nil unless the workout ended
+    /// hard and heart rate was recorded for both minutes after it, and on rows from older servers.
+    let endHr: Double?
+    let hrr1min: Double?
+    let hrr2min: Double?
 
     enum CodingKeys: String, CodingKey {
         case id, date, name, calories, steps, azm, trimp, strain
@@ -230,6 +236,9 @@ struct Exercise: Codable, Identifiable {
         case recordingMethod = "recording_method"
         case sourcePlatform = "source_platform"
         case sourceDevice = "source_device"
+        case endHr = "end_hr"
+        case hrr1min = "hrr_1min"
+        case hrr2min = "hrr_2min"
     }
 }
 
@@ -274,6 +283,84 @@ struct StatsPayload: Codable {
     let insights: [Insight]
     /// Missing in stats cached by older servers.
     let journal: [TagImpact]?
+    /// Fitness, fatigue and form from daily TRIMP. Missing in stats cached by older servers.
+    let load: TrainingLoad?
+    /// Sleep by bedtime window. Missing in stats cached by older servers.
+    let bedtime: BedtimeStats?
+    /// Workouts with a heart-rate recovery over the last 365 days, oldest first. Missing in stats
+    /// cached by older servers.
+    let hrr: [HrrPoint]?
+}
+
+/// Fitness and fatigue: exponentially weighted averages of daily TRIMP (fs_days.trimp).
+struct TrainingLoad: Codable {
+    /// From the first day with TRIMP through yesterday (today is still growing), at most the last
+    /// 180 days. The averages run over the whole history.
+    let series: [LoadPoint]
+    let latest: LoadPoint?
+    /// "calibrating", "fresh", "neutral", "productive" or "overreaching".
+    let status: String
+    /// The acute:chronic ratio is 1.5 or more.
+    let spike: Bool
+    /// Days in the series with TRIMP.
+    let days: Int
+}
+
+struct LoadPoint: Codable, Identifiable {
+    let date: String
+    /// Nil on a day without TRIMP, which counts as no load.
+    let trimp: Double?
+    /// Fitness: the 42-day average.
+    let ctl: Double
+    /// Fatigue: the 7-day average.
+    let atl: Double
+    /// Fitness minus fatigue.
+    let form: Double
+    /// Mean TRIMP of the last 7 days over the mean of the last 28. Nil unless 21 of those 28 days have TRIMP.
+    let acwr: Double?
+    var id: String { date }
+}
+
+/// Sleep after each bedtime window, over the last 180 nights with a sleep score.
+struct BedtimeStats: Codable {
+    let nights: Int
+    let buckets: [BedtimeBucket]
+    /// Nil when fewer than 2 windows have 3 or more nights.
+    let best: Best?
+
+    struct Best: Codable {
+        /// The label of the bucket with the highest mean sleep score.
+        let label: String
+        /// Its mean sleep score minus the mean of all other nights.
+        let diff: Double
+        /// Welch's t of 2 or more.
+        let clear: Bool
+    }
+}
+
+struct BedtimeBucket: Codable, Identifiable {
+    let label: String
+    /// In sleep_bedtime_min units (minutes from midnight of the wake day, negative = the evening
+    /// before). `from` is included and `to` excluded; nil is open-ended.
+    let from: Double?
+    let to: Double?
+    let nights: Int
+    /// Means, nil with fewer than 3 nights. Recovery is the next morning's.
+    let sleepScore: Double?
+    let asleepMin: Double?
+    let recovery: Double?
+    var id: String { label }
+}
+
+/// One workout's heart-rate recovery (fs_exercise.hrr_1min and friends).
+struct HrrPoint: Codable, Identifiable {
+    let id: String
+    let date: String
+    let exerciseType: String?
+    let name: String?
+    let hrr1: Double
+    let hrr2: Double?
+    let endHr: Double
 }
 
 struct TagImpact: Codable, Identifiable {

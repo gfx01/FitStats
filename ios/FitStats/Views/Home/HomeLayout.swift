@@ -23,6 +23,7 @@ enum HomeCard: String, CaseIterable, Identifiable, Codable {
     case topInsight
     case coachBrief
     case body
+    case trainingLoad
 
     var id: String { rawValue }
 
@@ -47,6 +48,7 @@ enum HomeCard: String, CaseIterable, Identifiable, Codable {
         case .topInsight: return "Insights"
         case .coachBrief: return "Coach briefing"
         case .body: return "Body"
+        case .trainingLoad: return "Training load"
         }
     }
 
@@ -71,6 +73,7 @@ enum HomeCard: String, CaseIterable, Identifiable, Codable {
         case .topInsight: return "Plain-language insights from your latest stats"
         case .coachBrief: return "Today's briefing from your coach"
         case .body: return "Weight and body fat"
+        case .trainingLoad: return "Fitness, fatigue and form from your training"
         }
     }
 
@@ -95,6 +98,7 @@ enum HomeCard: String, CaseIterable, Identifiable, Codable {
         case .topInsight: return "sparkles"
         case .coachBrief: return "text.bubble.fill"
         case .body: return "scalemass.fill"
+        case .trainingLoad: return "speedometer"
         }
     }
 

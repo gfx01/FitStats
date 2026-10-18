@@ -129,6 +129,50 @@ export function computeWorkoutLoad(hr: (number | null)[], rhr: number, maxHr: nu
   };
 }
 
+/** Heart-rate recovery needs a workout window this long (minutes), with heart rate in this share of its minutes, */
+export const HRR_MIN_WINDOW = 10;
+export const HRR_MIN_COVERAGE = 0.7;
+/** heart rate at the end at least this far up the heart-rate reserve (still working hard), */
+export const HRR_MIN_END_RESERVE = 0.5;
+/** and no other workout starting within this many minutes after the end. */
+export const HRR_CLEAR_MIN = 3;
+
+export interface WorkoutRecovery {
+  end_hr: number | null;
+  hrr_1min: number | null;
+  hrr_2min: number | null;
+}
+
+/**
+ * Heart-rate recovery after a workout. `hr` is the workout's minute window (as minutesBetween
+ * gives it), `after` the 2 minutes that follow it; spikes are removed from both together.
+ * end_hr is the mean of the window's last 2 minutes, hrr_1min / hrr_2min how far heart rate
+ * fell by the 1st / 2nd minute after. All null unless the window is 10+ minutes with heart
+ * rate in 70 % of them, both last minutes and both minutes after have heart rate, end_hr is
+ * at least halfway up the heart-rate reserve, and `clear` (no other workout starts within
+ * 3 minutes after the end). A fall of 0 or less at 1 minute is not a recovery but a recorded
+ * end before the real one (heart rate kept rising), so it is left out too.
+ */
+export function heartRateRecovery(
+  hr: (number | null)[],
+  after: (number | null)[],
+  rhr: number,
+  maxHr: number,
+  clear: boolean,
+): WorkoutRecovery {
+  const none = { end_hr: null, hrr_1min: null, hrr_2min: null };
+  const has = (v: number | null | undefined): v is number => typeof v === "number" && v > 0;
+  if (!clear || hr.length < HRR_MIN_WINDOW || after.length < 2) return none;
+  if (hr.filter(has).length < HRR_MIN_COVERAGE * hr.length) return none;
+  const all = despike([...hr, after[0], after[1]]);
+  const n = hr.length;
+  const a = all[n - 2], b = all[n - 1], first = all[n], second = all[n + 1];
+  if (!has(a) || !has(b) || !has(first) || !has(second)) return none;
+  const end = Math.round((a + b) / 2);
+  if (end < rhr + HRR_MIN_END_RESERVE * (maxHr - rhr) || end - first <= 0) return none;
+  return { end_hr: end, hrr_1min: end - first, hrr_2min: end - second };
+}
+
 /** Recommended strain band for a recovery score. */
 export function strainTarget(recovery: number | null): [number, number] | null {
   if (recovery === null) return null;

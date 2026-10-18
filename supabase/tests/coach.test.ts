@@ -124,6 +124,8 @@ test("tools: validation and data", async () => {
   const napSessions = (await coach.runTool("get_day", { date: NAP_MAIN_DAY }, ctx, null) as Row).sleep_sessions as Row[];
   assert.deepEqual(napSessions.map((s) => [s.main, s.nap]), [[true, false], [false, true]]);
   assert.deepEqual([napSessions[1].start, napSessions[1].awakenings, napSessions[1].awake_after_falling_asleep_min], ["17:13", 0, 0]);
+  const workouts = (await coach.runTool("get_workouts", { from: "2026-08-20", to: "2026-10-18" }, ctx, null) as Row).workouts as Row[];
+  assert.ok(workouts.some((w) => typeof w.hrr_1min === "number" && typeof w.hrr_2min === "number"), "heart-rate recovery of the runs");
   const empty = await coach.runTool("get_day", { date: "2026-01-01" }, ctx, null) as Row;
   assert.equal(empty.note, "Nothing was recorded on this date.");
 });
@@ -149,4 +151,9 @@ test("context: journal entries, tag effects and tonight's sleep plan", async () 
   assert.match(text, /Tonight's sleep plan \(FitStats' rule, shown in the app\): need tonight \d+h \d+m \(base 8h 0m/);
   assert.doesNotMatch(text, /sleep need \d+h \d+m \(/, "the plan's total is never called the sleep need");
   assert.match(text, /in bed by \d\d:\d\d to wake at \d\d:\d\d/);
+  assert.match(text, /\nTraining load \(shown in the app\) up to \d{4}-\d{2}-\d{2}: fitness [\d.]+, fatigue [\d.]+, form [+−]?[\d.]+, so (fresh|neutral|productive|overreaching); load ratio [\d.]+\./);
+  assert.match(text, /\nBedtime vs sleep \(shown in the app; last \d+ scored nights\): best \d\d:\d\d–\d\d:\d\d, sleep score [+−][\d.]+ vs all other nights \((clear|not clear)\)\. By bedtime: .*\d+ nights \(sleep score \d+, asleep \d+h \d+m, recovery \d+\)/);
+  const instructions = String((claudeRequests[before].system as Row[])[0].text);
+  assert.match(instructions, /- Training load \(shown in the app\): fitness is the 42-day/);
+  assert.match(instructions, /- Heart-rate recovery \(per workout\)/);
 });

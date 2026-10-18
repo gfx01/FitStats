@@ -15,11 +15,14 @@ import {
   COOL_DOWN_MAX,
   coolDownMinutes,
   type DayRow,
+  heartRateRecovery,
+  HRR_CLEAR_MIN,
   strainTarget,
   STRESS_BASELINE_DAYS,
   stressBaseline,
+  type WorkoutRecovery,
 } from "./scores.ts";
-import { buildStats } from "./stats.ts";
+import { buildStats, type WorkoutRow } from "./stats.ts";
 import {
   chooseMaxHr,
   DAILY_TYPES,
@@ -283,6 +286,20 @@ function workoutExclusion(x: ExerciseRow, clock: LocalClock, hrFor: HrFor, rhr: 
 function workoutSteps(x: ExerciseRow, clock: LocalClock, stepsFor: HrFor): number | null {
   const steps = minutesBetween(Date.parse(x.start_time), Date.parse(x.end_time), clock, stepsFor);
   return steps.some((v) => typeof v === "number") ? steps.reduce<number>((a, v) => a + (v ?? 0), 0) : null;
+}
+
+/**
+ * Heart-rate recovery of a workout (heartRateRecovery) from its minute window and the 2 minutes
+ * after it. Another workout overlapping the 3 minutes after the end (`all`) leaves it null.
+ */
+export function workoutRecovery(x: ExerciseRow, all: ExerciseRow[], clock: LocalClock, hrFor: HrFor, rhr: number, maxHr: number): WorkoutRecovery {
+  const start = Math.floor(Date.parse(x.start_time) / 60000) * 60000;
+  const end = Date.parse(x.end_time);
+  const hr = minutesBetween(start, end, clock, hrFor);
+  const windowEnd = start + hr.length * 60000;
+  const after = minutesBetween(windowEnd, windowEnd + 2 * 60000, clock, hrFor);
+  const clear = !all.some((o) => o.id !== x.id && Date.parse(o.start_time) < end + HRR_CLEAR_MIN * 60000 && Date.parse(o.end_time) > end);
+  return heartRateRecovery(hr, after, rhr, maxHr, clear);
 }
 
 /** Minute mask (true = skip for stress) for sleep and workouts with their recovery (`workouts`, ms ranges) on one local day. */
@@ -567,14 +584,17 @@ async function syncRange(
     if (hasData) dayRows.push(row);
   }
 
-  // Load, zones, peak heart rate and minute steps of each workout, from its minutes.
+  // Load, zones, peak heart rate, heart-rate recovery and minute steps of each workout, from its minutes.
   if (exerciseOk && (hrOk || stepsOk)) {
+    const all = exercises;
     exercises = exercises.map((x) => {
-      const rhr = patches.get("daily-resting-heart-rate")?.get(x.date)?.rhr;
-      const hr = () => minutesBetween(Date.parse(x.start_time), Date.parse(x.end_time), clock, (d) => minute.get(d)?.hr);
+      const dayRhr = patches.get("daily-resting-heart-rate")?.get(x.date)?.rhr;
+      const rhr = typeof dayRhr === "number" ? dayRhr : rangeRhr;
+      const hrFor: HrFor = (d) => minute.get(d)?.hr;
+      const hr = () => minutesBetween(Date.parse(x.start_time), Date.parse(x.end_time), clock, hrFor);
       return {
         ...x,
-        ...(hrOk ? computeWorkoutLoad(hr(), typeof rhr === "number" ? rhr : rangeRhr, maxHr, settings.sex) : {}),
+        ...(hrOk ? { ...computeWorkoutLoad(hr(), rhr, maxHr, settings.sex), ...workoutRecovery(x, all, clock, hrFor, rhr, maxHr) } : {}),
         ...(stepsOk ? { steps_minute: workoutSteps(x, clock, (d) => minute.get(d)?.steps) } : {}),
       };
     });
@@ -702,8 +722,8 @@ export async function recomputeScores(from: Ymd, to: Ymd, settings: UserSettings
 }
 
 /**
- * Recomputes strain, stress, the sustained heart-rate peak and workout loads from stored
- * minute data (after sex / max HR changes), with `maxHr` (default: the effective one).
+ * Recomputes strain, stress, the sustained heart-rate peak, workout loads and heart-rate recovery
+ * from stored minute data (after sex / max HR changes), with `maxHr` (default: the effective one).
  */
 export async function recomputeIntraday(from: Ymd, to: Ymd, settings: UserSettings, acc: Account, maxHr?: number): Promise<number> {
   const clock = clockFor(acc);
@@ -769,10 +789,13 @@ export async function recomputeIntraday(from: Ymd, to: Ymd, settings: UserSettin
     const workouts = exercises
       .filter((x) => x.date >= s && x.date < next)
       .map((x) => {
-        const hr = minutesBetween(Date.parse(x.start_time), Date.parse(x.end_time), clock, (d) => hrByDate.get(d));
+        const hrFor: HrFor = (d) => hrByDate.get(d);
+        const hr = minutesBetween(Date.parse(x.start_time), Date.parse(x.end_time), clock, hrFor);
+        const rhr = rhrByDate.get(x.date) ?? fallbackRhr;
         return {
           ...x,
-          ...computeWorkoutLoad(hr, rhrByDate.get(x.date) ?? fallbackRhr, hrMax, settings.sex),
+          ...computeWorkoutLoad(hr, rhr, hrMax, settings.sex),
+          ...workoutRecovery(x, exercises, clock, hrFor, rhr, hrMax),
           steps_minute: workoutSteps(x, clock, (d) => stepsByDate.get(d)),
           updated_at: new Date().toISOString(),
         };
@@ -833,11 +856,16 @@ async function statsBuiltAt(): Promise<number> {
 }
 
 export async function rebuildStats(today: Ymd, settings: UserSettings): Promise<void> {
-  const [days, journal] = await Promise.all([
+  const [days, journal, workouts] = await Promise.all([
     db.select<DayRow>("fs_days", "select=*&order=date.asc"),
     journalEntries(addDays(today, -400)),
+    // Only what the heart-rate recovery history needs.
+    db.select<WorkoutRow>(
+      "fs_exercise",
+      `select=id,date,start_time,exercise_type,name,end_hr,hrr_1min,hrr_2min&date=gte.${addDays(today, -365)}&hrr_1min=not.is.null&order=start_time.asc`,
+    ),
   ]);
-  const stats = buildStats(days, today, settings, journal);
+  const stats = buildStats(days, today, settings, journal, workouts);
   await db.upsert("fs_cache", [{ key: "stats", value: stats, updated_at: nowIso() }], "key");
 }
 

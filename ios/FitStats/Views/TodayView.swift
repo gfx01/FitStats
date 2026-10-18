@@ -193,6 +193,8 @@ struct TodayView: View {
             if date == model.today { CoachBriefCard(date: date) }
         case .body:
             BodyCard(date: date)
+        case .trainingLoad:
+            TrainingLoadHomeCard(date: date)
         }
     }
 

@@ -184,6 +184,9 @@ function workoutSummary(x: Row, tz: string | null): Row {
     ...workoutSteps(x),
     peak_minute_hr: x.hr_max ?? null,
     strain: x.strain ?? null,
+    // How far heart rate fell 1 and 2 minutes after the end; null when the workout didn't qualify.
+    hrr_1min: x.hrr_1min ?? null,
+    hrr_2min: x.hrr_2min ?? null,
     // Strain and zones only cover the minutes with heart rate.
     hr_coverage: hrMinutes === null || !(window > 0) ? null : `${hrMinutes} of ${window} min`,
     origin: ORIGIN[String(x.recording_method)] ?? null,
@@ -348,6 +351,35 @@ export async function buildContext(ctx: Ctx, stats: Json | null): Promise<string
     if (missing.length) lines.push(`- No data at all for: ${missing.join(", ")}.`);
   }
 
+  const load = (stats?.load ?? null) as Json | null;
+  const latest = (load?.latest ?? null) as Json | null;
+  if (load && latest) {
+    const form = Number(latest.form);
+    const values = `fitness ${latest.ctl}, fatigue ${latest.atl}, form ${form > 0 ? "+" : form < 0 ? "−" : ""}${Math.abs(form)}`;
+    const ratio = num(latest.acwr) === null ? "load ratio not available (fewer than 21 of the last 28 days with TRIMP)" : `load ratio ${latest.acwr}${load.spike ? " (a spike)" : ""}`;
+    const first = String(((load.series ?? []) as Json[])[0]?.date ?? ctx.today);
+    lines.push("", load.status === "calibrating"
+      ? `Training load (shown in the app) up to ${latest.date}: calibrating (${daysBetween(first, ctx.today)} of the 28 days it needs since the first day with TRIMP); so far ${values}; ${ratio}.`
+      : `Training load (shown in the app) up to ${latest.date}: ${values}, so ${load.status}; ${ratio}.`);
+  }
+  const bed = (stats?.bedtime ?? null) as Json | null;
+  if (bed && num(bed.nights)) {
+    const buckets = ((bed.buckets ?? []) as Json[]).filter((b) => num(b.nights)).map((b) => {
+      const score = num(b.sleepScore), asleep = num(b.asleepMin), rec = num(b.recovery);
+      const means = [
+        score === null ? "" : `sleep score ${Math.round(score)}`,
+        asleep === null ? "" : `asleep ${dur(asleep)}`,
+        rec === null ? "" : `recovery ${Math.round(rec)}`,
+      ].filter(Boolean);
+      return `${b.label} ${b.nights === 1 ? "1 night" : `${b.nights} nights`}${means.length ? ` (${means.join(", ")})` : ""}`;
+    });
+    const best = (bed.best ?? null) as Json | null;
+    const verdict = best
+      ? `best ${best.label}, sleep score ${Number(best.diff) >= 0 ? "+" : "−"}${Math.abs(Number(best.diff))} vs all other nights (${best.clear ? "clear" : "not clear"})`
+      : "no best bedtime yet (needs 3+ nights in at least 2 windows)";
+    lines.push(`Bedtime vs sleep (shown in the app; last ${bed.nights} scored nights): ${verdict}. By bedtime: ${buckets.join("; ")}.`);
+  }
+
   const insights = Array.isArray(stats?.insights) ? (stats!.insights as Json[]) : [];
   if (insights.length) {
     lines.push("", "Insights FitStats shows on its Insights screen:");
@@ -422,7 +454,7 @@ export const TOOLS: Json[] = [
   {
     name: "get_day",
     description: "Everything recorded for one date: all metrics, how recovery and the sleep score were computed, sleep sessions with stage minutes and local times, " +
-      "workouts (with their own strain, peak minute heart rate, heart-rate coverage and origin), hourly heart rate, hourly stress, minutes in heart-rate-reserve zones (50–60/60–70/70–80/80–90/90+%), " +
+      "workouts (with their own strain, peak minute heart rate, heart-rate recovery, heart-rate coverage and origin), hourly heart rate, hourly stress, minutes in heart-rate-reserve zones (50–60/60–70/70–80/80–90/90+%), " +
       "wear time, and the journal entry (tags and note) for that day.",
     input_schema: {
       type: "object",
@@ -432,7 +464,8 @@ export const TOOLS: Json[] = [
   },
   {
     name: "get_workouts",
-    description: "Workouts between two dates (at most 400 days): date, local start time, type, duration, average heart rate, calories, distance, Active Zone Minutes.",
+    description: "Workouts between two dates (at most 400 days): date, local start time, type, duration, average heart rate, calories, distance, Active Zone Minutes, " +
+      "strain and heart-rate recovery.",
     input_schema: {
       type: "object",
       properties: {
@@ -590,6 +623,9 @@ Score definitions
 - Strain (0–100, day total): 100 × (1 − e^(−TRIMP/120)), where TRIMP is Banister's training impulse from minute heart rate above 30% of heart-rate reserve. Suggested strain: 55–80 on green recovery, 35–60 on yellow, 10–35 on red.
 - Sleep score (0–100): duration against their sleep need 50%, efficiency 15% (share of Fitbit's detected sleep period spent asleep: 85% or less scores 0, 98% or more full marks), deep + REM share 20%, bed and wake time consistency 15%.
 - Stress (0–100): how far heart rate sits above their usual still level while awake, still and not exercising (Google Health has no daytime HRV). A minute counts when it is outside sleep, workouts and the recovery after them (until heart rate is back near the level before the workout, 30–180 minutes), has no steps in it or the 3 minutes before and, when Fitbit's minute sedentary data is there, is marked sedentary. Each minute scores 0 at or below their usual still heart rate (median of the last 30 days; a fixed 14% of heart-rate reserve above resting until there are 7 days) and 100 at 15% of heart-rate reserve above it; the day is the average. Below 25 is low, 25–49 moderate, 50–74 high, 75 or more very high.
+- Training load (shown in the app): fitness is the 42-day exponentially weighted average of daily TRIMP (the same impulse as strain; today is left out, days without it count as 0), fatigue the 7-day one, form = fitness − fatigue. For the first 42 (or 7) days each is the plain mean of the days so far. Form ÷ fitness above 0.1 is fresh, −0.1 to 0.1 neutral, −0.3 to −0.1 productive (building fitness), below −0.3 overreaching; "calibrating" for the first 28 days. The load ratio is the last 7 days' mean TRIMP ÷ the last 28 days' (days without TRIMP count as 0; it needs 21 of the 28 days with TRIMP); 1.5 or more is a spike, a week much harder than they are used to.
+- Heart-rate recovery (per workout): how many bpm heart rate fell 1 and 2 minutes after the end, from the mean of the workout's last 2 minutes. Only for workouts of 10+ minutes that ended hard (at least halfway up the heart-rate reserve), with heart rate just after and no other workout right after. A bigger drop generally goes with better aerobic fitness; compare their own workouts of the same kind over time. A small drop usually means they kept moving after the recorded end; a drop of 0 or less is not reported.
+- Bedtime vs sleep (shown in the app): the last 180 scored nights grouped by bedtime (before 22:30, half-hour windows to 01:00, after 01:00); the best window has the highest mean sleep score among windows with 3+ nights, compared with all other nights (clear = Welch t ≥ 2).
 - HRV is Fitbit's nightly RMSSD and resting heart rate is Fitbit's daily value.
 - Awakenings count only times awake after falling asleep and before the final wake-up; "awake after falling asleep" is the minutes of those. Fitbit's awake time also includes the stretch of falling asleep.
 - Sleep plan (shown in the app as "Tonight"): need tonight = their sleep need setting (the base) + 0–45 min for the day's strain (0 at 35 or less, 45 at 85 or more) + a quarter of the last 7 nights' sleep debt (at most 60 min; earlier days' naps count as sleep) − today's naps (at most 60 min); time in bed = need tonight ÷ their typical sleep efficiency; bedtime = their usual wake time for tomorrow's kind of day − time in bed. Use its numbers when suggesting a bedtime; call the plan's total "need tonight", not their sleep need.`;

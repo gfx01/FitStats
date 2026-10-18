@@ -134,7 +134,7 @@ export const calls: string[] = [];
  * Knobs to change what the fake API returns between runs. `nowMs` is fixed when the
  * module loads, so repeated runs see the same "now" (no data after it exists yet).
  */
-export const fakeData = { extraSteps: 0, nowMs: Date.now(), rejectTypes: [] as string[] };
+export const fakeData = { extraSteps: 0, nowMs: Date.now(), rejectTypes: [] as string[], extraRuns: [] as string[] };
 const ymdParts = (ymd: string) => {
   const [year, month, day] = ymd.split("-").map(Number);
   return { year, month, day };
@@ -149,6 +149,8 @@ const iso = (ms: number) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z")
 const localMs = (ymd: string, hh: number, mm = 0) => Date.parse(`${ymd}T00:00:00Z`) + (hh * 60 + mm) * 60000 - TZ_OFFSET_S * 1000;
 const seed = (s: string) => [...s].reduce((a, c) => (a * 31 + c.charCodeAt(0)) % 1000, 7);
 export const FIRST_DATA_DAY = "2026-08-20";
+/** A run 18:00–19:00 every few days, and on the dates in fakeData.extraRuns. */
+const isRunDay = (date: string) => seed(date) % 3 === 0 || fakeData.extraRuns.includes(date);
 /** No daily VO2 max that day, only a vo2-max sample estimated from the profile. */
 export const VO2_SAMPLE_DAY = "2026-10-05";
 
@@ -320,9 +322,14 @@ function minuteHr(ms: number): number | null {
   const h = local.getUTCHours();
   if (date === LOW_WEAR_DAY && h >= 10) return null;
   if (h < 7) return Math.round(52 + 3 * Math.sin((h * 60 + local.getUTCMinutes()) / 37) + (seed(date) % 3));
-  if (h === 18 && seed(date) % 3 === 0) return 150 + (local.getUTCMinutes() % 12); // a run every few days
+  if (h === 18 && isRunDay(date)) return 150 + (local.getUTCMinutes() % 12);
   const m = h * 60 + local.getUTCMinutes();
-  return Math.round(70 + 7 * Math.sin(m / 47) + 3 * Math.sin(m / 9) + (seed(date) % 7));
+  const usual = Math.round(70 + 7 * Math.sin(m / 47) + 3 * Math.sin(m / 9) + (seed(date) % 7));
+  // After the run heart rate falls back over about 10 minutes: roughly 25 bpm in the first minute.
+  if (h === 19 && isRunDay(date) && local.getUTCMinutes() < 15) {
+    return Math.round(usual + (158 - usual) * Math.exp(-(local.getUTCMinutes() + 1) / 3));
+  }
+  return usual;
 }
 
 function googleFetch(url: URL, init: RequestInit): Response {
@@ -368,7 +375,7 @@ function googleFetch(url: URL, init: RequestInit): Response {
     }
     if (type === "exercise") {
       assert.ok(filter.startsWith("exercise.interval.civil_start_time >= "), filter);
-      const pts = datesBetween(a, b).filter((d) => d >= FIRST_DATA_DAY && seed(d) % 3 === 0).map((d) => ({
+      const pts = datesBetween(a, b).filter((d) => d >= FIRST_DATA_DAY && isRunDay(d)).map((d) => ({
         name: `users/me/dataTypes/exercise/dataPoints/e-${d}`,
         dataSource: { recordingMethod: "ACTIVELY_MEASURED", platform: "FITBIT", device: { formFactor: "FITNESS_BAND", displayName: "Fitbit Air" } },
         exercise: {

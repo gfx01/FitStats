@@ -588,6 +588,228 @@ function journalInsight(impacts: TagImpact[]): Insight | null {
   };
 }
 
+// -------------------------------------------------------------- training load
+
+export interface LoadPoint {
+  date: Ymd;
+  /** That day's TRIMP; null on a day without it, which counts as 0 load. */
+  trimp: number | null;
+  /** Fitness: 42-day exponentially weighted average of TRIMP. */
+  ctl: number;
+  /** Fatigue: the same over 7 days. */
+  atl: number;
+  /** ctl − atl. */
+  form: number;
+  /** Mean TRIMP of the last 7 days ÷ that of the last 28; null unless 21 of those 28 days have TRIMP. */
+  acwr: number | null;
+}
+
+export interface TrainingLoad {
+  series: LoadPoint[];
+  latest: LoadPoint | null;
+  status: "calibrating" | "fresh" | "neutral" | "productive" | "overreaching";
+  /** acwr ≥ 1.5: the last week's load jumped well above the last month's. */
+  spike: boolean;
+  /** Days of the series with TRIMP. */
+  days: number;
+}
+
+const LOAD_SERIES_DAYS = 180;
+const LOAD_CALIBRATION_DAYS = 28;
+const ACWR_MIN_DAYS = 21;
+
+/**
+ * Fitness, fatigue and form from daily TRIMP (fs_days.trimp), from the first day with TRIMP
+ * through yesterday (today is still growing); a day without TRIMP counts as 0 load.
+ * ctl += (TRIMP − ctl) / 42, atl += (TRIMP − atl) / 7, form = ctl − atl. Until 42 (or 7) days
+ * exist the step is 1/n, the plain mean so far, so a short history neither reads as a sudden
+ * overload nor depends on later days. The averages run over the whole history; the series keeps
+ * the last 180 days.
+ * acwr's means count a day without TRIMP as 0 too; while the history is under 28 days the
+ * longer mean is over the days there are, so a steady start reads 1, not a spike. Status is
+ * "calibrating" until 28 days have passed since the first TRIMP day, then r = form ÷ ctl:
+ * over 0.1 fresh, −0.1…0.1 neutral, −0.3…−0.1 productive, under −0.3 overreaching.
+ */
+export function trainingLoad(days: DayRow[], today: Ymd): TrainingLoad {
+  const trimp = new Map<Ymd, number>();
+  for (const d of days) {
+    if (d.date < today && typeof d.trimp === "number" && Number.isFinite(d.trimp)) trimp.set(d.date, d.trimp);
+  }
+  const dates = [...trimp.keys()].sort();
+  if (!dates.length) return { series: [], latest: null, status: "calibrating", spike: false, days: 0 };
+  const first = dates[0];
+  // Until a time constant's worth of days exists, each average is the plain mean of the days so
+  // far (step 1/n), so it never looks ahead and a new user doesn't start from 0 load.
+  let ctl = 0, atl = 0, n = 0;
+  const last28: (number | null)[] = [];
+  const total = (xs: (number | null)[]) => xs.reduce<number>((s, v) => s + (v ?? 0), 0);
+  const all: LoadPoint[] = [];
+  for (let d = first; d < today; d = addDays(d, 1)) {
+    const t = trimp.get(d) ?? null;
+    n++;
+    ctl += ((t ?? 0) - ctl) / Math.min(42, n);
+    atl += ((t ?? 0) - atl) / Math.min(7, n);
+    last28.push(t);
+    if (last28.length > 28) last28.shift();
+    const withTrimp = last28.filter((v) => v !== null).length;
+    // A missing day is 0 load in both means; days before the first TRIMP day are not in the window.
+    const m28 = total(last28) / last28.length, m7 = total(last28.slice(-7)) / 7;
+    const c = round(ctl, 1)!, a = round(atl, 1)!;
+    all.push({
+      date: d,
+      trimp: round(t, 1),
+      ctl: c,
+      atl: a,
+      form: round(c - a, 1)!,
+      acwr: withTrimp >= ACWR_MIN_DAYS && m28 > 0 ? round(m7 / m28, 2) : null,
+    });
+  }
+  const series = all.slice(-LOAD_SERIES_DAYS);
+  const latest = series[series.length - 1];
+  let status: TrainingLoad["status"] = "calibrating";
+  if (daysBetween(first, today) >= LOAD_CALIBRATION_DAYS) {
+    const r = latest.ctl > 0 ? latest.form / latest.ctl : 0;
+    status = r > 0.1 ? "fresh" : r >= -0.1 ? "neutral" : r >= -0.3 ? "productive" : "overreaching";
+  }
+  return {
+    series,
+    latest,
+    status,
+    spike: latest.acwr !== null && latest.acwr >= 1.5,
+    days: series.filter((p) => p.trimp !== null).length,
+  };
+}
+
+// -------------------------------------------------------------------- bedtime
+
+export interface BedtimeBucket {
+  label: string;
+  /** In sleep_bedtime_min units (minutes from the wake day's midnight, negative = the evening before): from included, to excluded, null = open. */
+  from: number | null;
+  to: number | null;
+  nights: number;
+  /** Means over the bucket's nights, null under 3 nights; recovery is the next morning's. */
+  sleepScore: number | null;
+  asleepMin: number | null;
+  recovery: number | null;
+}
+
+export interface BedtimeAnalysis {
+  /** Nights looked at: the last 180 with a sleep score. */
+  nights: number;
+  buckets: BedtimeBucket[];
+  /**
+   * The bucket of 3+ nights with the highest mean sleep score; diff = its mean − the mean of all
+   * other nights, clear = Welch's t ≥ 2. Null under 2 buckets of 3+ nights.
+   */
+  best: { label: string; diff: number; clear: boolean } | null;
+}
+
+const BEDTIME_BUCKETS: [string, number | null, number | null][] = [
+  ["before 22:30", null, -90],
+  ["22:30–23:00", -90, -60],
+  ["23:00–23:30", -60, -30],
+  ["23:30–00:00", -30, 0],
+  ["00:00–00:30", 0, 30],
+  ["00:30–01:00", 30, 60],
+  ["after 01:00", 60, null],
+];
+const BEDTIME_NIGHTS = 180;
+const MIN_BUCKET_NIGHTS = 3;
+
+/** Sleep score, time asleep and the next morning's recovery by bedtime, over the last 180 scored nights. */
+export function bedtimeAnalysis(days: DayRow[], today: Ymd): BedtimeAnalysis {
+  const score = METRIC_BY_KEY.get("sleep_score")!, bed = METRIC_BY_KEY.get("sleep_bedtime_min")!;
+  const asleep = METRIC_BY_KEY.get("sleep_asleep_min")!, recovery = METRIC_BY_KEY.get("recovery")!;
+  const nights = days
+    .filter((d) => d.date <= today && score.get(d) !== null && bed.get(d) !== null)
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+    .slice(-BEDTIME_NIGHTS);
+  const groups = BEDTIME_BUCKETS.map(([label, from, to]) => ({
+    label,
+    from,
+    to,
+    rows: nights.filter((d) => {
+      const v = bed.get(d)!;
+      return (from === null || v >= from) && (to === null || v < to);
+    }),
+  }));
+  const meanOf = (def: MetricDef, rows: DayRow[]) => {
+    const vals = rows.map(def.get).filter((v): v is number => v !== null);
+    return vals.length >= MIN_BUCKET_NIGHTS ? round(mean(vals), def.decimals + 1) : null;
+  };
+  const buckets = groups.map((g): BedtimeBucket => {
+    const enough = g.rows.length >= MIN_BUCKET_NIGHTS;
+    return {
+      label: g.label,
+      from: g.from,
+      to: g.to,
+      nights: g.rows.length,
+      sleepScore: enough ? meanOf(score, g.rows) : null,
+      asleepMin: enough ? meanOf(asleep, g.rows) : null,
+      recovery: enough ? meanOf(recovery, g.rows) : null,
+    };
+  });
+  const scores = (rows: DayRow[]) => rows.map((d) => score.get(d)!);
+  const ranked = groups.filter((g) => g.rows.length >= MIN_BUCKET_NIGHTS);
+  let best: BedtimeAnalysis["best"] = null;
+  if (ranked.length >= 2) {
+    const top = ranked.reduce((a, b) => (mean(scores(b.rows))! > mean(scores(a.rows))! ? b : a));
+    const inTop = new Set(top.rows);
+    const mine = scores(top.rows), others = scores(nights.filter((d) => !inTop.has(d)));
+    const t = welchT(mine, others);
+    best = { label: top.label, diff: round(mean(mine)! - mean(others)!, 1)!, clear: t !== null && t >= 2 };
+  }
+  return { nights: nights.length, buckets, best };
+}
+
+function bedtimeInsight(b: BedtimeAnalysis): Insight | null {
+  if (!b.best?.clear) return null;
+  const bucket = b.buckets.find((x) => x.label === b.best!.label)!;
+  const def = METRIC_BY_KEY.get("sleep_score")!;
+  const when = bucket.from !== null && bucket.to !== null ? `between ${bucket.label.replace("–", " and ")}` : bucket.label;
+  return {
+    id: "best_bedtime",
+    title: `You sleep best going to bed ${when}`,
+    body: `Average sleep score ${fmtValue(def, bucket.sleepScore!)} on the ${bucket.nights} nights you went to bed ${when}, ` +
+      `versus ${fmtValue(def, bucket.sleepScore! - b.best.diff)} on your ${b.nights - bucket.nights} other nights. A pattern in your data, not proof of cause.`,
+    tone: "positive",
+    metric: "sleep_bedtime_min",
+  };
+}
+
+// -------------------------------------------------------- heart-rate recovery
+
+export type WorkoutRow = Record<string, unknown> & { id: string; date: Ymd };
+
+export interface HrrPoint {
+  id: string;
+  date: Ymd;
+  exerciseType: string | null;
+  name: string | null;
+  hrr1: number;
+  hrr2: number | null;
+  endHr: number;
+}
+
+/** Workouts with a heart-rate recovery (fs_exercise.hrr_1min) in the last 365 days, oldest first. */
+export function hrrHistory(workouts: WorkoutRow[], today: Ymd): HrrPoint[] {
+  const from = addDays(today, -364);
+  const str = (v: unknown) => (typeof v === "string" ? v : null);
+  return workouts
+    .filter((x) => x.date >= from && x.date <= today && typeof x.hrr_1min === "number" && typeof x.end_hr === "number")
+    .sort((a, b) => String(a.start_time ?? a.date).localeCompare(String(b.start_time ?? b.date)))
+    .map((x) => ({
+      id: x.id,
+      date: x.date,
+      exerciseType: str(x.exercise_type),
+      name: str(x.name),
+      hrr1: x.hrr_1min as number,
+      hrr2: typeof x.hrr_2min === "number" ? x.hrr_2min : null,
+      endHr: x.end_hr as number,
+    }));
+}
+
 // ---------------------------------------------------------------------- build
 
 export interface StatsPayload {
@@ -600,6 +822,9 @@ export interface StatsPayload {
   correlations: Correlation[];
   insights: Insight[];
   journal: TagImpact[];
+  load: TrainingLoad;
+  bedtime: BedtimeAnalysis;
+  hrr: HrrPoint[];
 }
 
 export function buildStats(
@@ -607,6 +832,7 @@ export function buildStats(
   today: Ymd,
   settings: { sleep_need_min: number; step_goal: number },
   journal: { date: Ymd; tags: string[] }[] = [],
+  workouts: WorkoutRow[] = [],
 ): StatsPayload {
   const days = [...daysUnsorted].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   const metrics: Record<string, MetricStats> = {};
@@ -632,6 +858,9 @@ export function buildStats(
   const notes = insights(days, today, settings, corr);
   const fromJournal = journalInsight(impacts);
   if (fromJournal) notes.push(fromJournal);
+  const bedtime = bedtimeAnalysis(days, today);
+  const fromBedtime = bedtimeInsight(bedtime);
+  if (fromBedtime) notes.push(fromBedtime);
   return {
     generatedAt: new Date().toISOString(),
     today,
@@ -642,5 +871,8 @@ export function buildStats(
     correlations: corr,
     insights: notes,
     journal: impacts,
+    load: trainingLoad(days, today),
+    bedtime,
+    hrr: hrrHistory(workouts, today),
   };
 }

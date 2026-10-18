@@ -1,5 +1,11 @@
 import SwiftUI
 
+/// The tools linked at the top of Trends.
+private enum TrendsRoute: Hashable {
+    case calendar
+    case compare
+}
+
 struct TrendsView: View {
     @EnvironmentObject var model: AppModel
 
@@ -7,6 +13,7 @@ struct TrendsView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    toolLinks
                     if let stats = model.stats {
                         Text("\(stats.dayCount) days of data since \(Format.shortDay(stats.firstDate))")
                             .font(.footnote)
@@ -41,7 +48,48 @@ struct TrendsView: View {
             .screenBackground()
             .navigationTitle("Trends")
             .navigationDestination(for: DetailRoute.self) { DetailDestination(route: $0) }
+            .navigationDestination(for: TrendsRoute.self) { route in
+                switch route {
+                case .calendar: CalendarHeatmapView()
+                case .compare: ComparePeriodsView()
+                }
+            }
         }
+    }
+
+    private var toolLinks: some View {
+        HStack(spacing: 10) {
+            NavigationLink(value: TrendsRoute.calendar) {
+                toolTile("Calendar", icon: "calendar")
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("open-calendar")
+            NavigationLink(value: TrendsRoute.compare) {
+                toolTile("Compare periods", icon: "arrow.left.arrow.right")
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("open-compare")
+        }
+    }
+
+    private func toolTile(_ title: String, icon: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.subheadline)
+                .foregroundStyle(Theme.recoveryGreen)
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.right").font(.caption2).foregroundStyle(Theme.tertiary)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity)
+        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Theme.card))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Theme.cardBorder, lineWidth: 1))
+        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
     private func hasData(_ def: MetricDef) -> Bool {

@@ -15,6 +15,7 @@ import {
 import {
   awakeAfterOnset,
   dailyPointsToPatches,
+  type ExerciseRow,
   exercisePointToRow,
   fallAsleepMinutes,
   mainSleepOf,
@@ -39,14 +40,26 @@ import {
   computeWorkoutLoad,
   coolDownMinutes,
   despike,
+  heartRateRecovery,
   sedentaryMask,
   strainTarget,
   stressBaseline,
 } from "../functions/fitstats/lib/scores.ts";
-import { buildStats, countsToward, journalImpacts, lowerFirst, METRIC_BY_KEY, pearson, streak } from "../functions/fitstats/lib/stats.ts";
+import {
+  bedtimeAnalysis,
+  buildStats,
+  countsToward,
+  hrrHistory,
+  journalImpacts,
+  lowerFirst,
+  METRIC_BY_KEY,
+  pearson,
+  streak,
+  trainingLoad,
+} from "../functions/fitstats/lib/stats.ts";
 import { normalizeTags } from "../functions/fitstats/lib/journal.ts";
 import { sleepPlan } from "../functions/fitstats/lib/planner.ts";
-import { lowWear } from "../functions/fitstats/lib/sync.ts";
+import { lowWear, workoutRecovery } from "../functions/fitstats/lib/sync.ts";
 
 const budapest = new LocalClock("Europe/Budapest");
 
@@ -695,4 +708,164 @@ test("sleep: time to fall asleep from the stages when Google reports 0", () => {
   assert.equal(fallAsleepMinutes({ start_time: start, minutes_to_fall_asleep: 0, stages: [[1, t, t + 600]] }), 0, "asleep from the start");
   assert.equal(fallAsleepMinutes({ start_time: start, minutes_to_fall_asleep: 0, stages: [] }), null, "nothing to measure");
   assert.equal(fallAsleepMinutes({ start_time: start, minutes_to_fall_asleep: 0, stages: [[5, t, t + 300], [4, t + 300, t + 900]] }), 5, "classic: restless counts as not yet asleep");
+});
+
+test("training load: fitness, fatigue and form from daily TRIMP", () => {
+  const today = "2026-10-18";
+  const yesterday = addDays(today, -1);
+  // Daily TRIMP for the days up to yesterday, oldest first.
+  const days = (values: (number | null)[]) => values.map((trimp, i) => day(addDays(today, -values.length + i), { trimp }));
+  const repeat = (v: number | null, n: number) => new Array(n).fill(v);
+  assert.deepEqual(trainingLoad([day(today, { trimp: 80 })], today), { series: [], latest: null, status: "calibrating", spike: false, days: 0 }, "today is still growing");
+
+  // Until 42 (or 7) days exist, fitness and fatigue are the plain mean so far, then one step each day.
+  const step = trainingLoad(days([...repeat(30, 28), 72]), today);
+  assert.deepEqual(step.latest, { date: yesterday, trimp: 72, ctl: 31.4, atl: 36, form: -4.6, acwr: 1.14 }, "30 + 42/29, 30 + 42/7; (6 × 30 + 72)/7 ÷ (27 × 30 + 72)/28");
+  assert.deepEqual([step.status, step.spike, step.days, step.series.length], ["productive", false, 29, 29], "form ÷ fitness = −0.15");
+  assert.deepEqual(trainingLoad(days([80, 40]), today).latest!.ctl, 60, "the mean so far, not a step from 0");
+  assert.deepEqual(trainingLoad([...days([...repeat(30, 28), 72]), day(today, { trimp: 500 })], today), step, "today's TRIMP is left out");
+  assert.equal(trainingLoad(days(repeat(30, 27)), today).status, "calibrating", "27 days since the first TRIMP day");
+  assert.equal(trainingLoad([day("2026-01-01", { trimp: null }), ...days(repeat(30, 27))], today).series.length, 27, "the series starts at the first day with TRIMP");
+
+  // A day without TRIMP counts as 0 load, in the load ratio's means too, but stays null in the series.
+  const gap = trainingLoad(days([...repeat(30, 28), null, 72]), today);
+  assert.deepEqual(gap.series.at(-2), { date: addDays(today, -2), trimp: null, ctl: 29, atl: 25.7, form: 3.3, acwr: 0.89 }, "30 − 30/29, 30 − 30/7; (6 × 30)/7 ÷ (27 × 30)/28");
+  assert.equal(gap.days, 29);
+  const back = trainingLoad(days([...repeat(100, 81), ...repeat(null, 6), 160]), today);
+  assert.deepEqual([back.latest!.acwr, back.spike], [0.28, false], "160/7 ÷ (21 × 100 + 160)/28: one day back after a week off is no spike");
+  assert.equal(trainingLoad(days([...repeat(100, 81), ...repeat(null, 7)]), today).latest!.acwr, 0, "21 of the last 28 days have TRIMP");
+  assert.equal(trainingLoad(days(repeat(30, 21)), today).latest!.acwr, 1, "under 28 days of history, the longer mean is over the days there are");
+
+  const steady = trainingLoad(days(repeat(50, 80)), today);
+  assert.deepEqual([steady.latest!.ctl, steady.latest!.atl, steady.latest!.form, steady.latest!.acwr, steady.status], [50, 50, 0, 1, "neutral"]);
+  const rested = trainingLoad(days([...repeat(50, 60), ...repeat(null, 14)]), today);
+  assert.deepEqual([rested.latest!.ctl, rested.latest!.atl, rested.status], [35.7, 5.8, "fresh"], "50 × (41/42)^14, 50 × (6/7)^14");
+  assert.equal(rested.latest!.acwr, null, "only 14 of the last 28 days have TRIMP");
+  const hard = trainingLoad(days([...repeat(40, 60), ...repeat(120, 7)]), today);
+  assert.deepEqual([hard.latest!.acwr, hard.spike, hard.status], [2, true, "overreaching"], "120 ÷ (21 × 40 + 7 × 120)/28");
+
+  // The series keeps 180 days; the averages run over the whole history.
+  const long = trainingLoad(days([...repeat(100, 20), ...repeat(50, 180)]), today);
+  assert.deepEqual([long.series.length, long.series[0].date, long.days], [180, addDays(today, -180), 180]);
+  assert.ok(long.series[0].ctl > 60, `the 20 harder days before the series still count: ${long.series[0].ctl}`);
+});
+
+test("bedtime: sleep by bedtime window, the best window and its insight", () => {
+  const today = "2026-10-18";
+  const bucketOf = (bed: number) =>
+    bedtimeAnalysis([day(today, { sleep_bedtime_min: bed, sleep_score: 80 })], today).buckets.find((b) => b.nights === 1)!.label;
+  assert.deepEqual(
+    [-91, -90, -61, -60, -1, 0, 59, 60, 769].map(bucketOf),
+    ["before 22:30", "22:30–23:00", "22:30–23:00", "23:00–23:30", "23:30–00:00", "00:00–00:30", "00:30–01:00", "after 01:00", "after 01:00"],
+    "each window includes its start and excludes its end",
+  );
+  const one = bedtimeAnalysis([day(today, { sleep_bedtime_min: -50, sleep_score: 80, sleep_asleep_min: 450 })], today);
+  assert.deepEqual(one.buckets[2], { label: "23:00–23:30", from: -60, to: -30, nights: 1, sleepScore: null, asleepMin: null, recovery: null }, "means need 3 nights");
+  assert.equal(one.best, null);
+
+  // 200 nights: the oldest 20 at 22:00 fall outside the last 180 scored nights, apart from the
+  // newest of them (today has no sleep score yet). Then 23:10, 23:40 and 00:10 in turn; 23:10 sleeps best.
+  const rows = Array.from({ length: 200 }, (_, i) => {
+    const date = addDays(today, -199 + i);
+    if (i < 20) return day(date, { sleep_bedtime_min: -120, sleep_score: 99, sleep_asleep_min: 480, recovery: 90 });
+    const bed = [-50, -20, 10][i % 3];
+    const early = bed === -50;
+    return day(date, {
+      sleep_bedtime_min: bed,
+      sleep_score: i === 199 ? null : early ? 85 + (i % 2) * 2 : 76,
+      sleep_asleep_min: early ? 420 : 400,
+      recovery: early ? 70 : i % 2 ? 60 : null,
+    });
+  });
+  const b = bedtimeAnalysis(rows, today);
+  assert.equal(b.nights, 180);
+  assert.deepEqual(b.buckets.map((x) => x.nights), [1, 0, 60, 59, 60, 0, 0]);
+  assert.deepEqual(b.buckets[0], { label: "before 22:30", from: null, to: -90, nights: 1, sleepScore: null, asleepMin: null, recovery: null });
+  assert.deepEqual(b.buckets[2], { label: "23:00–23:30", from: -60, to: -30, nights: 60, sleepScore: 86, asleepMin: 420, recovery: 70 });
+  assert.deepEqual([b.buckets[3].sleepScore, b.buckets[3].asleepMin, b.buckets[3].recovery], [76, 400, 60], "recovery over the mornings that have one");
+  assert.deepEqual(b.best, { label: "23:00–23:30", diff: 9.8, clear: true }, "86 − (119 × 76 + 99) ÷ 120");
+
+  const insight = buildStats(rows, today, { sleep_need_min: 480, step_goal: 10000 }).insights.find((i) => i.id === "best_bedtime")!;
+  assert.equal(insight.title, "You sleep best going to bed between 23:00 and 23:30");
+  assert.equal(insight.body, "Average sleep score 86 on the 60 nights you went to bed between 23:00 and 23:30, versus 76 on your 120 other nights. A pattern in your data, not proof of cause.");
+  assert.equal(insight.metric, "sleep_bedtime_min");
+
+  // Not clear: the same means with a lot of scatter and few nights.
+  const noisy = rows.slice(-12).map((d, i) => {
+    const score = (d as Record<string, unknown>).sleep_score;
+    return { ...d, sleep_score: typeof score === "number" ? score + (i % 2 ? 20 : -20) : null };
+  });
+  const unclear = bedtimeAnalysis(noisy, today);
+  assert.equal(unclear.best?.clear, false, JSON.stringify(unclear.best));
+  assert.equal(buildStats(noisy, today, { sleep_need_min: 480, step_goal: 10000 }).insights.some((i) => i.id === "best_bedtime"), false);
+  // A single window with 3+ nights has nothing to be compared with.
+  const lone = [...rows.slice(-10, -1).map((d) => ({ ...d, sleep_bedtime_min: -50 })), day(today, { sleep_bedtime_min: 10, sleep_score: 70 })];
+  assert.deepEqual(bedtimeAnalysis(lone, today).buckets.map((x) => x.nights), [0, 0, 9, 0, 1, 0, 0]);
+  assert.equal(bedtimeAnalysis(lone, today).best, null);
+});
+
+test("heart-rate recovery: the drop 1 and 2 minutes after a hard finish, only when the guards hold", () => {
+  const rhr = 55, maxHr = 195; // halfway up the reserve: 125 bpm
+  const none = { end_hr: null, hrr_1min: null, hrr_2min: null };
+  const run = [...new Array(18).fill(150), 160, 161];
+  assert.deepEqual(heartRateRecovery(run, [132, 116], rhr, maxHr, true), { end_hr: 161, hrr_1min: 29, hrr_2min: 45 }, "(160 + 161) ÷ 2 = 160.5 → 161");
+  assert.deepEqual(heartRateRecovery(run.slice(-10), [132, 116], rhr, maxHr, true), { end_hr: 161, hrr_1min: 29, hrr_2min: 45 }, "10 minutes is enough");
+  assert.deepEqual(heartRateRecovery(run.slice(-9), [132, 116], rhr, maxHr, true), none, "under 10 minutes");
+  assert.deepEqual(heartRateRecovery(run, [168, 150], rhr, maxHr, true), none, "heart rate still rising after the recorded end is no recovery");
+  assert.deepEqual(heartRateRecovery(run, [161, 150], rhr, maxHr, true), none, "a fall of 0 at 1 minute either");
+  assert.deepEqual(heartRateRecovery(run.map((v, i) => (i < 6 ? null : v)), [132, 116], rhr, maxHr, true).hrr_1min, 29, "heart rate in 14 of 20 minutes (70%)");
+  assert.deepEqual(heartRateRecovery(run.map((v, i) => (i < 7 ? null : v)), [132, 116], rhr, maxHr, true), none, "13 of 20 minutes");
+  assert.deepEqual(heartRateRecovery([...run.slice(0, 18), 125, 125], [110, 100], rhr, maxHr, true), { end_hr: 125, hrr_1min: 15, hrr_2min: 25 });
+  assert.deepEqual(heartRateRecovery([...run.slice(0, 18), 124, 124], [110, 100], rhr, maxHr, true), none, "an easy finish, below halfway up the reserve");
+  assert.deepEqual(heartRateRecovery(run, [132, null], rhr, maxHr, true), none, "no heart rate 2 minutes after");
+  assert.deepEqual(heartRateRecovery(run, [132], rhr, maxHr, true), none);
+  assert.deepEqual(heartRateRecovery([...run.slice(0, 19), null], [132, 116], rhr, maxHr, true), none, "no heart rate in the last minute");
+  assert.deepEqual(heartRateRecovery(run, [132, 116], rhr, maxHr, false), none, "another workout starts right after");
+  // A one-minute optical spike at the end is replaced by its neighbours' mean: (150 + 148) ÷ 2.
+  assert.deepEqual(heartRateRecovery([...new Array(19).fill(150), 190], [148, 130], rhr, maxHr, true), { end_hr: 150, hrr_1min: 2, hrr_2min: 20 });
+
+  // In the sync: the workout's minute window and the 2 minutes after it.
+  const date = "2026-10-17";
+  const hr: (number | null)[] = new Array(1440).fill(70);
+  for (let m = 600; m < 630; m++) hr[m] = 160; // 10:00–10:29
+  hr[630] = 135;
+  hr[631] = 118;
+  const at = (min: number) => new Date(budapest.midnightMs(date) + min * 60000).toISOString();
+  const workout = (id: string, from: number, to: number) => ({ id, date, start_time: at(from), end_time: at(to) }) as unknown as ExerciseRow;
+  const x = workout("a", 600.2, 629.5); // ends 10:29:30, so the window's last minute is 10:29
+  const hrFor = (d: string) => (d === date ? hr : null);
+  const recovery = (others: ExerciseRow[]) => workoutRecovery(x, [x, ...others], budapest, hrFor, 55, 195);
+  assert.deepEqual(recovery([]), { end_hr: 160, hrr_1min: 25, hrr_2min: 42 });
+  assert.deepEqual(recovery([workout("b", 632, 660)]), none, "the next workout starts 2.5 minutes after the end");
+  assert.deepEqual(recovery([workout("b", 620, 660)]), none, "another workout is still going at the end");
+  assert.deepEqual(recovery([workout("b", 633, 660), workout("c", 500, 560)]).hrr_1min, 25, "3.5 minutes after the end, and one before it, are fine");
+});
+
+test("stats: training load, bedtime and heart-rate recovery in the payload", () => {
+  const today = "2026-10-18";
+  const days = Array.from({ length: 40 }, (_, i) =>
+    day(addDays(today, -39 + i), { trimp: 50, sleep_score: 80 + (i % 3), sleep_bedtime_min: [-50, -20, 10][i % 3], sleep_asleep_min: 450 })
+  );
+  const workouts = [
+    { id: "w3", date: "2026-10-12", start_time: "2026-10-12T16:00:00.000Z", exercise_type: "RUNNING", name: "Run", end_hr: 170, hrr_1min: 30, hrr_2min: 48 },
+    { id: "old", date: addDays(today, -365), start_time: `${addDays(today, -365)}T16:00:00.000Z`, exercise_type: "RUNNING", name: "Run", end_hr: 160, hrr_1min: 25, hrr_2min: 40 },
+    { id: "w2", date: "2026-10-12", start_time: "2026-10-12T08:00:00.000Z", exercise_type: "WALKING", name: null, end_hr: 130, hrr_1min: 20, hrr_2min: null },
+    { id: "w1", date: addDays(today, -364), start_time: `${addDays(today, -364)}T16:00:00.000Z`, exercise_type: null, name: null, end_hr: 150, hrr_1min: 22, hrr_2min: 35 },
+    { id: "easy", date: "2026-10-14", start_time: "2026-10-14T16:00:00.000Z", exercise_type: "WALKING", name: "Walk", end_hr: null, hrr_1min: null, hrr_2min: null },
+  ];
+  const s = buildStats(days, today, { sleep_need_min: 480, step_goal: 10000 }, [], workouts);
+  assert.deepEqual(s.hrr, [
+    { id: "w1", date: addDays(today, -364), exerciseType: null, name: null, hrr1: 22, hrr2: 35, endHr: 150 },
+    { id: "w2", date: "2026-10-12", exerciseType: "WALKING", name: null, hrr1: 20, hrr2: null, endHr: 130 },
+    { id: "w3", date: "2026-10-12", exerciseType: "RUNNING", name: "Run", hrr1: 30, hrr2: 48, endHr: 170 },
+  ], "the last 365 days, oldest first, only workouts with a recovery");
+  assert.deepEqual(hrrHistory(workouts, today), s.hrr);
+  assert.deepEqual(buildStats(days, today, { sleep_need_min: 480, step_goal: 10000 }).hrr, []);
+
+  assert.deepEqual([s.load.status, s.load.latest!.date, s.load.latest!.ctl, s.load.series.length, s.load.days], ["neutral", addDays(today, -1), 50, 39, 39]);
+  assert.equal(s.bedtime.nights, 40);
+  assert.deepEqual(s.bedtime.buckets.map((b) => b.label), ["before 22:30", "22:30–23:00", "23:00–23:30", "23:30–00:00", "00:00–00:30", "00:30–01:00", "after 01:00"]);
+  const json = JSON.parse(JSON.stringify(s));
+  assert.deepEqual(json.load, s.load);
+  assert.deepEqual(json.bedtime, s.bedtime);
 });

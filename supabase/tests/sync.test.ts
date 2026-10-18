@@ -6,7 +6,8 @@ import { test } from "node:test";
 import { calls, dbWrites, fakeData, FIRST_DATA_DAY, LOW_WEAR_DAY, NAP_MAIN_DAY, type Row, tables, VO2_SAMPLE_DAY, ZERO_AZM_DAY } from "./fakes.ts";
 
 test("full sync: backfill, scores and stats", async () => {
-  const { runSync } = await import("../functions/fitstats/lib/sync.ts");
+  const { clockFor, runSync } = await import("../functions/fitstats/lib/sync.ts");
+  const { addDays } = await import("../functions/fitstats/lib/util.ts");
   const log = await runSync("test", true, 95_000);
   assert.equal(log.status, "ok", JSON.stringify(log.ranges.filter((r) => r.failed.length), null, 1) + (log.message ?? ""));
   const state = tables.fs_sync_state[0];
@@ -107,6 +108,15 @@ test("full sync: backfill, scores and stats", async () => {
   assert.ok((run.hr_max as number) >= 150);
   assert.equal((run.hrr_zone_min as number[]).reduce((a, b) => a + b, 0), 60);
 
+  // Heart-rate recovery: the run ends at 160–161 bpm and heart rate falls about 25 bpm in the first minute.
+  assert.equal(run.end_hr, 161);
+  assert.ok((run.hrr_1min as number) >= 20 && (run.hrr_1min as number) <= 35, `HRR 1 min ${run.hrr_1min}`);
+  assert.ok((run.hrr_2min as number) > (run.hrr_1min as number), `HRR 2 min ${run.hrr_2min}`);
+  const finished = tables.fs_exercise.filter((x) => String(x.date) < clockFor(acc as never).today());
+  for (const x of finished) {
+    assert.equal(typeof x.hrr_1min, x.date === LOW_WEAR_DAY ? "object" : "number", `${x.date}: the band was off during the low-wear day's run`);
+  }
+
   const stats = tables.fs_cache.find((c) => c.key === "stats")!.value as Row;
   const metrics = stats.metrics as Record<string, Row>;
   assert.ok(((metrics.steps.ranges as Record<string, Row>)["30"].n as number) >= 25);
@@ -116,6 +126,17 @@ test("full sync: backfill, scores and stats", async () => {
   const countable = tables.fs_days.filter((r) => typeof r.steps === "number" && String(r.date) < today && r.low_wear !== true).length;
   assert.equal((metrics.steps.ranges as Record<string, Row>).all.n, countable, "low-wear days are left out of day totals");
   assert.deepEqual(metrics.azm_total.worst, { value: 0, date: ZERO_AZM_DAY }, "the zero-AZM day counts");
+
+  // Training load, bedtime and the heart-rate recovery history.
+  const load = stats.load as Row;
+  assert.equal((load.latest as Row).date, addDays(today, -1), "up to yesterday");
+  assert.notEqual(load.status, "calibrating", "more than 28 days since the first TRIMP day");
+  assert.equal((load.series as Row[])[0].date, FIRST_DATA_DAY);
+  assert.ok(((stats.bedtime as Row).nights as number) >= 55);
+  const hrr = stats.hrr as Row[];
+  assert.equal(hrr.length, tables.fs_exercise.filter((x) => typeof x.hrr_1min === "number").length);
+  assert.deepEqual(Object.keys(hrr[0]).sort(), ["date", "endHr", "exerciseType", "hrr1", "hrr2", "id", "name"]);
+  assert.ok(hrr.every((p, i) => i === 0 || String(p.date) >= String(hrr[i - 1].date)), "oldest first");
 
   // A second run with nothing stale only refreshes recent days.
   calls.length = 0;
@@ -233,4 +254,32 @@ test("max heart rate in use: kept within 2 bpm of the saved value, otherwise the
   assert.deepEqual([moved.value, moved.changed], [eff.value, true]);
   const unset = await maxHrInUse(acc, settings, today, { max_hr_used: eff.value + 1, max_hr_source: "override" });
   assert.deepEqual([unset.value, unset.source, unset.changed], [eff.value, eff.source, true], "removing an override recomputes");
+});
+
+test("heart-rate recovery: the recent sync and a recompute from stored minutes give the same values", async () => {
+  const { clockFor, loadSettings, recomputeIntraday, runSync } = await import("../functions/fitstats/lib/sync.ts");
+  const { addDays } = await import("../functions/fitstats/lib/util.ts");
+  const acc = tables.fs_account[0] as never;
+  const today = clockFor(acc).today();
+  const yesterday = addDays(today, -1);
+  const hrrOf = (x: Row) => [x.end_hr, x.hrr_1min, x.hrr_2min];
+  const clear = (x: Row) => Object.assign(x, { end_hr: null, hrr_1min: null, hrr_2min: null });
+  // Yesterday has a run whatever today's date, and the recent sync writes it afresh.
+  fakeData.extraRuns = [yesterday];
+  for (const x of tables.fs_exercise) if (x.date === yesterday) clear(x);
+  tables.fs_sync_state[0].recent_fingerprint = null;
+  try {
+    assert.equal((await runSync("app", true, 95_000)).status, "ok");
+    const run = tables.fs_exercise.find((x) => x.date === yesterday)!;
+    assert.equal(run.end_hr, 161);
+    assert.ok(typeof run.hrr_1min === "number" && typeof run.hrr_2min === "number", JSON.stringify(hrrOf(run)));
+
+    const saved = new Map(tables.fs_exercise.map((x) => [String(x.id), hrrOf(x)]));
+    for (const x of tables.fs_exercise) clear(x);
+    await recomputeIntraday(FIRST_DATA_DAY, today, await loadSettings(), acc, tables.fs_sync_state[0].max_hr_used as number);
+    for (const x of tables.fs_exercise) assert.deepEqual(hrrOf(x), saved.get(String(x.id)), String(x.date));
+  } finally {
+    fakeData.extraRuns = [];
+    await runSync("app", true, 95_000);
+  }
 });

@@ -110,6 +110,14 @@ private struct ZoneTime: Identifiable {
     var id: String { name }
 }
 
+/// One workout's heart-rate drop after 1 minute, for the recovery history chart.
+private struct RecoveryPoint: Identifiable {
+    let id: String
+    let date: Date
+    let value: Double
+    let current: Bool
+}
+
 /// How much of the workout window has minute heart rate.
 private struct HRCoverage {
     let minutes: Int
@@ -135,6 +143,7 @@ struct WorkoutDetailView: View {
                     header(exercise)
                     statsGrid(exercise, coverage: coverage)
                     heartRateCard(exercise, series: series, coverage: coverage)
+                    recoveryCard(exercise)
                     zonesCard(exercise, coverage: coverage)
                     loadCard(exercise, coverage: coverage)
                 } else if detail == nil {
@@ -315,6 +324,140 @@ struct WorkoutDetailView: View {
                     .font(.caption)
                     .foregroundStyle(Theme.recoveryYellow)
             }
+        }
+    }
+
+    // MARK: heart-rate recovery
+
+    /// How far heart rate fell 1 and 2 minutes after the workout (server: hrr_1min, hrr_2min), against
+    /// your average for the same exercise type from the stats (stats.hrr) once there are 3 earlier
+    /// sessions, with that type's history.
+    private func recoveryCard(_ x: Exercise) -> some View {
+        Card {
+            SectionHeader(title: "Heart-rate recovery", subtitle: "How fast your heart rate fell once the workout ended")
+            if let hrr1 = x.hrr1min {
+                let history = recoveryHistory(x)
+                let earlier = history.filter { $0.date < x.date && $0.id != x.id }
+                let charted = history.count + (history.contains(where: { $0.id == x.id }) ? 0 : 1)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(recoveryText(hrr1, x.hrr2min))
+                        .font(Theme.number(20))
+                        .foregroundStyle(.white)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let end = x.endHr {
+                        Text("From \(Int(end.rounded())) bpm at the end of the workout")
+                            .font(.caption)
+                            .foregroundStyle(Theme.secondary)
+                    }
+                }
+                comparison(x, hrr1: hrr1, earlier: earlier)
+                if charted >= 2 {
+                    recoveryChart(x, hrr1: hrr1, history: history, earlier: earlier)
+                }
+                Text("A bigger drop usually goes with better fitness. It also depends on how hard you finished and whether you kept moving, so compare similar workouts.")
+                    .font(.caption)
+                    .foregroundStyle(Theme.tertiary)
+            } else {
+                Text("Heart-rate recovery needs a hard finish and heart rate for the 2 minutes after the workout.")
+                    .font(.footnote)
+                    .foregroundStyle(Theme.secondary)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("hr-recovery")
+    }
+
+    /// Workouts of the same type with a recovery, oldest first.
+    private func recoveryHistory(_ x: Exercise) -> [HrrPoint] {
+        (model.stats?.hrr ?? []).filter { $0.exerciseType == x.exerciseType }
+    }
+
+    /// A drop in heart rate as a change: 24 → "−24"; a rise (negative drop) reads "+3".
+    private static func dropText(_ v: Double) -> String {
+        let n = Int(v.rounded())
+        return n >= 0 ? "−\(n)" : "+\(-n)"
+    }
+
+    /// "−24 bpm after 1 min, −38 after 2 min".
+    private func recoveryText(_ hrr1: Double, _ hrr2: Double?) -> String {
+        var text = "\(Self.dropText(hrr1)) bpm after 1 min"
+        if let hrr2 { text += ", \(Self.dropText(hrr2)) after 2 min" }
+        return text
+    }
+
+    @ViewBuilder private func comparison(_ x: Exercise, hrr1: Double, earlier: [HrrPoint]) -> some View {
+        if earlier.count >= 3 {
+            let average = earlier.map(\.hrr1).reduce(0, +) / Double(earlier.count)
+            let delta = (hrr1 - average).rounded()
+            let size = Int(abs(delta))
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("Your \(x.displayName) average: \(Self.dropText(average)) bpm after 1 min over \(earlier.count) earlier sessions")
+                    .font(.caption)
+                    .foregroundStyle(Theme.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 4)
+                Text(delta == 0 ? "as usual" : "\(size) bpm \(delta > 0 ? "bigger" : "smaller") drop")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(delta == 0 ? Theme.secondary : (delta > 0 ? Theme.recoveryGreen : Theme.recoveryYellow))
+            }
+        } else {
+            let left = 3 - earlier.count
+            Text("Your \(x.displayName) average shows once 3 earlier sessions have a recovery (\(left) more to go).")
+                .font(.caption)
+                .foregroundStyle(Theme.tertiary)
+        }
+    }
+
+    private func recoveryChart(_ x: Exercise, hrr1: Double, history: [HrrPoint], earlier: [HrrPoint]) -> some View {
+        var points = history.compactMap { p -> RecoveryPoint? in
+            guard let date = Format.chartDate(p.date) else { return nil }
+            return RecoveryPoint(id: p.id, date: date, value: p.hrr1, current: p.id == x.id)
+        }
+        // The stats are rebuilt after a sync, so a brand-new workout may not be in them yet.
+        if !history.contains(where: { $0.id == x.id }), let date = Format.chartDate(x.date) {
+            points.append(RecoveryPoint(id: x.id, date: date, value: hrr1, current: true))
+            points.sort { $0.date < $1.date }
+        }
+        let data = points
+        let average: Double? = earlier.count >= 3 ? earlier.map(\.hrr1).reduce(0, +) / Double(earlier.count) : nil
+        let dates = data.map(\.date)
+        let ticks = ChartAxis.dayTicks(dates)
+        let label = ChartAxis.dayLabel(ChartAxis.spansYears(dates))
+        let domain = ChartAxis.paddedDomain(data.map(\.value) + (average.map { [$0] } ?? []), includeZero: false)
+        return VStack(alignment: .leading, spacing: 6) {
+            Text("\(x.displayName): drop after 1 min, last 12 months").font(.caption2).foregroundStyle(Theme.tertiary)
+            Chart {
+                ForEach(data) { p in
+                    LineMark(x: .value("Day", p.date), y: .value("Drop", p.value))
+                        .foregroundStyle(Theme.heart.opacity(0.5))
+                        .lineStyle(StrokeStyle(lineWidth: 1.5))
+                    PointMark(x: .value("Day", p.date), y: .value("Drop", p.value))
+                        .foregroundStyle(p.current ? Color.white : Theme.heart)
+                        .symbolSize(p.current ? 60 : 22)
+                }
+                if let average {
+                    RuleMark(y: .value("Average", average))
+                        .foregroundStyle(Color.white.opacity(0.4))
+                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                }
+            }
+            .chartYScale(domain: domain)
+            .chartXAxis {
+                AxisMarks(values: ticks) { _ in
+                    AxisGridLine().foregroundStyle(Theme.track)
+                    AxisValueLabel(format: label, centered: false)
+                        .foregroundStyle(Theme.tertiary)
+                }
+            }
+            .chartYAxis {
+                AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { _ in
+                    AxisGridLine().foregroundStyle(Theme.track)
+                    AxisValueLabel().foregroundStyle(Theme.tertiary)
+                }
+            }
+            .frame(height: 120)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(x.displayName) heart-rate recovery history, \(data.count) workouts")
         }
     }
 

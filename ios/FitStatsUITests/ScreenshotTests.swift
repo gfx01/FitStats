@@ -46,6 +46,24 @@ final class ScreenshotTests: XCTestCase {
         _ = app.buttons["ring-recovery"].waitForExistence(timeout: 5)
     }
 
+    /// Swipes up until the element is on screen, then drags its top up under the navigation bar
+    /// so the whole card is in the shot.
+    private func reveal(_ app: XCUIApplication, _ element: XCUIElement) {
+        for _ in 0..<10 where !element.isHittable { app.swipeUp() }
+        guard element.isHittable else { return }
+        let window = app.windows.firstMatch.frame
+        let target = window.minY + window.height * 0.14
+        let distance = element.frame.minY - target
+        guard distance > 20 else { return }
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
+        let end = start.withOffset(CGVector(dx: 0, dy: -Swift.min(distance, window.height * 0.6)))
+        start.press(forDuration: 0.1, thenDragTo: end)
+    }
+
+    private func element(_ app: XCUIApplication, _ id: String) -> XCUIElement {
+        app.descendants(matching: .any).matching(identifier: id).firstMatch
+    }
+
     func test01ConnectScreen() {
         let app = XCUIApplication()
         app.launchEnvironment["FITSTATS_FIXTURES"] = ""
@@ -162,7 +180,15 @@ final class ScreenshotTests: XCTestCase {
             app.swipeUp()
             shot("3\(index)-home-all-\(index + 1)")
         }
-        for _ in 0..<10 { app.swipeDown() }
+        // The last card in this mode; the swipes above may stop short of it.
+        let trainingLoad = element(app, "home-card-trainingLoad")
+        if trainingLoad.waitForExistence(timeout: 5) {
+            reveal(app, trainingLoad)
+            shot("45-home-training-load")
+        } else {
+            XCTFail("missing home-card-trainingLoad")
+        }
+        for _ in 0..<16 { app.swipeDown() }
 
         let card = app.descendants(matching: .any).matching(identifier: "home-card-scores").firstMatch
         guard card.waitForExistence(timeout: 5) else {
@@ -189,5 +215,62 @@ final class ScreenshotTests: XCTestCase {
         }
         shot("39-home-editor-2")
         if done.exists { done.tap() }
+    }
+
+    /// Training load and best bedtime on Insights, the calendar and compare periods from Trends,
+    /// and a workout's heart-rate recovery.
+    func test04InsightsPack() {
+        let fixtures = ProcessInfo.processInfo.environment["FITSTATS_FIXTURES"] ?? ""
+        XCTAssertFalse(fixtures.isEmpty, "FITSTATS_FIXTURES is not set")
+        let app = XCUIApplication()
+        app.launchEnvironment["FITSTATS_FIXTURES"] = fixtures
+        app.launch()
+        XCTAssertTrue(app.buttons["ring-recovery"].waitForExistence(timeout: 15), "Today screen did not load")
+
+        app.tabBars.buttons["Insights"].tap()
+        for (id, name) in [("training-load", "40-insights-load"), ("bedtime-card", "41-insights-bedtime")] {
+            let card = element(app, id)
+            if card.waitForExistence(timeout: 5) {
+                reveal(app, card)
+                shot(name)
+            } else {
+                XCTFail("missing \(id)")
+            }
+        }
+
+        app.tabBars.buttons["Trends"].tap()
+        for (button, screen, name) in [("open-calendar", "calendar-heatmap", "42-calendar"), ("open-compare", "compare-periods", "43-compare")] {
+            let link = app.buttons[button]
+            guard link.waitForExistence(timeout: 5) else {
+                XCTFail("missing \(button)")
+                continue
+            }
+            link.tap()
+            XCTAssertTrue(element(app, screen).waitForExistence(timeout: 5), "\(screen) did not open")
+            shot(name)
+            back(app)
+        }
+
+        // The nearest day with a workout, then its heart-rate recovery card.
+        app.tabBars.buttons["Today"].tap()
+        let workout = app.buttons["workout-row"].firstMatch
+        for _ in 0..<6 where !workout.exists {
+            app.buttons["Previous day"].tap()
+            sleep(1)
+        }
+        guard workout.exists else {
+            XCTFail("no workout in the last 7 days of fixtures")
+            return
+        }
+        for _ in 0..<6 where !workout.isHittable { app.swipeUp() }
+        workout.tap()
+        let recovery = element(app, "hr-recovery")
+        if recovery.waitForExistence(timeout: 5) {
+            reveal(app, recovery)
+            shot("44-workout-hrr")
+        } else {
+            XCTFail("missing hr-recovery")
+        }
+        back(app)
     }
 }
