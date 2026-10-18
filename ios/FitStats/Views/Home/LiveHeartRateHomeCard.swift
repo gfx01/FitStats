@@ -5,6 +5,8 @@ import SwiftUI
 struct LiveHeartRateHomeCard: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var live: LiveHeartRateMonitor
+    /// In the Add cards preview the card shows but never connects.
+    @Environment(\.homeCardPreview) private var isPreview
 
     var body: some View {
         Card {
@@ -26,8 +28,8 @@ struct LiveHeartRateHomeCard: View {
             }
             Text(caption).font(.caption).foregroundStyle(Theme.tertiary)
         }
-        .onAppear { live.start() }
-        .onDisappear { live.stop() }
+        .onAppear { if !isPreview { live.start() } }
+        .onDisappear { if !isPreview { live.stop() } }
     }
 
     private var isLive: Bool {
@@ -48,11 +50,11 @@ struct LiveHeartRateHomeCard: View {
         case .connected:
             return live.latest?.contact == false ? "The band isn't on your wrist." : "Waiting for a reading…"
         case .connecting(let name): return "Connecting to \(name)…"
-        case .scanning: return "Looking for your Fitbit Air. Turn on Share heart rate in the Google Health app."
+        case .scanning: return "Looking for your Fitbit Air. Turn on Always visible in Google Health → Share heart rate."
         case .poweredOff: return "Turn on Bluetooth."
         case .unauthorized: return "Allow Bluetooth for FitStats in Settings."
         case .unsupported: return "Bluetooth isn't available."
-        case .idle: return "Starting…"
+        case .idle: return isPreview ? "Connects to your band while Today is open." : "Starting…"
         }
     }
 }

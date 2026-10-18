@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 enum DetailRoute: Hashable {
     case recovery(String)
@@ -8,6 +9,8 @@ enum DetailRoute: Hashable {
     case metric(String)
     case workout(String, String) // date, exercise id
     case liveHeartRate
+    /// A Home card at full size, opened from its small or medium version.
+    case homeCard(HomeCard, String) // card, date
 }
 
 struct DetailDestination: View {
@@ -27,6 +30,7 @@ struct DetailDestination: View {
             }
         case .workout(let date, let id): WorkoutDetailView(date: date, exerciseId: id)
         case .liveHeartRate: LiveHeartRateView()
+        case .homeCard(let card, let d): HomeCardDetailView(card: card, date: d)
         }
     }
 }
@@ -36,79 +40,127 @@ struct TodayView: View {
     @EnvironmentObject private var coach: CoachStore
     @EnvironmentObject private var live: LiveHeartRateMonitor
     @State private var selected: String?
-    /// The cards on Home, in order (Views/Home/HomeLayout.swift).
+    /// The cards on Home and their sizes (Views/Home/HomeLayout.swift).
     @AppStorage(HomeLayout.storageKey) private var storedCards = ""
     /// Every card while CI takes screenshots (FITSTATS_HOME_CARDS=all); edits then stay in memory.
-    @State private var fixtureCards: [HomeCard]? = HomeLayout.fixtureCards
-    @State private var editingHome = false
+    @State private var fixtureItems: [HomeItem]? = HomeLayout.fixtureItems
+    /// Edit mode, like the iOS Home Screen: the cards wobble and can be moved, resized, removed
+    /// and added in place.
+    @State private var editing = false
+    /// The card being dragged while editing.
+    @State private var dragging: HomeCard?
     @State private var editHaptic = 0
+
+    private static let addSectionID = "home-add-section"
 
     private var date: String { selected ?? model.today }
     private var day: DayRecord? { model.daysByDate[date] }
-    private var detail: DayDetail? { model.dayDetails[date] }
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 14) {
-                    WeekStrip(today: model.today, selected: $selected) { model.daysByDate[$0]?.double("recovery") }
-                    banners
-                    if day == nil {
-                        Card {
-                            EmptyStateView(
-                                icon: "clock.arrow.circlepath",
-                                title: "No data for this day",
-                                message: model.days.isEmpty
-                                    ? "Your history is still syncing. Pull down to refresh in a minute."
-                                    : "Nothing was recorded on \(Format.longDay(date))."
-                            )
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(spacing: 14) {
+                        if editing {
+                            editHint
+                        } else {
+                            WeekStrip(today: model.today, selected: $selected) { model.daysByDate[$0]?.double("recovery") }
+                            banners
+                            emptyState
                         }
-                    } else if visibleCards.isEmpty {
-                        Card {
-                            EmptyStateView(
-                                icon: "square.grid.2x2",
-                                title: "Nothing on Home for this day",
-                                message: "Your Home cards only show on today. Tap Edit Home screen to add cards for past days."
-                            )
+                        HomeGridLayout(columnSpacing: 12, rowSpacing: 14) {
+                            ForEach(gridItems) { item in
+                                cell(item)
+                                    .layoutValue(key: HomeCardSizeKey.self, value: item.size)
+                            }
+                        }
+                        .onDrop(of: [UTType.text], delegate: HomeDropEndDelegate(dragging: $dragging))
+                        if editing {
+                            HomeAddSection(date: date, shown: items, isDefault: items == HomeLayout.defaultItems,
+                                           canShow: isVisible, onAdd: add, onReset: reset)
+                                .id(Self.addSectionID)
+                        } else {
+                            editHomeButton
+                            footer
                         }
                     }
-                    ForEach(visibleCards) { card in
-                        homeCard(card, day: day)
-                    }
-                    editHomeButton
-                    footer
+                    .padding(.horizontal, 16)
+                    .padding(.top, editing ? 8 : 0)
+                    .padding(.bottom, 32)
+                    .sensoryFeedback(.impact(weight: .medium), trigger: editHaptic)
                 }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 32)
-                .sensoryFeedback(.impact(weight: .medium), trigger: editHaptic)
-            }
-            .refreshable {
-                await model.pullToRefresh()
-                await model.loadDay(date, force: true)
-            }
-            .screenBackground()
-            .task(id: date) { await model.loadDay(date) }
-            .navigationDestination(for: DetailRoute.self) { DetailDestination(route: $0) }
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { header }
-            .sheet(isPresented: $editingHome) {
-                HomeEditorView(cards: homeLayout)
-                    .environmentObject(model)
-                    .environmentObject(coach)
+                .refreshable {
+                    await model.pullToRefresh()
+                    await model.loadDay(date, force: true)
+                }
+                .screenBackground()
+                .task(id: date) { await model.loadDay(date) }
+                .navigationDestination(for: DetailRoute.self) { DetailDestination(route: $0) }
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { header(proxy) }
             }
         }
     }
 
-    // MARK: home cards
-
-    private var homeCards: [HomeCard] {
-        fixtureCards ?? HomeLayout.decode(storedCards)
+    @ViewBuilder private var emptyState: some View {
+        if day == nil {
+            Card {
+                EmptyStateView(
+                    icon: "clock.arrow.circlepath",
+                    title: "No data for this day",
+                    message: model.days.isEmpty
+                        ? "Your history is still syncing. Pull down to refresh in a minute."
+                        : "Nothing was recorded on \(Format.longDay(date))."
+                )
+            }
+        } else if visibleItems.isEmpty {
+            Card {
+                EmptyStateView(
+                    icon: "square.grid.2x2",
+                    title: "Nothing on Home for this day",
+                    message: "Your Home cards only show on today. Tap Edit Home screen to add cards for past days."
+                )
+            }
+        }
     }
 
-    /// The Home cards Today draws for this day, so a skipped card never leaves an empty
-    /// container (with its gesture) behind.
-    private var visibleCards: [HomeCard] {
-        homeCards.filter { card in isVisible(card) }
+    private var editHint: some View {
+        Text("Hold a card and drag it to move it. Drag the corner handle to resize, or tap it for the next size.")
+            .font(.caption)
+            .foregroundStyle(Theme.secondary)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+            .padding(.bottom, 4)
+    }
+
+    // MARK: home cards
+
+    private var items: [HomeItem] {
+        fixtureItems ?? HomeLayout.decode(storedCards)
+    }
+
+    private var layout: Binding<[HomeItem]> {
+        Binding(
+            get: { fixtureItems ?? HomeLayout.decode(storedCards) },
+            set: { next in
+                if fixtureItems != nil {
+                    fixtureItems = next
+                } else {
+                    storedCards = HomeLayout.encode(next)
+                }
+            }
+        )
+    }
+
+    /// The cards Today draws for this day, so a skipped card never leaves an empty cell behind.
+    private var visibleItems: [HomeItem] {
+        items.filter { isVisible($0.card) }
+    }
+
+    /// While editing every card shows (the hidden ones as placeholders), so each can be
+    /// arranged.
+    private var gridItems: [HomeItem] {
+        editing ? items : visibleItems
     }
 
     /// Cards built from this day's record. The other cards take only the date and handle a
@@ -127,38 +179,261 @@ struct TodayView: View {
         return true
     }
 
-    private var homeLayout: Binding<[HomeCard]> {
-        Binding(
-            get: { fixtureCards ?? HomeLayout.decode(storedCards) },
-            set: { cards in
-                if fixtureCards != nil {
-                    fixtureCards = cards
-                } else {
-                    storedCards = HomeLayout.encode(cards)
+    private func hiddenReason(_ card: HomeCard) -> String {
+        if card.todayOnly && date != model.today { return "Shows on today only." }
+        return model.days.isEmpty ? "Shows once your history has synced." : "Shows once today's data has synced."
+    }
+
+    /// One cell of the grid. Holding a card for a moment starts editing: the long press is high
+    /// priority so it wins over the links inside, but it fails as soon as the finger lifts or
+    /// moves, so taps still reach those links and the page still scrolls.
+    @ViewBuilder private func cell(_ item: HomeItem) -> some View {
+        if editing {
+            HomeEditCell(
+                item: item,
+                seed: HomeCard.allCases.firstIndex(of: item.card) ?? 0,
+                canRemove: items.count > 1,
+                isDragged: dragging == item.card,
+                onRemove: { remove(item.card) },
+                onResize: { resize(item.card, to: $0) },
+                onMove: { move(item.card, by: $0) },
+                onDragStart: {
+                    dragging = item.card
+                    return NSItemProvider(object: item.card.rawValue as NSString)
+                }
+            ) {
+                cellContent(item)
+            }
+            .onDrop(of: [UTType.text], delegate: HomeDropDelegate(target: item.card, items: layout, dragging: $dragging))
+            .accessibilityIdentifier("home-card-\(item.card.rawValue)")
+        } else {
+            cellContent(item)
+                .highPriorityGesture(
+                    LongPressGesture(minimumDuration: 0.45).onEnded { _ in startEditing() }
+                )
+                .accessibilityElement(children: .contain)
+                .accessibilityAction(named: Text("Edit Home screen")) { startEditing() }
+                .accessibilityIdentifier("home-card-\(item.card.rawValue)")
+        }
+    }
+
+    @ViewBuilder private func cellContent(_ item: HomeItem) -> some View {
+        if !isVisible(item.card) {
+            HomeCardPlaceholder(card: item.card, size: item.size, reason: hiddenReason(item.card))
+        } else if item.size == .large {
+            HomeLargeCard(card: item.card, date: date)
+        } else {
+            HomeGlance(card: item.card, size: item.size, date: date)
+        }
+    }
+
+    private func startEditing() {
+        editHaptic += 1
+        dragging = nil
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+            selected = nil
+            editing = true
+        }
+    }
+
+    private func finishEditing() {
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+            editing = false
+            dragging = nil
+        }
+    }
+
+    private func remove(_ card: HomeCard) {
+        guard items.count > 1 else { return }
+        let next = items.filter { $0.card != card }
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { layout.wrappedValue = next }
+    }
+
+    private func resize(_ card: HomeCard, to size: CardSize) {
+        var next = items
+        guard let i = next.firstIndex(where: { $0.card == card }), next[i].size != size else { return }
+        next[i].size = size
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.8)) { layout.wrappedValue = next }
+    }
+
+    /// VoiceOver's move up / move down.
+    private func move(_ card: HomeCard, by offset: Int) {
+        var next = items
+        guard let i = next.firstIndex(where: { $0.card == card }) else { return }
+        let j = min(max(0, i + offset), next.count - 1)
+        guard i != j else { return }
+        next.swapAt(i, j)
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { layout.wrappedValue = next }
+    }
+
+    private func add(_ item: HomeItem) {
+        guard !items.contains(where: { $0.card == item.card }) else { return }
+        editHaptic += 1
+        let next = items + [item]
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { layout.wrappedValue = next }
+    }
+
+    private func reset() {
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { layout.wrappedValue = HomeLayout.defaultItems }
+    }
+
+    private var editHomeButton: some View {
+        Button {
+            startEditing()
+        } label: {
+            Label("Edit Home screen", systemImage: "slider.horizontal.3")
+                .font(.caption.weight(.semibold))
+        }
+        .accessibilityIdentifier("home-edit")
+        .frame(maxWidth: .infinity)
+        .padding(.top, 4)
+    }
+
+    // MARK: header & banners
+
+    /// Lives in the navigation bar, so scrolled content passes under a blurred bar instead of the
+    /// status bar. While editing it holds Add and Done instead of the day controls.
+    @ToolbarContentBuilder private func header(_ proxy: ScrollViewProxy) -> some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            if editing {
+                Button {
+                    withAnimation { proxy.scrollTo(Self.addSectionID, anchor: .top) }
+                } label: {
+                    Image(systemName: "plus").font(.body.weight(.semibold))
+                }
+                .accessibilityLabel("Add a card")
+                .accessibilityIdentifier("home-add-cards")
+            } else {
+                Button { shift(-1) } label: {
+                    Image(systemName: "chevron.left").foregroundStyle(.white)
+                }
+                .accessibilityLabel("Previous day")
+            }
+        }
+        ToolbarItem(placement: .principal) {
+            if editing {
+                Text("Edit Home").font(.headline)
+            } else {
+                VStack(spacing: 0) {
+                    Text(Format.prettyDay(date, today: model.today)).font(.headline)
+                    Text(Format.longDay(date)).font(.caption2).foregroundStyle(Theme.secondary)
                 }
             }
-        )
-    }
-
-    /// One card in its container: holding it for a moment opens the Home editor. The long
-    /// press is high priority so it wins over the links inside, but it fails as soon as the
-    /// finger lifts or moves, so taps still reach those links and the page still scrolls.
-    private func homeCard(_ card: HomeCard, day: DayRecord?) -> some View {
-        homeCardContent(card, day: day)
-            .highPriorityGesture(
-                LongPressGesture(minimumDuration: 0.45).onEnded { _ in
-                    editHaptic += 1
-                    editingHome = true
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            if !editing && live.enabled {
+                NavigationLink(value: DetailRoute.liveHeartRate) {
+                    Image(systemName: "heart.text.square").foregroundStyle(Theme.heart)
                 }
-            )
-            .accessibilityElement(children: .contain)
-            .accessibilityAction(named: Text("Edit Home screen")) { editingHome = true }
-            .accessibilityIdentifier("home-card-\(card.rawValue)")
+                .accessibilityLabel("Live heart rate")
+                .accessibilityIdentifier("open-live-hr")
+            }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            if editing {
+                Button("Done") { finishEditing() }
+                    .fontWeight(.semibold)
+                    .accessibilityIdentifier("home-done")
+            } else {
+                Button { shift(1) } label: {
+                    Image(systemName: "chevron.right").foregroundStyle(.white)
+                }
+                .disabled(date >= model.today)
+                .opacity(date >= model.today ? 0.3 : 1)
+                .accessibilityLabel("Next day")
+            }
+        }
     }
 
-    /// `visibleCards` already skips today-only cards on past days and the day-record cards
-    /// when there is no record; the checks here only keep each case safe on its own.
-    @ViewBuilder private func homeCardContent(_ card: HomeCard, day: DayRecord?) -> some View {
+    private func shift(_ n: Int) {
+        let next = Format.addDays(date, n)
+        selected = next >= model.today ? nil : next
+    }
+
+    @ViewBuilder private var banners: some View {
+        if model.needsReconnect {
+            Banner(icon: "exclamationmark.triangle.fill",
+                   text: "Google access has expired, so new data is not syncing.",
+                   color: Theme.recoveryRed, actionTitle: "Reconnect") {
+                Task { await model.connect() }
+            }
+        }
+        if let sync = model.status?.sync, !sync.backfillDone, let p = sync.backfillProgress {
+            Banner(icon: "arrow.triangle.2.circlepath",
+                   text: "Importing your history… \(Int((p * 100).rounded()))% (the server keeps going in the background)",
+                   color: Theme.strain)
+        }
+        if let notice = model.noticeMessage {
+            Banner(icon: "info.circle.fill", text: notice, color: Theme.stress, actionTitle: "OK") {
+                model.noticeMessage = nil
+            }
+        }
+        if let error = model.errorMessage {
+            Banner(icon: "wifi.exclamationmark", text: error, color: Theme.recoveryYellow, actionTitle: "Dismiss") {
+                model.errorMessage = nil
+            }
+        }
+    }
+
+    /// When the server last fetched from Google, and when the band last synced with the
+    /// phone (the step FitStats cannot speed up).
+    private var footer: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                if model.isSyncing {
+                    ProgressView().scaleEffect(0.8)
+                    Text("Getting the latest from Google…").font(.caption).foregroundStyle(Theme.secondary)
+                } else {
+                    Text(updatedText).font(.caption).foregroundStyle(Theme.tertiary)
+                }
+                Spacer()
+                Button {
+                    Task { await model.syncNow() }
+                } label: {
+                    Label("Sync now", systemImage: "arrow.clockwise").font(.caption.weight(.semibold))
+                }
+                .disabled(model.isSyncing)
+            }
+            if let band = model.band, let synced = Format.timestamp(band.lastSyncTime) {
+                let name = band.name ?? "Your band"
+                if Date().timeIntervalSince(synced) > 30 * 60 {
+                    Label("\(name) last synced to your phone \(Format.relative(band.lastSyncTime)). Open the Google Health app to send newer data.",
+                          systemImage: "exclamationmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(Theme.recoveryYellow)
+                } else {
+                    Text("\(name) synced to your phone \(Format.relative(band.lastSyncTime))")
+                        .font(.caption)
+                        .foregroundStyle(Theme.tertiary)
+                }
+            }
+        }
+        .padding(.top, 4)
+    }
+
+    private var updatedText: String {
+        guard let fetched = model.status?.sync.lastRecentSyncAt else { return "Not updated yet" }
+        return "Updated \(Format.relative(fetched))"
+    }
+}
+
+/// A Home card at full size: everything the card has. Today shows it for large cards, and its
+/// own screen (HomeCardDetailView) opens it from a small or medium one.
+struct HomeLargeCard: View {
+    let card: HomeCard
+    let date: String
+    @EnvironmentObject private var model: AppModel
+
+    private var day: DayRecord? { model.daysByDate[date] }
+    private var detail: DayDetail? { model.dayDetails[date] }
+
+    var body: some View {
+        content(day: day)
+    }
+
+    /// Today already skips today-only cards on past days and the day-record cards when there is
+    /// no record; the checks here only keep each case safe on its own.
+    @ViewBuilder private func content(day: DayRecord?) -> some View {
         switch card {
         case .scores:
             if let day { scoresCard(day) }
@@ -199,84 +474,7 @@ struct TodayView: View {
         case .trainingLoad:
             TrainingLoadHomeCard(date: date)
         case .liveHeartRate:
-            if date == model.today && live.enabled { LiveHeartRateHomeCard() }
-        }
-    }
-
-    private var editHomeButton: some View {
-        Button {
-            editingHome = true
-        } label: {
-            Label("Edit Home screen", systemImage: "slider.horizontal.3")
-                .font(.caption.weight(.semibold))
-        }
-        .accessibilityIdentifier("home-edit")
-        .frame(maxWidth: .infinity)
-        .padding(.top, 4)
-    }
-
-    // MARK: header & banners
-
-    /// Lives in the navigation bar, so scrolled content passes under a blurred bar instead of the status bar.
-    @ToolbarContentBuilder private var header: some ToolbarContent {
-        ToolbarItem(placement: .topBarLeading) {
-            Button { shift(-1) } label: {
-                Image(systemName: "chevron.left").foregroundStyle(.white)
-            }
-            .accessibilityLabel("Previous day")
-        }
-        ToolbarItem(placement: .principal) {
-            VStack(spacing: 0) {
-                Text(Format.prettyDay(date, today: model.today)).font(.headline)
-                Text(Format.longDay(date)).font(.caption2).foregroundStyle(Theme.secondary)
-            }
-        }
-        ToolbarItem(placement: .topBarTrailing) {
-            if live.enabled {
-                NavigationLink(value: DetailRoute.liveHeartRate) {
-                    Image(systemName: "heart.text.square").foregroundStyle(Theme.heart)
-                }
-                .accessibilityLabel("Live heart rate")
-                .accessibilityIdentifier("open-live-hr")
-            }
-        }
-        ToolbarItem(placement: .topBarTrailing) {
-            Button { shift(1) } label: {
-                Image(systemName: "chevron.right").foregroundStyle(.white)
-            }
-            .disabled(date >= model.today)
-            .opacity(date >= model.today ? 0.3 : 1)
-            .accessibilityLabel("Next day")
-        }
-    }
-
-    private func shift(_ n: Int) {
-        let next = Format.addDays(date, n)
-        selected = next >= model.today ? nil : next
-    }
-
-    @ViewBuilder private var banners: some View {
-        if model.needsReconnect {
-            Banner(icon: "exclamationmark.triangle.fill",
-                   text: "Google access has expired, so new data is not syncing.",
-                   color: Theme.recoveryRed, actionTitle: "Reconnect") {
-                Task { await model.connect() }
-            }
-        }
-        if let sync = model.status?.sync, !sync.backfillDone, let p = sync.backfillProgress {
-            Banner(icon: "arrow.triangle.2.circlepath",
-                   text: "Importing your history… \(Int((p * 100).rounded()))% (the server keeps going in the background)",
-                   color: Theme.strain)
-        }
-        if let notice = model.noticeMessage {
-            Banner(icon: "info.circle.fill", text: notice, color: Theme.stress, actionTitle: "OK") {
-                model.noticeMessage = nil
-            }
-        }
-        if let error = model.errorMessage {
-            Banner(icon: "wifi.exclamationmark", text: error, color: Theme.recoveryYellow, actionTitle: "Dismiss") {
-                model.errorMessage = nil
-            }
+            if date == model.today { LiveHeartRateHomeCard() }
         }
     }
 
@@ -389,6 +587,13 @@ struct TodayView: View {
                     tile(key, day)
                 }
             }
+        } else {
+            Card {
+                SectionHeader(title: "Vitals")
+                Text("No vitals recorded yet.")
+                    .font(.footnote)
+                    .foregroundStyle(Theme.tertiary)
+            }
         }
     }
 
@@ -493,48 +698,38 @@ struct TodayView: View {
                     .accessibilityIdentifier("workout-row")
                 }
             }
-        }
-    }
-
-    /// When the server last fetched from Google, and when the band last synced with the
-    /// phone (the step FitStats cannot speed up).
-    private var footer: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                if model.isSyncing {
-                    ProgressView().scaleEffect(0.8)
-                    Text("Getting the latest from Google…").font(.caption).foregroundStyle(Theme.secondary)
+        } else {
+            Card {
+                SectionHeader(title: "Workouts")
+                if detail == nil && !model.failedDays.contains(date) {
+                    ProgressView().frame(maxWidth: .infinity, minHeight: 60)
                 } else {
-                    Text(updatedText).font(.caption).foregroundStyle(Theme.tertiary)
-                }
-                Spacer()
-                Button {
-                    Task { await model.syncNow() }
-                } label: {
-                    Label("Sync now", systemImage: "arrow.clockwise").font(.caption.weight(.semibold))
-                }
-                .disabled(model.isSyncing)
-            }
-            if let band = model.band, let synced = Format.timestamp(band.lastSyncTime) {
-                let name = band.name ?? "Your band"
-                if Date().timeIntervalSince(synced) > 30 * 60 {
-                    Label("\(name) last synced to your phone \(Format.relative(band.lastSyncTime)). Open the Google Health app to send newer data.",
-                          systemImage: "exclamationmark.circle")
-                        .font(.caption)
-                        .foregroundStyle(Theme.recoveryYellow)
-                } else {
-                    Text("\(name) synced to your phone \(Format.relative(band.lastSyncTime))")
-                        .font(.caption)
+                    Text(date == model.today ? "No workouts yet today." : "No workouts this day.")
+                        .font(.footnote)
                         .foregroundStyle(Theme.tertiary)
                 }
             }
         }
-        .padding(.top, 4)
     }
+}
 
-    private var updatedText: String {
-        guard let fetched = model.status?.sync.lastRecentSyncAt else { return "Not updated yet" }
-        return "Updated \(Format.relative(fetched))"
+/// A small or medium Home card opened at full size.
+struct HomeCardDetailView: View {
+    let card: HomeCard
+    let date: String
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        ScrollView {
+            HomeLargeCard(card: card, date: date)
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+                .padding(.bottom, 32)
+        }
+        .screenBackground()
+        .navigationTitle(card.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .task(id: date) { await model.loadDay(date) }
     }
 }
 

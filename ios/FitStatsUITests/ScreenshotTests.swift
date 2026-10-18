@@ -178,7 +178,9 @@ final class ScreenshotTests: XCTestCase {
         }
     }
 
-    /// Every Home card (FITSTATS_HOME_CARDS=all), then the Home editor opened by holding a card.
+    /// Every Home card (FITSTATS_HOME_CARDS=all) at its default size, then edit mode opened by
+    /// holding a card: the wobbling grid, a resize, the Add cards previews, an add. Then every
+    /// card small and every card medium (FITSTATS_HOME_SIZE).
     func test03HomeCards() {
         let fixtures = ProcessInfo.processInfo.environment["FITSTATS_FIXTURES"] ?? ""
         XCTAssertFalse(fixtures.isEmpty, "FITSTATS_FIXTURES is not set")
@@ -189,45 +191,66 @@ final class ScreenshotTests: XCTestCase {
         XCTAssertTrue(app.buttons["ring-recovery"].waitForExistence(timeout: 15), "Today screen did not load")
 
         shot("30-home-all")
-        for index in 1...7 {
+        for index in 1...5 {
             app.swipeUp()
             shot("3\(index)-home-all-\(index + 1)")
         }
-        // The last card in this mode; the swipes above may stop short of it.
-        let trainingLoad = element(app, "home-card-trainingLoad")
-        if trainingLoad.waitForExistence(timeout: 5) {
-            reveal(app, trainingLoad)
-            shot("45-home-training-load")
-        } else {
-            XCTFail("missing home-card-trainingLoad")
-        }
-        for _ in 0..<16 { app.swipeDown() }
+        for _ in 0..<12 { app.swipeDown() }
 
-        let card = app.descendants(matching: .any).matching(identifier: "home-card-scores").firstMatch
+        let card = element(app, "home-card-scores")
         guard card.waitForExistence(timeout: 5) else {
             XCTFail("missing home-card-scores")
             return
         }
         card.press(forDuration: 0.8)
         let done = app.buttons["home-done"]
-        XCTAssertTrue(done.waitForExistence(timeout: 5), "Home editor did not open")
-        shot("38-home-editor")
-        let list = app.collectionViews.containing(.any, identifier: "home-shown-scores").firstMatch
-        let scroll = { if list.exists { list.swipeUp() } else { app.swipeUp() } }
-        // Every card is on Home in this mode, so "More cards" is empty. Reset (kept in memory
-        // only in this mode, nothing is stored) fills it with the add rows.
+        XCTAssertTrue(done.waitForExistence(timeout: 5), "edit mode did not start")
+        shot("38-home-edit")
+        // Tapping a card's resize handle steps to the next size (large → small for Scores).
+        let resize = element(app, "home-resize-scores")
+        if resize.waitForExistence(timeout: 3) {
+            resize.tap()
+            shot("47-home-edit-resized")
+        } else {
+            XCTFail("missing home-resize-scores")
+        }
+        // Every card is on Home in this mode, so Add cards is empty. Reset (kept in memory only
+        // in this mode, nothing is stored) fills it with previews.
         let reset = app.buttons["home-reset"]
-        for _ in 0..<5 where !(reset.exists && reset.isHittable) { scroll() }
+        for _ in 0..<14 where !(reset.exists && reset.isHittable) { app.swipeUp() }
         if reset.exists, reset.isHittable {
             reset.tap()
+            sleep(1)
+            let addCards = app.buttons["home-add-cards"]
+            if addCards.exists { addCards.tap() }
+            shot("39-home-add-previews")
+            app.swipeUp()
+            shot("48-home-add-previews-2")
+            app.swipeUp()
+            shot("49-home-add-previews-3")
             let add = app.buttons["home-add-lastNight"]
-            _ = add.waitForExistence(timeout: 2)
-            for _ in 0..<5 where !(add.exists && add.isHittable) { scroll() }
+            for _ in 0..<8 where !(add.exists && add.isHittable) { app.swipeUp() }
+            if add.exists, add.isHittable { add.tap() } else { XCTFail("home-add-lastNight not reachable") }
         } else {
             XCTFail("home-reset not reachable")
         }
-        shot("39-home-editor-2")
         if done.exists { done.tap() }
+        sleep(1)
+        shot("50-home-after-edit")
+        app.terminate()
+
+        for (size, first, count) in [("small", 51, 3), ("medium", 55, 5)] {
+            app.launchEnvironment["FITSTATS_HOME_SIZE"] = size
+            app.launch()
+            XCTAssertTrue(element(app, "home-card-scores").waitForExistence(timeout: 15), "Today (\(size)) did not load")
+            sleep(1)
+            shot("\(first)-home-\(size)")
+            for index in 1...count {
+                app.swipeUp()
+                shot("\(first + index)-home-\(size)-\(index + 1)")
+            }
+            app.terminate()
+        }
     }
 
     /// Training load and best bedtime on Insights, the calendar and compare periods from Trends,

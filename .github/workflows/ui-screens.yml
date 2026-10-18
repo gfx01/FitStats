@@ -1,9 +1,11 @@
 name: UI screenshots (simulator, fixture data)
 
-# Manual only (Actions → "UI screenshots" → Run workflow): a run takes 5–6 macOS minutes,
-# which count 10× against a private repository's free Actions minutes.
+# Manual (Actions → "UI screenshots" → Run workflow), or a push to the ui-check branch: a run
+# takes 5–6 macOS minutes, which count 10× against a private repository's free Actions minutes.
 on:
   workflow_dispatch:
+  push:
+    branches: [ui-check]
 
 concurrency:
   group: ui-screens-${{ github.ref }}
@@ -66,15 +68,19 @@ jobs:
             2>&1 | tee test.log | grep -E "error:|Test Case|Executed|BUILD|TEST (SUCCEEDED|FAILED)" || true
           grep -q "TEST SUCCEEDED" test.log
 
+      # Also saved next to the screenshots, so the errors can be read from the ci-screenshots branch.
       - name: Compiler and test errors
         if: failure()
         working-directory: ios
-        run: grep -E "error:|failed" test.log | sort -u | head -120 || true
+        run: |
+          mkdir -p "$RUNNER_TEMP/shots"
+          grep -E "error:|failed|XCTAssert|Test Case .* failed" test.log | sort -u | head -300 > "$RUNNER_TEMP/shots/errors.txt" || true
+          cat "$RUNNER_TEMP/shots/errors.txt"
 
       - name: Collect screenshots
         if: always()
         run: |
-          if [ -z "$(ls -A "$RUNNER_TEMP/shots" 2>/dev/null)" ]; then
+          if ! ls "$RUNNER_TEMP/shots"/*.png >/dev/null 2>&1; then
             xcrun xcresulttool export attachments --path "$RUNNER_TEMP/Test.xcresult" --output-path "$RUNNER_TEMP/shots" || true
           fi
           ls -la "$RUNNER_TEMP/shots" || true

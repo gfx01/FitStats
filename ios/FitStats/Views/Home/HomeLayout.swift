@@ -108,52 +108,115 @@ enum HomeCard: String, CaseIterable, Identifiable, Codable {
 
     /// Shown only while Today is on the current day (past days skip it).
     var todayOnly: Bool { self == .tonight || self == .coachBrief || self == .liveHeartRate }
+
+    /// The size a card gets when it is added, and when a layout from before sizes is loaded.
+    var defaultSize: CardSize {
+        switch self {
+        case .scores: return .large
+        case .vitals, .activity, .heartRate, .workouts, .lastNight, .thisWeek, .topInsight, .coachBrief: return .medium
+        case .tonight, .journal, .recoveryTrend, .hrvTrend, .restingHrTrend, .stressDay, .weeklyZoneMinutes,
+             .streaks, .body, .trainingLoad, .liveHeartRate: return .small
+        }
+    }
 }
 
-/// The ordered list of cards shown on Home, stored for @AppStorage as a comma-separated
-/// string of raw values under `storageKey`.
+/// How big a Home card is, like iOS widgets: small takes half the width (two sit side by
+/// side), medium the full width at the same height, large is the full card with everything.
+enum CardSize: String, CaseIterable, Identifiable {
+    case small, medium, large
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .small: return "Small"
+        case .medium: return "Medium"
+        case .large: return "Large"
+        }
+    }
+
+    /// The footprint the resize handle works in: small is 1 column, medium 2, large 2 × 2.
+    var columns: Int { self == .small ? 1 : 2 }
+    var rows: Int { self == .large ? 2 : 1 }
+
+    /// Tapping the resize handle steps through the sizes.
+    var next: CardSize {
+        switch self {
+        case .small: return .medium
+        case .medium: return .large
+        case .large: return .small
+        }
+    }
+}
+
+/// One card on Home and its size.
+struct HomeItem: Identifiable, Equatable {
+    var card: HomeCard
+    var size: CardSize
+
+    var id: HomeCard { card }
+}
+
+/// The ordered cards on Home with their sizes, stored for @AppStorage as a comma-separated
+/// string of "card:size" under `storageKey`.
 enum HomeLayout {
-    static let storageKey = "homeCards.v1"
+    static let storageKey = "homeCards.v2"
+    /// Before sizes: the same list without them. Read once, when nothing is stored under v2.
+    static let legacyKey = "homeCards.v1"
 
-    static let defaultCards: [HomeCard] = [.scores, .tonight, .journal, .vitals, .activity, .heartRate, .workouts]
+    static let defaultItems: [HomeItem] = [
+        HomeItem(card: .scores, size: .large),
+        HomeItem(card: .tonight, size: .small),
+        HomeItem(card: .journal, size: .small),
+        HomeItem(card: .vitals, size: .medium),
+        HomeItem(card: .activity, size: .medium),
+        HomeItem(card: .heartRate, size: .medium),
+        HomeItem(card: .workouts, size: .medium),
+    ]
 
-    /// CI screenshots launch with FITSTATS_HOME_CARDS=all to show every card, whatever is stored.
+    /// CI screenshots launch with FITSTATS_HOME_CARDS=all to show every card, whatever is stored,
+    /// and FITSTATS_HOME_SIZE=small|medium|large to show them all at one size.
     static var showsAllCards: Bool {
         ProcessInfo.processInfo.environment["FITSTATS_HOME_CARDS"] == "all"
     }
 
     /// Every card in declaration order in fixture mode, otherwise nil (use the stored layout).
-    static var fixtureCards: [HomeCard]? {
-        showsAllCards ? HomeCard.allCases : nil
+    static var fixtureItems: [HomeItem]? {
+        guard showsAllCards else { return nil }
+        let forced = ProcessInfo.processInfo.environment["FITSTATS_HOME_SIZE"].flatMap(CardSize.init(rawValue:))
+        return HomeCard.allCases.map { HomeItem(card: $0, size: forced ?? $0.defaultSize) }
     }
 
-    /// Parses a stored value: unknown raw values and repeats are dropped, and an empty or
-    /// missing value means the default layout.
-    static func decode(_ stored: String?) -> [HomeCard] {
-        guard let stored else { return defaultCards }
-        var seen = Set<HomeCard>()
-        var cards: [HomeCard] = []
-        for part in stored.split(separator: ",") {
-            let raw = part.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let card = HomeCard(rawValue: raw), seen.insert(card).inserted {
-                cards.append(card)
-            }
+    /// Parses a stored value: unknown cards and repeats are dropped, an unknown or missing size
+    /// means the card's default. Nothing stored means the layout from before sizes, if there is
+    /// one, else the default layout.
+    static func decode(_ stored: String?) -> [HomeItem] {
+        if let stored, !stored.isEmpty {
+            let items = parse(stored)
+            if !items.isEmpty { return items }
         }
-        return cards.isEmpty ? defaultCards : cards
+        if let legacy = UserDefaults.standard.string(forKey: legacyKey), !legacy.isEmpty {
+            let items = parse(legacy)
+            if !items.isEmpty { return items }
+        }
+        return defaultItems
     }
 
-    static func encode(_ cards: [HomeCard]) -> String {
+    private static func parse(_ stored: String) -> [HomeItem] {
         var seen = Set<HomeCard>()
-        return cards.filter { seen.insert($0).inserted }.map(\.rawValue).joined(separator: ",")
+        var items: [HomeItem] = []
+        for part in stored.split(separator: ",") {
+            let pieces = part.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            guard let raw = pieces.first, let card = HomeCard(rawValue: raw), seen.insert(card).inserted else { continue }
+            let size = pieces.count > 1 ? CardSize(rawValue: pieces[1]) : nil
+            items.append(HomeItem(card: card, size: size ?? card.defaultSize))
+        }
+        return items
     }
 
-    /// The layout to show: every card in fixture mode, otherwise the stored one.
-    static func load(_ stored: String?) -> [HomeCard] {
-        fixtureCards ?? decode(stored)
-    }
-
-    /// The stored layout straight from UserDefaults (same key and format as the @AppStorage).
-    static var current: [HomeCard] {
-        load(UserDefaults.standard.string(forKey: storageKey))
+    static func encode(_ items: [HomeItem]) -> String {
+        var seen = Set<HomeCard>()
+        return items.filter { seen.insert($0.card).inserted }.map { "\($0.card.rawValue):\($0.size.rawValue)" }.joined(separator: ",")
     }
 }
+
