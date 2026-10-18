@@ -127,11 +127,11 @@ private struct CorrelationRow: View {
         return "\(strength) · \(correlation.n) days"
     }
 
+    /// Brightness shows strength only; green/red would wrongly suggest good/bad.
     private var color: Color {
         switch correlation.strength {
-        case "strong": return Theme.recoveryGreen
-        case "moderate": return Theme.recoveryYellow
-        default: return Theme.secondary
+        case "strong", "moderate": return .white
+        default: return Theme.tertiary
         }
     }
 }

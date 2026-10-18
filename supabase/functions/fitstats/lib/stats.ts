@@ -374,6 +374,14 @@ function fmtDuration(min: number): string {
   return h ? `${h}h ${m}m` : `${m}m`;
 }
 
+/** "10,299", "52 ms", "71%", "7h 32m" — the way the app shows the same metric. */
+export function fmtValue(def: MetricDef, v: number): string {
+  if (def.format === "duration") return fmtDuration(v);
+  const n = v.toLocaleString("en-US", { minimumFractionDigits: def.decimals, maximumFractionDigits: def.decimals });
+  if (def.format === "percent" || def.unit === "%") return `${n}%`;
+  return def.unit ? `${n} ${def.unit}` : n;
+}
+
 export function insights(
   days: DayRow[],
   today: Ymd,
@@ -395,7 +403,7 @@ export function insights(
     out.push({
       id: `trend_${key}`,
       title: `${label} ${ch > 0 ? "up" : "down"} ${Math.abs(ch).toFixed(0)}%`,
-      body: `Your 7-day average ${label.toLowerCase()} is ${round(w7, def.decimals)}${def.unit ? " " + def.unit : ""}, versus ${round(w30, def.decimals)}${def.unit ? " " + def.unit : ""} over 30 days.`,
+      body: `7-day average ${fmtValue(def, w7!)}, versus ${fmtValue(def, w30!)} over the last 30 days.`,
       tone: good === null ? "neutral" : good ? "positive" : "negative",
       metric: key,
     });

@@ -283,7 +283,7 @@ private struct ZoneBars: View {
                     GeometryReader { geo in
                         Capsule()
                             .fill(colors[i])
-                            .frame(width: max(4, geo.size.width * CGFloat(minutes[i] / maxValue)))
+                            .frame(width: minutes[i] > 0 ? max(6, geo.size.width * CGFloat(minutes[i] / maxValue)) : 0)
                     }
                     .frame(height: 8)
                     Text(Format.duration(minutes[i]))

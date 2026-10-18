@@ -55,19 +55,22 @@ struct RingGauge<Center: View>: View {
                     .rotationEffect(.degrees(-90))
                     .padding(-lineWidth * 0.95)
             }
-            Circle()
-                .trim(from: 0, to: max(0.001, min(1, progress)))
-                .stroke(
-                    AngularGradient(
-                        gradient: Gradient(colors: [color.opacity(0.85), endColor ?? color]),
-                        center: .center,
-                        startAngle: .degrees(0),
-                        endAngle: .degrees(360 * max(0.05, min(1, progress)))
-                    ),
-                    style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
-                )
-                .rotationEffect(.degrees(-90))
-                .shadow(color: color.opacity(0.35), radius: 6)
+            // A zero score draws no arc (a round cap would otherwise leave a dot at 12 o'clock).
+            if progress > 0 {
+                Circle()
+                    .trim(from: 0, to: min(1, progress))
+                    .stroke(
+                        AngularGradient(
+                            gradient: Gradient(colors: [color.opacity(0.85), endColor ?? color]),
+                            center: .center,
+                            startAngle: .degrees(0),
+                            endAngle: .degrees(360 * max(0.05, min(1, progress)))
+                        ),
+                        style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
+                    )
+                    .rotationEffect(.degrees(-90))
+                    .shadow(color: color.opacity(0.35), radius: 6)
+            }
             center()
         }
     }
@@ -199,9 +202,10 @@ struct ComponentBar: View {
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     Capsule().fill(Theme.track)
+                    let fraction = CGFloat(min(100, max(0, component.value)) / 100)
                     Capsule()
                         .fill(color)
-                        .frame(width: max(4, geo.size.width * CGFloat(min(100, max(0, component.value)) / 100)))
+                        .frame(width: fraction > 0 ? max(6, geo.size.width * fraction) : 0)
                 }
             }
             .frame(height: 6)

@@ -166,41 +166,77 @@ function rollupValue(type: string, date: string): Row | null {
     case "total-calories": return { totalCalories: { kcalSum: 2200 + k } };
     case "sedentary-period": return { sedentaryPeriod: { durationSum: "30000s" } };
     case "time-in-heart-rate-zone": return { timeInHeartRateZone: { timeInHeartRateZones: [{ heartRateZone: "LIGHT", duration: "5400s" }] } };
-    case "heart-rate": return { heartRate: { beatsPerMinuteMin: 50, beatsPerMinuteAvg: 70, beatsPerMinuteMax: 150 } };
+    case "heart-rate": {
+      const hr = dayHeartRate(date);
+      return hr && { heartRate: { beatsPerMinuteMin: hr.min, beatsPerMinuteAvg: hr.avg, beatsPerMinuteMax: hr.max } };
+    }
     case "active-minutes": return { activeMinutes: { activeMinutesRollupByActivityLevel: [{ activityLevel: "LIGHT", activeMinutesSum: "180" }] } };
     default: return null; // weight / body-fat: no scale
   }
 }
 
+/** ~90-minute cycles: deep sleep early in the night, longer REM towards morning, a few short wakes. */
+function sleepStages(start: number, end: number, k: number): { type: string; startTime: string; endTime: string }[] {
+  const out: { type: string; startTime: string; endTime: string }[] = [];
+  let t = start;
+  const push = (type: string, min: number) => {
+    const e = Math.min(end, t + min * 60000);
+    if (e > t) out.push({ type, startTime: iso(t), endTime: iso(e) });
+    t = e;
+  };
+  push("AWAKE", 6 + (k % 9));
+  for (let cycle = 0; t < end; cycle++) {
+    push("LIGHT", 22 + ((k + cycle * 7) % 14));
+    push("DEEP", Math.max(4, 30 - cycle * 9 + (k % 7)));
+    push("LIGHT", 12 + ((k + cycle * 3) % 10));
+    push("REM", 9 + cycle * 7 + (k % 7));
+    if (cycle % 2 === 1) push("AWAKE", 2 + ((k + cycle) % 5));
+  }
+  return out;
+}
+
 function sleepFor(date: string): Row | null {
   if (date < FIRST_DATA_DAY) return null;
-  const start = localMs(addDaysLocal(date, -1), 23, seed(date) % 40);
-  const end = localMs(date, 7, seed(date) % 30);
-  const mid = start + (end - start) / 3;
+  const k = seed(date);
+  const start = localMs(addDaysLocal(date, -1), 22, 50 + (k % 45));
+  const end = localMs(date, 6, 40 + (k % 50));
+  const stages = sleepStages(start, end, k);
+  const minutes: Record<string, number> = {}, counts: Record<string, number> = {};
+  for (const st of stages) {
+    minutes[st.type] = (minutes[st.type] ?? 0) + (Date.parse(st.endTime) - Date.parse(st.startTime)) / 60000;
+    counts[st.type] = (counts[st.type] ?? 0) + 1;
+  }
+  const inPeriod = Math.round((end - start) / 60000);
+  const awake = Math.round(minutes.AWAKE ?? 0);
   return {
     name: `users/me/dataTypes/sleep/dataPoints/s-${date}`,
     sleep: {
       interval: { startTime: iso(start), endTime: iso(end), startUtcOffset: `${TZ_OFFSET_S}s`, endUtcOffset: `${TZ_OFFSET_S}s`, civilEndTime: { date: ymdParts(date) } },
       type: "STAGES",
       metadata: { mainSleep: true, nap: false, processed: true },
-      stages: [
-        { type: "LIGHT", startTime: iso(start), endTime: iso(mid) },
-        { type: "DEEP", startTime: iso(mid), endTime: iso(mid + 75 * 60000) },
-        { type: "REM", startTime: iso(mid + 75 * 60000), endTime: iso(end) },
-      ],
+      stages,
       summary: {
-        minutesAsleep: String(Math.round((end - start) / 60000) - 15),
-        minutesInSleepPeriod: String(Math.round((end - start) / 60000)),
-        minutesAwake: "15",
-        stagesSummary: [
-          { type: "DEEP", minutes: "75", count: "2" },
-          { type: "REM", minutes: "95", count: "3" },
-          { type: "LIGHT", minutes: "250", count: "6" },
-          { type: "AWAKE", minutes: "15", count: "3" },
-        ],
+        minutesAsleep: String(inPeriod - awake),
+        minutesInSleepPeriod: String(inPeriod),
+        minutesAwake: String(awake),
+        minutesToFallAsleep: String(Math.round((Date.parse(stages[0].endTime) - start) / 60000)),
+        stagesSummary: ["DEEP", "REM", "LIGHT", "AWAKE"].map((type) => ({
+          type, minutes: String(Math.round(minutes[type] ?? 0)), count: String(counts[type] ?? 0),
+        })),
       },
     },
   };
+}
+
+/** Minute heart rates of one local day (for the day rollup, consistent with the minute data). */
+function dayHeartRate(date: string): { min: number; avg: number; max: number } | null {
+  const vals: number[] = [];
+  for (let t = localMs(date, 0); t < localMs(date, 24); t += 60000) {
+    const hr = minuteHr(t);
+    if (hr !== null) vals.push(hr);
+  }
+  if (!vals.length) return null;
+  return { min: Math.min(...vals), avg: Math.round(vals.reduce((a, b) => a + b, 0) / vals.length), max: Math.max(...vals) };
 }
 
 function minuteHr(ms: number): number | null {
@@ -208,7 +244,7 @@ function minuteHr(ms: number): number | null {
   const date = local.toISOString().slice(0, 10);
   if (date < FIRST_DATA_DAY) return null;
   const h = local.getUTCHours();
-  if (h < 7) return 52;
+  if (h < 7) return Math.round(52 + 3 * Math.sin((h * 60 + local.getUTCMinutes()) / 37) + (seed(date) % 3));
   if (h === 18 && seed(date) % 3 === 0) return 150 + (local.getUTCMinutes() % 12); // a run every few days
   const m = h * 60 + local.getUTCMinutes();
   return Math.round(70 + 7 * Math.sin(m / 47) + 3 * Math.sin(m / 9) + (seed(date) % 7));
@@ -264,12 +300,15 @@ function googleFetch(url: URL, init: RequestInit): Response {
     const sm = /"([^"]+)" AND .* < "([^"]+)"/.exec(filter)!;
     const s = Date.parse(sm[1]), e = Date.parse(sm[2]);
     const pts: Row[] = [];
-    for (let t = s; t < e; t += 3_600_000) {
+    for (let t = s; t < e; t += 600_000) {
       const local = new Date(t + TZ_OFFSET_S * 1000);
-      if (local.getUTCHours() >= 7 || local.toISOString().slice(0, 10) < FIRST_DATA_DAY) continue;
+      if (local.getUTCHours() >= 6 || local.toISOString().slice(0, 10) < FIRST_DATA_DAY) continue;
       const sampleTime = { physicalTime: iso(t), utcOffset: "7200s" };
-      if (type === "heart-rate-variability") pts.push({ heartRateVariability: { sampleTime, rootMeanSquareOfSuccessiveDifferencesMilliseconds: 45 } });
-      if (type === "oxygen-saturation") pts.push({ oxygenSaturation: { sampleTime, percentage: 96 } });
+      const x = t / 600_000;
+      if (type === "heart-rate-variability") {
+        pts.push({ heartRateVariability: { sampleTime, rootMeanSquareOfSuccessiveDifferencesMilliseconds: Math.round(46 + 9 * Math.sin(x / 5) + 4 * Math.sin(x / 1.7)) } });
+      }
+      if (type === "oxygen-saturation") pts.push({ oxygenSaturation: { sampleTime, percentage: Math.round((96 + 1.4 * Math.sin(x / 4) + 0.6 * Math.sin(x / 1.3)) * 10) / 10 } });
     }
     return Response.json({ dataPoints: pts });
   }

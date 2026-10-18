@@ -41,7 +41,6 @@ struct TodayView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 14) {
-                    header
                     WeekStrip(today: model.today, selected: $selected) { model.daysByDate[$0]?.double("recovery") }
                     banners
                     if let day {
@@ -73,32 +72,35 @@ struct TodayView: View {
             .screenBackground()
             .task(id: date) { await model.loadDay(date) }
             .navigationDestination(for: DetailRoute.self) { DetailDestination(route: $0) }
-            .toolbar(.hidden, for: .navigationBar)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { header }
         }
     }
 
     // MARK: header & banners
 
-    private var header: some View {
-        HStack {
+    /// Lives in the navigation bar, so scrolled content passes under a blurred bar instead of the status bar.
+    @ToolbarContentBuilder private var header: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
             Button { shift(-1) } label: {
-                Image(systemName: "chevron.left").frame(width: 36, height: 36)
+                Image(systemName: "chevron.left").foregroundStyle(.white)
             }
-            Spacer()
-            VStack(spacing: 2) {
-                Text(Format.prettyDay(date, today: model.today)).font(.title3.bold())
-                Text(Format.longDay(date)).font(.caption).foregroundStyle(Theme.secondary)
+            .accessibilityLabel("Previous day")
+        }
+        ToolbarItem(placement: .principal) {
+            VStack(spacing: 0) {
+                Text(Format.prettyDay(date, today: model.today)).font(.headline)
+                Text(Format.longDay(date)).font(.caption2).foregroundStyle(Theme.secondary)
             }
-            Spacer()
+        }
+        ToolbarItem(placement: .topBarTrailing) {
             Button { shift(1) } label: {
-                Image(systemName: "chevron.right").frame(width: 36, height: 36)
+                Image(systemName: "chevron.right").foregroundStyle(.white)
             }
             .disabled(date >= model.today)
             .opacity(date >= model.today ? 0.3 : 1)
+            .accessibilityLabel("Next day")
         }
-        .font(.headline)
-        .foregroundStyle(.white)
-        .padding(.top, 6)
     }
 
     private func shift(_ n: Int) {
@@ -216,7 +218,7 @@ struct TodayView: View {
             change = (value - base) / abs(base) * 100
         }
         return NavigationLink(value: DetailRoute.metric(key)) {
-            MetricTile(title: def.label, value: def.formatted(value),
+            MetricTile(title: def.shortLabel, value: def.formatted(value),
                        sub: base.map { "30d avg \(def.formatted($0, withUnit: false))" },
                        icon: def.icon, color: def.category.color, change: change, better: def.better)
         }

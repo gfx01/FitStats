@@ -7,6 +7,71 @@ struct DayPoint: Identifiable {
     var id: Date { date }
 }
 
+/// Axis helpers. Swift Charts draws an x label starting at its tick, so a tick close to the
+/// right edge gets its label clipped ("Oct 18" → "O"). Ticks stop `room` before the end.
+enum ChartAxis {
+    static func ticks(from start: Date, to end: Date, room: TimeInterval, every step: (Date) -> Date?) -> [Date] {
+        var out: [Date] = []
+        var t = start
+        while end.timeIntervalSince(t) >= room {
+            out.append(t)
+            guard let next = step(t), next > t else { break }
+            t = next
+        }
+        return out.isEmpty ? [start] : out
+    }
+
+    /// About four evenly spaced day ticks for daily charts.
+    static func dayTicks(_ dates: [Date]) -> [Date] {
+        guard let first = dates.min(), let last = dates.max() else { return [] }
+        let span = Calendar.current.dateComponents([.day], from: first, to: last).day ?? 0
+        let step = max(1, Int((Double(span) / 4).rounded(.up)))
+        // A label is ~12% of the plot width ("Oct 2025" ~17%).
+        let room = last.timeIntervalSince(first) * (spansYears(dates) ? 0.18 : 0.13)
+        return ticks(from: first, to: last, room: room) { Calendar.current.date(byAdding: .day, value: step, to: $0) }
+    }
+
+    static func spansYears(_ dates: [Date]) -> Bool {
+        guard let first = dates.min(), let last = dates.max() else { return false }
+        return last.timeIntervalSince(first) > 200 * 86_400
+    }
+
+    /// Whole-hour ticks (every 2 h for long nights) in the account's time zone.
+    static func hourTicks(from start: Date, to end: Date, zone: TimeZone?) -> [Date] {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = zone ?? .current
+        let hours = end.timeIntervalSince(start) / 3600
+        let step = hours > 6 ? 2 : 1
+        guard var first = cal.nextDate(after: start.addingTimeInterval(-1), matching: DateComponents(minute: 0, second: 0),
+                                       matchingPolicy: .nextTime) else { return [] }
+        if step == 2, cal.component(.hour, from: first) % 2 == 1 { first = first.addingTimeInterval(3600) }
+        return ticks(from: first, to: end, room: end.timeIntervalSince(start) * 0.12) {
+            cal.date(byAdding: .hour, value: step, to: $0)
+        }
+    }
+
+    /// Y range with breathing room, so a flat series still gets a readable axis.
+    static func paddedDomain(_ values: [Double], includeZero: Bool) -> ClosedRange<Double> {
+        guard var lo = values.min(), var hi = values.max() else { return 0...1 }
+        if includeZero {
+            lo = min(lo, 0)
+            hi = max(hi, 0)
+        }
+        let pad = max((hi - lo) * 0.08, abs(hi) * 0.02, 0.5)
+        return (includeZero && lo == 0 ? 0 : lo - pad)...(hi + pad)
+    }
+
+    /// Fewer decimals on axis labels than in values: "75" rather than "75.0".
+    static func decimals(for domain: ClosedRange<Double>, limit: Int) -> Int {
+        let span = domain.upperBound - domain.lowerBound
+        return min(limit, span >= 4 ? 0 : span >= 0.4 ? 1 : 2)
+    }
+
+    static func dayLabel(_ yearly: Bool) -> Date.FormatStyle {
+        yearly ? .dateTime.month(.abbreviated).year() : .dateTime.month(.abbreviated).day()
+    }
+}
+
 /// Daily values for one metric: bars for day totals, line for averages.
 struct DailyMetricChart: View {
     let points: [DayPoint]
@@ -16,6 +81,11 @@ struct DailyMetricChart: View {
     var height: CGFloat = 200
 
     var body: some View {
+        let dates = points.map(\.date)
+        let ticks = ChartAxis.dayTicks(dates)
+        let label = ChartAxis.dayLabel(ChartAxis.spansYears(dates))
+        let domain = ChartAxis.paddedDomain(points.map(\.value) + (average.map { [$0] } ?? []), includeZero: def.isDayTotal)
+        let axisDecimals = ChartAxis.decimals(for: domain, limit: def.decimals)
         Chart {
             ForEach(points) { p in
                 if def.isDayTotal {
@@ -40,9 +110,9 @@ struct DailyMetricChart: View {
             }
         }
         .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 5)) { _ in
+            AxisMarks(values: ticks) { _ in
                 AxisGridLine().foregroundStyle(Theme.track)
-                AxisValueLabel(format: .dateTime.month(.abbreviated).day(), centered: false)
+                AxisValueLabel(format: label, centered: false)
                     .foregroundStyle(Theme.tertiary)
             }
         }
@@ -51,12 +121,12 @@ struct DailyMetricChart: View {
                 AxisGridLine().foregroundStyle(Theme.track)
                 AxisValueLabel {
                     if let v = value.as(Double.self) {
-                        Text(def.formatted(v, withUnit: false)).foregroundStyle(Theme.tertiary)
+                        Text(def.formatted(v, withUnit: false, decimals: axisDecimals)).foregroundStyle(Theme.tertiary)
                     }
                 }
             }
         }
-        .chartYScale(domain: .automatic(includesZero: def.isDayTotal))
+        .chartYScale(domain: domain)
         .frame(height: height)
     }
 }
@@ -121,7 +191,7 @@ struct HeartRateDayChart: View {
         }
         .chartXScale(domain: 0...1440)
         .chartXAxis {
-            AxisMarks(values: [0, 360, 720, 1080, 1440]) { value in
+            AxisMarks(values: [0, 360, 720, 1080]) { value in
                 AxisGridLine().foregroundStyle(Theme.track)
                 AxisValueLabel {
                     if let m = value.as(Int.self) {
@@ -179,6 +249,8 @@ struct HypnogramChart: View {
 
     var body: some View {
         let data = segments
+        let start = data.map(\.start).min() ?? Date()
+        let end = data.map(\.end).max() ?? start
         Chart {
             ForEach(data) { s in
                 RectangleMark(
@@ -202,8 +274,9 @@ struct HypnogramChart: View {
                 }
             }
         }
+        .chartXScale(domain: start...max(end, start.addingTimeInterval(60)))
         .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 5)) { value in
+            AxisMarks(values: ChartAxis.hourTicks(from: start, to: end, zone: zone)) { value in
                 AxisGridLine().foregroundStyle(Theme.track)
                 AxisValueLabel {
                     if let d = value.as(Date.self) {
@@ -241,7 +314,7 @@ struct HourlyBarsChart: View {
         .chartXScale(domain: -0.5...23.5)
         .chartYScale(domain: 0...100)
         .chartXAxis {
-            AxisMarks(values: [0.0, 6.0, 12.0, 18.0, 23.0]) { value in
+            AxisMarks(values: [0.0, 6.0, 12.0, 18.0]) { value in
                 AxisValueLabel {
                     if let h = value.as(Double.self) {
                         Text(String(format: "%02d", Int(h))).foregroundStyle(Theme.tertiary)
@@ -276,6 +349,8 @@ struct WeekdayChart: View {
             guard let v, i < names.count else { return nil }
             return WeekdayValue(name: names[i], value: v)
         }
+        let domain = ChartAxis.paddedDomain(data.map(\.value), includeZero: true)
+        let axisDecimals = ChartAxis.decimals(for: domain, limit: def.decimals)
         Chart {
             ForEach(data) { d in
                 BarMark(x: .value("Day", d.name), y: .value(def.label, d.value))
@@ -289,12 +364,12 @@ struct WeekdayChart: View {
                 AxisGridLine().foregroundStyle(Theme.track)
                 AxisValueLabel {
                     if let v = value.as(Double.self) {
-                        Text(def.formatted(v, withUnit: false)).foregroundStyle(Theme.tertiary)
+                        Text(def.formatted(v, withUnit: false, decimals: axisDecimals)).foregroundStyle(Theme.tertiary)
                     }
                 }
             }
         }
-        .chartYScale(domain: .automatic(includesZero: def.isDayTotal))
+        .chartYScale(domain: domain)
         .frame(height: 140)
     }
 }
@@ -316,6 +391,8 @@ struct SamplesChart: View {
             guard s.count >= 2 else { return nil }
             return TimedValue(date: Date(timeIntervalSince1970: s[0]), value: s[1])
         }
+        let start = data.map(\.date).min() ?? Date()
+        let end = data.map(\.date).max() ?? start
         Chart {
             ForEach(data) { p in
                 LineMark(x: .value("Time", p.date), y: .value("Value", p.value))
@@ -323,8 +400,9 @@ struct SamplesChart: View {
                     .interpolationMethod(.monotone)
             }
         }
+        .chartXScale(domain: start...max(end, start.addingTimeInterval(60)))
         .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 4)) { value in
+            AxisMarks(values: ChartAxis.hourTicks(from: start, to: end, zone: zone)) { value in
                 AxisGridLine().foregroundStyle(Theme.track)
                 AxisValueLabel {
                     if let d = value.as(Date.self) {
@@ -339,7 +417,7 @@ struct SamplesChart: View {
                 AxisValueLabel().foregroundStyle(Theme.tertiary)
             }
         }
-        .chartYScale(domain: .automatic(includesZero: false))
+        .chartYScale(domain: ChartAxis.paddedDomain(data.map(\.value), includeZero: false))
         .frame(height: 130)
     }
 }

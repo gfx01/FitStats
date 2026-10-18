@@ -64,7 +64,7 @@ private struct MetricRow: View {
                 .background(Circle().fill(def.category.color.opacity(0.16)))
                 .foregroundStyle(def.category.color)
             VStack(alignment: .leading, spacing: 2) {
-                Text(def.label).font(.subheadline.weight(.medium)).lineLimit(1)
+                Text(def.shortLabel).font(.subheadline.weight(.medium)).lineLimit(1)
                 HStack(spacing: 6) {
                     Text(def.formatted(stats?.ranges["30"]?.mean))
                         .font(.caption)
@@ -180,7 +180,7 @@ struct MetricDetailView: View {
             KeyValueRow(key: "Lowest · \(Format.shortDay(rs.minDate))", value: def.formatted(rs.min))
             KeyValueRow(key: "Highest · \(Format.shortDay(rs.maxDate))", value: def.formatted(rs.max))
             if let sd = rs.sd {
-                KeyValueRow(key: "Variability (SD)", value: def.format == .clock ? Format.duration(sd) : def.formatted(sd))
+                KeyValueRow(key: "Variability (SD)", value: spreadText(sd))
             }
             if let sum = rs.sum {
                 KeyValueRow(key: "Total", value: def.formatted(sum))
@@ -191,13 +191,22 @@ struct MetricDetailView: View {
         }
     }
 
+    /// A standard deviation is a size, so it never gets a sign or a clock format.
+    private func spreadText(_ sd: Double) -> String {
+        switch def.format {
+        case .clock: return Format.duration(sd)
+        case .signed: return Format.number(sd, decimals: def.decimals) + (def.unit.isEmpty ? "" : " \(def.unit)")
+        default: return def.formatted(sd)
+        }
+    }
+
     private func trendText(_ slope: Double) -> String {
         switch def.format {
         case .duration, .clock:
             return (slope >= 0 ? "+" : "−") + Format.duration(abs(slope))
         case .percent:
             return Format.signed(slope, decimals: 1) + " pts"
-        case .number:
+        case .number, .signed:
             let unit = def.unit.isEmpty ? "" : " \(def.unit)"
             return Format.signed(slope, decimals: max(def.decimals, 1)) + unit
         }

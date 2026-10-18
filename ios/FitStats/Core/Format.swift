@@ -17,6 +17,19 @@ enum Format {
 
     static func ymd(_ date: Date) -> String { dayFormatter.string(from: date) }
 
+    private static let chartDayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.calendar = Calendar(identifier: .gregorian)
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone.autoupdatingCurrent
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
+    /// Local midnight of a calendar day. Swift Charts bins and labels dates in the device time zone,
+    /// so a UTC midnight would land on the previous day anywhere west of UTC.
+    static func chartDate(_ ymd: String) -> Date? { chartDayFormatter.date(from: ymd) }
+
     static func addDays(_ ymd: String, _ n: Int) -> String {
         guard let d = date(ymd) else { return ymd }
         return self.ymd(d.addingTimeInterval(Double(n) * 86_400))

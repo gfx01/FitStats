@@ -243,7 +243,7 @@ final class AppModel: ObservableObject {
         days.compactMap { day in
             guard day.date >= from, day.date <= through else { return nil }
             if def.isDayTotal && day.date >= today { return nil }
-            guard let v = def.value(day), let date = Format.date(day.date) else { return nil }
+            guard let v = def.value(day), let date = Format.chartDate(day.date) else { return nil }
             return DayPoint(date: date, value: v)
         }
     }

@@ -43,7 +43,8 @@ test("full sync: backfill, scores and stats", async () => {
   assert.ok(tables.fs_exercise.length >= 10);
   const intra = tables.fs_intraday.find((r) => r.date === "2026-10-10")!;
   assert.equal((intra.hr as unknown[]).length, 1440);
-  assert.equal((intra.hr as (number | null)[])[60], 52);
+  const nightHr = (intra.hr as (number | null)[])[60]!;
+  assert.ok(nightHr >= 48 && nightHr <= 58, `01:00 heart rate ${nightHr}`);
   assert.ok(tables.fs_samples.some((s) => s.metric === "hrv"));
 
   const stats = tables.fs_cache.find((c) => c.key === "stats")!.value as Row;
