@@ -10,7 +10,16 @@ Stress scores plus statistics for every metric. It has two parts:
 - **iPhone app (installed with Sideloadly).** It shows what the server has
   computed.
 
-You need to do steps 1–3 once. They take about 15 minutes.
+You need to do steps 1–4 once. They take about 15–20 minutes.
+
+**What you need:**
+
+- The Google account your Fitbit Air is paired with.
+- A Windows PC or Mac for Sideloadly, a USB cable for your iPhone, and your
+  Apple ID (a free one is enough).
+- Access to the EFBB project in your Supabase account.
+- Optional, for the Coach: an Anthropic Console account with a few dollars of
+  credit.
 
 ---
 
@@ -21,6 +30,12 @@ You need to do steps 1–3 once. They take about 15 minutes.
 2. Enable the API: open
    <https://console.cloud.google.com/apis/library/health.googleapis.com> and
    click **Enable**.
+   - **If there is no Enable button, or Google says access is restricted or
+     not available for new projects, stop here and tell me.** A few
+     third-party reports from October 2026 say Google isn't onboarding new
+     projects to this API right now; Google's own newsletter says it is
+     available. I couldn't check this myself, and FitStats can't work without
+     the API.
 3. Open **Google Auth Platform** at <https://console.cloud.google.com/auth/overview>
    and click **Get started**:
    - App name: `FitStats`, support email: your email.
@@ -57,9 +72,10 @@ Nothing needs to be redeployed.
 ## 3. Install the app with Sideloadly
 
 1. Download `FitStats.ipa` from this repository's **Releases** page, under
-   "FitStats (latest build)". Alternatively, take it from **Actions** → latest
-   "iOS build" run → Artifacts → `FitStats-ipa`; that file is a zip containing
-   the ipa.
+   "FitStats (latest build)":
+   <https://github.com/terebesimihaly-maker/FitBit/releases/tag/build-latest>.
+   Alternatively, take it from **Actions** → latest "iOS build" run →
+   Artifacts → `FitStats-ipa`; that file is a zip containing the ipa.
 2. Install Sideloadly from <https://sideloadly.io> and follow its install notes.
    On Windows it needs iTunes and iCloud.
 3. Connect your iPhone by USB, drag `FitStats.ipa` into Sideloadly, enter your
