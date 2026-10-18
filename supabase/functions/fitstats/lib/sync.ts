@@ -45,7 +45,7 @@ import {
   vo2SamplePatches,
   wearMinutes,
 } from "./transform.ts";
-import { addDays, dateRange, daysBetween, LocalClock, median, MINUTES_PER_DAY, round, type Ymd, ymdFromGoogleDate } from "./util.ts";
+import { addDays, dateRange, LocalClock, median, MINUTES_PER_DAY, round, type Ymd, ymdFromGoogleDate } from "./util.ts";
 import { VERSION } from "./version.ts";
 
 export interface Account {
@@ -100,8 +100,6 @@ interface RangeLog {
   failed: TaskResult[];
   /** Optional tasks that failed: logged, but the run stays ok. */
   skipped?: TaskResult[];
-  /** Temporary: steps per day by each way Google can count them (stepsDiagnostic), to find why the Google Health app shows more. */
-  diag?: Record<string, unknown>;
   unchanged?: boolean;
 }
 
@@ -281,94 +279,6 @@ function workoutExclusion(x: ExerciseRow, clock: LocalClock, hrFor: HrFor, rhr: 
   return [start, end + coolDownMinutes(before, after, rhr, maxHr, baselineHrr) * 60000];
 }
 
-/**
- * Temporary: each day's steps counted every way the API allows, to find which one the
- * Google Health app shows. FitStats uses dailyRollUp over all sources. Per date:
- * list (raw points, all sources), reconcile (one stream merged from all sources),
- * wearables (dailyRollUp over google-wearables) and by_source (raw points by
- * platform / recording method / device).
- */
-async function stepsDiagnostic(client: HealthClient, start: Ymd, end: Ymd, clock: LocalClock): Promise<Record<string, Record<string, unknown>>> {
-  const [raw, merged, wear] = await Promise.all([
-    client.listIntervals("steps", start, end),
-    client.listIntervals("steps", start, end, { reconcile: true }),
-    client.dailyRollup("steps", start, end, "google-wearables"),
-  ]);
-  const out: Record<string, Record<string, unknown>> = {};
-  const day = (d: Ymd) => (out[d] ??= { list: 0, list_points: 0, reconcile: 0, wearables: null, by_source: {} as Record<string, number> });
-  const civilDate = (p: Json) => {
-    const iv = (p.steps as Json | undefined)?.interval as Json | undefined;
-    return ymdFromGoogleDate((iv?.civilStartTime as Json | undefined)?.date);
-  };
-  const count = (p: Json) => Number((p.steps as Json | undefined)?.count ?? 0) || 0;
-  // Per local minute and source (the band vs everything else), each point's steps spread over its interval.
-  const perMinute = new Map<string, Float64Array>();
-  const spread = (p: Json, band: boolean) => {
-    const iv = (p.steps as Json | undefined)?.interval as Json | undefined;
-    const s0 = Date.parse(String(iv?.startTime)), e0 = Date.parse(String(iv?.endTime));
-    if (!Number.isFinite(s0) || !Number.isFinite(e0) || e0 <= s0) return;
-    const n = count(p);
-    for (let t = Math.floor(s0 / 60000) * 60000; t < e0; t += 60000) {
-      const overlap = Math.min(e0, t + 60000) - Math.max(s0, t);
-      if (overlap <= 0) continue;
-      const { date, minute } = clock.locate(t);
-      const key = `${date}|${band ? "band" : "other"}`;
-      let arr = perMinute.get(key);
-      if (!arr) perMinute.set(key, arr = new Float64Array(MINUTES_PER_DAY));
-      arr[minute] += (n * overlap) / (e0 - s0);
-    }
-  };
-  for (const p of raw) {
-    const d = civilDate(p);
-    if (!d) continue;
-    const o = day(d);
-    o.list = (o.list as number) + count(p);
-    o.list_points = (o.list_points as number) + 1;
-    const src = (p.dataSource ?? {}) as Json;
-    spread(p, src.platform === "FITBIT");
-    const key = [src.platform, src.recordingMethod, (src.device as Json | undefined)?.displayName ?? (src.application as Json | undefined)?.packageName]
-      .map((v) => (typeof v === "string" ? v : "-")).join("|");
-    const by = o.by_source as Record<string, number>;
-    by[key] = (by[key] ?? 0) + count(p);
-  }
-  for (const p of merged) {
-    const d = civilDate(p);
-    if (d) day(d).reconcile = (day(d).reconcile as number) + count(p);
-  }
-  for (const p of wear) {
-    const d = ymdFromGoogleDate((p.civilStartTime as Json | undefined)?.date);
-    const v = Number(((p.steps as Json | undefined)?.countSum) ?? NaN);
-    if (d && Number.isFinite(v)) day(d).wearables = v;
-  }
-  // Candidate merges of the band and the phone in 1/5/15/60-minute buckets: "max" takes the
-  // larger of the two per bucket, "fill" adds the phone only where the band counted nothing.
-  for (const d of Object.keys(out)) {
-    const band = perMinute.get(`${d}|band`) ?? new Float64Array(MINUTES_PER_DAY);
-    const other = perMinute.get(`${d}|other`) ?? new Float64Array(MINUTES_PER_DAY);
-    const merges: Record<string, number> = {};
-    for (const b of [1, 5, 15, 60]) {
-      let max = 0, fill = 0;
-      for (let m = 0; m < MINUTES_PER_DAY; m += b) {
-        let x = 0, y = 0;
-        for (let k = m; k < m + b; k++) { x += band[k]; y += other[k]; }
-        max += Math.max(x, y);
-        fill += x > 0 ? x : y;
-      }
-      merges[`max_${b}`] = Math.round(max);
-      merges[`fill_${b}`] = Math.round(fill);
-    }
-    out[d].merges = merges;
-  }
-  return out;
-}
-
-/** The diagnostic with FitStats' own number (dailyRollUp, all sources) next to the others. */
-function withRollup(diag: Record<string, unknown>, rollup: Map<Ymd, DayPatch> | undefined): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [d, v] of Object.entries(diag)) out[d] = { fitstats: rollup?.get(d)?.steps ?? null, ...(v as Record<string, unknown>) };
-  return out;
-}
-
 /** Minute steps summed over a workout's window (the minutes minutesBetween covers), null without step data. */
 function workoutSteps(x: ExerciseRow, clock: LocalClock, stepsFor: HrFor): number | null {
   const steps = minutesBetween(Date.parse(x.start_time), Date.parse(x.end_time), clock, stepsFor);
@@ -527,19 +437,6 @@ async function syncRange(
         const pts = await client.listSamples(type, startMs, endMs);
         vo2.set(type, vo2SamplePatches(type, pts, clock));
         return pts.length;
-      },
-    });
-  }
-  // Temporary diagnostic for the recent range only (see stepsDiagnostic).
-  let stepsDiag: Record<string, unknown> | null = null;
-  if (daysBetween(start, end) <= RECENT_DAYS + 2) {
-    tasks.push({
-      name: "diag:steps",
-      columns: [],
-      optional: true,
-      run: async () => {
-        stepsDiag = await stepsDiagnostic(client, start, end, clock);
-        return Object.keys(stepsDiag).length;
       },
     });
   }
@@ -702,16 +599,7 @@ async function syncRange(
     days: dayRows,
   });
   if (previous !== null && fingerprint === previous) {
-    log.ranges.push({
-      range: `${start}..${end}`,
-      ms: Date.now() - t0,
-      points,
-      counts,
-      failed,
-      ...(skipped.length ? { skipped } : {}),
-      ...(stepsDiag ? { diag: { steps: withRollup(stepsDiag, patches.get("rollup:steps")) } } : {}),
-      unchanged: true,
-    });
+    log.ranges.push({ range: `${start}..${end}`, ms: Date.now() - t0, points, counts, failed, ...(skipped.length ? { skipped } : {}), unchanged: true });
     return { points, fingerprint, unchanged: true };
   }
 
@@ -755,7 +643,6 @@ async function syncRange(
     counts,
     failed: [...failed, ...writeFailures],
     ...(skipped.length ? { skipped } : {}),
-    ...(stepsDiag ? { diag: { steps: withRollup(stepsDiag, patches.get("rollup:steps")) } } : {}),
   });
   return { points, fingerprint: writeFailures.length ? null : fingerprint, unchanged: false };
 }

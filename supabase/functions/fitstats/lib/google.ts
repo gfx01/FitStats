@@ -160,17 +160,12 @@ export class HealthClient {
   }
 
   /** `list` (or `reconcile`) with pagination; returns all data points. */
-  async listAll(
-    type: string,
-    filter: string,
-    opts: { pageSize?: number; maxPages?: number; reconcile?: boolean; family?: string } = {},
-  ) {
+  async listAll(type: string, filter: string, opts: { pageSize?: number; maxPages?: number; reconcile?: boolean } = {}) {
     const out: Json[] = [];
     let pageToken = "";
     const method = opts.reconcile ? "dataPoints:reconcile" : "dataPoints";
     for (let page = 0; page < (opts.maxPages ?? 20); page++) {
       const query: Record<string, string> = { filter, pageSize: String(opts.pageSize ?? 10000) };
-      if (opts.family) query.dataSourceFamily = `users/me/dataSourceFamilies/${opts.family}`;
       if (pageToken) query.pageToken = pageToken;
       const res = await this.request("GET", `users/me/dataTypes/${type}/${method}`, query);
       const points = res.dataPoints;
@@ -209,14 +204,8 @@ export class HealthClient {
     );
   }
 
-  /** Interval types (steps, distance, …) by the civil date their intervals start on. */
-  listIntervals(type: string, start: Ymd, endExclusive: Ymd, opts: { reconcile?: boolean; family?: string } = {}) {
-    const f = `${filterName(type)}.interval.civil_start_time`;
-    return this.listAll(type, `${f} >= "${start}" AND ${f} < "${endExclusive}"`, { pageSize: 10000, maxPages: 10, ...opts });
-  }
-
-  /** dailyRollUp in 1-day windows (windowSizeDays must be sent explicitly); `family` picks a data source family. */
-  async dailyRollup(type: string, start: Ymd, endExclusive: Ymd, family?: string): Promise<Json[]> {
+  /** dailyRollUp in 1-day windows (windowSizeDays must be sent explicitly). */
+  async dailyRollup(type: string, start: Ymd, endExclusive: Ymd): Promise<Json[]> {
     const out: Json[] = [];
     let pageToken = "";
     for (let page = 0; page < 10; page++) {
@@ -225,7 +214,6 @@ export class HealthClient {
         windowSizeDays: 1,
         pageSize: 1000,
       };
-      if (family) body.dataSourceFamily = `users/me/dataSourceFamilies/${family}`;
       if (pageToken) body.pageToken = pageToken;
       const res = await this.request("POST", `users/me/dataTypes/${type}/dataPoints:dailyRollUp`, undefined, body);
       if (Array.isArray(res.rollupDataPoints)) out.push(...(res.rollupDataPoints as Json[]));

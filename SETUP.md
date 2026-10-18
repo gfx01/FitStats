@@ -170,6 +170,7 @@ FitStats database).
 | Coach: "The coach needs a Claude API key" | Add `ANTHROPIC_API_KEY` (step 5), then tap Check again. |
 | Coach: "Anthropic rejected the API key" | The key was mistyped or revoked; create a new one and replace the secret. |
 | Coach: "… isn't available for this API key" | Pick another model in Settings → Coach. |
+| Steps on a finished day are a little lower than in the Google Health app | Expected: up to about 1% on some days. FitStats shows the total Google gives other apps, which is your band's own count. The Google Health app sometimes adds a few more steps from data it doesn't share; on Oct 15–17, 2026 it was 0, 26 and 196 steps more. |
 | Today's numbers look behind | FitStats only sees what has reached Google. The line under Today says when your band last synced to your phone; open the Google Health app to sync it, then pull down in FitStats. |
 
 ## What is stored, and where
