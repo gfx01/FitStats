@@ -53,6 +53,16 @@ test("full sync: backfill, scores and stats", async () => {
   assert.equal(workout.hr_minutes, 60);
   assert.equal(typeof workout.steps_minute, "number");
 
+  // Temporary steps diagnostic on the recent range: the raw points add up to the minute steps.
+  const diag = log.ranges.find((r) => r.diag)!.diag!.steps as Record<string, Row>;
+  const [dd, dv] = Object.entries(diag).find(([, v]) => (v.list as number) > 0)!;
+  const minuteSum = (tables.fs_intraday.find((r) => r.date === dd)!.steps as (number | null)[]).reduce<number>((a, v) => a + (v ?? 0), 0);
+  assert.equal(dv.list, minuteSum);
+  assert.equal(dv.reconcile, minuteSum);
+  assert.equal(typeof dv.fitstats, "number");
+  assert.equal(typeof dv.wearables, "number");
+  assert.deepEqual(Object.keys(dv.by_source as Row), ["FITBIT|PASSIVELY_MEASURED|Fitbit Air"]);
+
   // The run log keeps what each request returned ([points, dates] for daily types).
   const counts = log.ranges.find((r) => r.counts)!.counts!;
   assert.ok(Array.isArray(counts["daily-resting-heart-rate"]));

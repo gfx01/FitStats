@@ -379,6 +379,24 @@ function googleFetch(url: URL, init: RequestInit): Response {
       }));
       return Response.json({ dataPoints: pts });
     }
+    if (type === "steps") {
+      // Raw minute step intervals (list and reconcile), by civil start date.
+      assert.ok(filter.startsWith("steps.interval.civil_start_time >= "), filter);
+      const pts: Row[] = [];
+      for (const d of datesBetween(a, b)) {
+        for (let m = 0; m < 1440; m++) {
+          const t = localMs(d, 0, m);
+          const hr = minuteHr(t);
+          const n = hr === null ? 0 : minuteSteps(t, hr);
+          if (n <= 0) continue;
+          pts.push({
+            steps: { interval: { startTime: iso(t), endTime: iso(t + 60000), civilStartTime: { date: ymdParts(d) } }, count: String(n) },
+            dataSource: { platform: "FITBIT", recordingMethod: "PASSIVELY_MEASURED", device: { displayName: "Fitbit Air" } },
+          });
+        }
+      }
+      return Response.json({ dataPoints: pts });
+    }
     // sample types: physical time filter
     assert.ok(filter.includes(".sample_time.physical_time >= "), filter);
     const sm = /"([^"]+)" AND .* < "([^"]+)"/.exec(filter)!;
