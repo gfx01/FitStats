@@ -167,7 +167,7 @@ final class CoachStore: ObservableObject {
                     break
                 }
             }
-        } catch is CancellationError {
+        } catch let e where e.isCancellation {
             streamingText = ""
         } catch {
             // Keep whatever arrived; the question can be sent again (nothing was saved).
@@ -206,7 +206,7 @@ final class CoachStore: ObservableObject {
                         break
                     }
                 }
-            } catch is CancellationError {
+            } catch let e where e.isCancellation {
                 briefStreaming = ""
             } catch {
                 briefStreaming = ""
@@ -230,6 +230,7 @@ final class CoachStore: ObservableObject {
     }
 
     private func handle(_ error: Error) {
+        if error.isCancellation { return }
         if case APIError.unauthorized = error {
             onUnauthorized()
         } else {

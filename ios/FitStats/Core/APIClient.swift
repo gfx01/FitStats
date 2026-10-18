@@ -26,6 +26,17 @@ enum APIError: LocalizedError {
     }
 }
 
+extension Error {
+    /// The app abandoned the request itself: a screen closed, a newer load replaced it, or a
+    /// pull to refresh ended. Nothing failed, so it is never shown as an error.
+    var isCancellation: Bool {
+        if self is CancellationError { return true }
+        if let api = self as? APIError, case .transport(let inner) = api { return inner.isCancellation }
+        let ns = self as NSError
+        return ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled
+    }
+}
+
 struct APIClient {
     let baseURL: URL
     let key: String

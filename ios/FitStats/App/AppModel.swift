@@ -250,9 +250,12 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Pull to refresh: a sync with Google, or a reload while one is already running.
+    /// Pull to refresh: a sync with Google, or a reload while one is already running. It runs in
+    /// its own task, so it finishes (and reloads the screen) even if SwiftUI ends the gesture early.
     func pullToRefresh() async {
-        if isSyncing { await refreshAll(force: true) } else { await syncNow() }
+        await Task {
+            if isSyncing { await refreshAll(force: true) } else { await syncNow() }
+        }.value
     }
 
     func saveSettings(_ settings: UserSettings) async -> Bool {
@@ -294,6 +297,7 @@ final class AppModel: ObservableObject {
     }
 
     private func handle(_ error: Error) {
+        if error.isCancellation { return }
         if case APIError.unauthorized = error {
             signOutLocally()
             connectMessage = "This app key is no longer valid. Connect Google again."
