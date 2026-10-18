@@ -39,7 +39,7 @@ struct SettingsView: View {
             .confirmationDialog("Delete all data?", isPresented: $confirmWipe, titleVisibility: .visible) {
                 Button("Delete everything", role: .destructive) { Task { await model.disconnect(wipe: true) } }
             } message: {
-                Text("Removes every synced day, sleep, workout and the Google connection from your Supabase database. This cannot be undone.")
+                Text("Removes every synced day, sleep and workout, your journal and coach chats, and the Google connection from your Supabase database. This cannot be undone.")
             }
         }
     }
@@ -284,6 +284,26 @@ struct ScoreInfoView: View {
                 Google Health does not offer daytime HRV, so stress is estimated from heart rate: for every minute \
                 you are awake, still (no steps in the last 3 minutes) and not exercising, heart rate 5% of reserve \
                 above resting scores 0 and 30% or more scores 100. The day's stress is the average.
+                """)
+                info("Tonight (sleep plan)", Theme.sleep, """
+                Sleep need = your sleep need setting, plus 0–45 minutes for the day's strain (nothing at 35 or \
+                less, 45 minutes at 85 or more), plus a quarter of your last 7 nights' sleep debt (at most an \
+                hour), minus today's naps (at most an hour). Time in bed = need ÷ your typical sleep efficiency \
+                (median of 14 nights). Bedtime = your usual wake time for tomorrow's kind of day (weekday or \
+                weekend, median of 28 nights) minus the time in bed.
+                """)
+                info("Journal effects", Theme.stress, """
+                For each tag, the night and morning after tagged days (sleep score, time asleep, HRV, resting \
+                heart rate, recovery) are compared with the night and morning after your other logged days. \
+                "Nothing to note" counts as logged. A tag needs 3 logged days with it and 3 without. A \
+                difference is "clear" when Welch's t is 2 or more, i.e. larger than your usual night-to-night \
+                variation. It shows a pattern, not a cause.
+                """)
+                info("Partial and low-wear days", Theme.recoveryYellow, """
+                Today's steps, calories and other day totals are still growing, so they are shown "so far" and \
+                not compared with full days. Steps are compared with what you usually have by the same time. \
+                A finished day with under 60% of your usual wear time (minutes with heart rate) is incomplete: \
+                its day totals stay visible but are left out of averages, trends and correlations.
                 """)
                 Text("These are FitStats' own transparent formulas. They are not Bevel's or Fitbit's scores (both are proprietary), and they are not medical advice.")
                     .font(.footnote)

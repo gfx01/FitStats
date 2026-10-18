@@ -167,8 +167,10 @@ FitStats database).
   is stored in the iPhone Keychain.
 - Coach conversations are stored in `fs_coach_threads` / `fs_coach_messages`.
   Swipe a conversation away in the Coach history to delete it.
+- Journal entries (tags and notes) are stored in `fs_journal`. Open a day's
+  journal and tap "Remove this day's entry" to delete one.
 - **Settings → Delete all synced data** removes everything FitStats stored on
-  the server, coach conversations included.
+  the server, coach conversations and journal included.
 
 ## What the scores are
 
