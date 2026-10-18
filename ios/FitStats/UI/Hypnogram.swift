@@ -57,11 +57,12 @@ struct HypnogramLayout {
 }
 
 /// One night as stage lanes (Awake on top, Deep at the bottom) joined by connectors,
-/// like the Health app's sleep chart. Press and hold, then drag, to read a stage.
+/// like the Health app's sleep chart. Tap a stage to read it; tap it again to clear.
+/// (A tap, unlike a drag, never competes with scrolling the page.)
 struct HypnogramView: View {
     let layout: HypnogramLayout
     var zone: TimeZone?
-    var onScrub: (HypnogramSegment?) -> Void = { _ in }
+    var onSelect: (HypnogramSegment?) -> Void = { _ in }
 
     @State var scrubX: CGFloat?
 
@@ -72,20 +73,19 @@ struct HypnogramView: View {
         GeometryReader { geo in
             Canvas { ctx, size in draw(&ctx, size: size) }
                 .contentShape(Rectangle())
-                .gesture(
-                    LongPressGesture(minimumDuration: 0.15)
-                        .sequenced(before: DragGesture(minimumDistance: 0))
-                        .onChanged { value in
-                            guard case .second(true, let drag?) = value else { return }
-                            let x = min(max(drag.location.x, labelWidth), geo.size.width - 2)
-                            scrubX = x
-                            onScrub(layout.segment(at: date(atX: x, width: geo.size.width)))
-                        }
-                        .onEnded { _ in
-                            scrubX = nil
-                            onScrub(nil)
-                        }
-                )
+                .onTapGesture(coordinateSpace: .local) { location in
+                    let width = geo.size.width
+                    let x = min(max(location.x, labelWidth), width - 2)
+                    let tapped = layout.segment(at: date(atX: x, width: width))
+                    let current = scrubX.flatMap { layout.segment(at: date(atX: $0, width: width)) }
+                    if tapped == nil || tapped == current {
+                        scrubX = nil
+                        onSelect(nil)
+                    } else {
+                        scrubX = x
+                        onSelect(tapped)
+                    }
+                }
         }
         .frame(height: 190)
         .accessibilityElement()

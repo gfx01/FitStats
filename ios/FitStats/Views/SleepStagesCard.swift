@@ -26,7 +26,7 @@ struct SleepStagesCard: View {
                 ForEach(stages) { StageRow(info: $0) }
             }
             .padding(.top, 2)
-            Text("Shares are of time asleep; the white tick is your average over the previous 30 nights. Press and hold the chart to read it.")
+            Text("Shares are of time asleep; the white tick is your average over the previous 30 nights. Tap the chart to read a stage.")
                 .font(.caption2)
                 .foregroundStyle(Theme.tertiary)
         }
