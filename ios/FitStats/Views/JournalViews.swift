@@ -42,18 +42,20 @@ struct TagChip: View {
     let label: String
     let icon: String
     var selected = true
+    /// Read-only and small (Today): a filled pill without the outline the selectable chips have.
+    var compact = false
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: compact ? 4 : 6) {
             // Unknown symbol names (a newer server's tags on an older iOS) fall back to a plain tag.
-            Image(systemName: UIImage(systemName: icon) == nil ? "tag.fill" : icon).font(.caption)
-            Text(label).font(.subheadline).lineLimit(1)
+            Image(systemName: UIImage(systemName: icon) == nil ? "tag.fill" : icon).font(compact ? .caption2 : .caption)
+            Text(label).font(compact ? .caption.weight(.medium) : .subheadline).lineLimit(1)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(Capsule().fill(selected ? Theme.stress.opacity(0.2) : Color.white.opacity(0.06)))
-        .overlay(Capsule().stroke(selected ? Theme.stress.opacity(0.65) : Color.white.opacity(0.08), lineWidth: 1))
-        .foregroundStyle(selected ? Color.white : Theme.secondary)
+        .padding(.horizontal, compact ? 8 : 12)
+        .padding(.vertical, compact ? 4 : 8)
+        .background(Capsule().fill(selected ? Theme.stress.opacity(compact ? 0.16 : 0.2) : Color.white.opacity(0.06)))
+        .overlay(Capsule().stroke(compact ? Color.clear : selected ? Theme.stress.opacity(0.65) : Color.white.opacity(0.08), lineWidth: 1))
+        .foregroundStyle(compact ? Theme.stress : selected ? Color.white : Theme.secondary)
     }
 }
 
@@ -74,14 +76,15 @@ struct JournalCard: View {
                     .accessibilityIdentifier("journal-edit")
             }
             if let entry {
-                if entry.tags.isEmpty {
+                let note = entry.note ?? ""
+                if entry.tags.isEmpty && note.isEmpty {
                     Text("Nothing to note.").font(.footnote).foregroundStyle(Theme.secondary)
-                } else {
-                    FlowLayout(spacing: 8) {
-                        ForEach(entry.tags, id: \.self) { TagChip(label: model.tagLabel($0), icon: model.tagIcon($0)) }
+                } else if !entry.tags.isEmpty {
+                    FlowLayout(spacing: 6) {
+                        ForEach(entry.tags, id: \.self) { TagChip(label: model.tagLabel($0), icon: model.tagIcon($0), compact: true) }
                     }
                 }
-                if let note = entry.note, !note.isEmpty {
+                if !note.isEmpty {
                     Text(note).font(.footnote).foregroundStyle(Theme.secondary)
                 }
             } else {
@@ -156,14 +159,14 @@ struct JournalSheet: View {
                 .padding(16)
             }
             .screenBackground()
-            .navigationTitle(Format.prettyDay(date, today: model.today))
+            .navigationTitle("Journal")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(selected.isEmpty ? "Nothing to note" : "Save", action: save)
+                    Button(selected.isEmpty && clean(note).isEmpty ? "Nothing to note" : "Save", action: save)
                         .disabled(saving)
                         .accessibilityIdentifier("journal-save")
                 }
@@ -225,7 +228,7 @@ struct JournalImpactsCard: View {
                     if impact.id != impacts.last?.id { Divider().overlay(Theme.track) }
                 }
             }
-            Text("“Clear” means the difference is larger than your usual night-to-night variation (Welch's t of 2 or more). It is a pattern in your data, not proof of cause.")
+            Text("Green or red differences are larger than your usual night-to-night variation (Welch's t of 2 or more); grey ones are within it. A pattern in your data, not proof of cause.")
                 .font(.caption)
                 .foregroundStyle(Theme.tertiary)
         }
@@ -245,6 +248,14 @@ private struct TagImpactRow: View {
             if impact.effects.isEmpty {
                 Text("Needs 3 logged days with this tag and 3 without.").font(.caption).foregroundStyle(Theme.tertiary)
             } else {
+                HStack(spacing: 8) {
+                    Spacer()
+                    Text("tagged vs other")
+                    Text("change").frame(minWidth: 58, alignment: .trailing)
+                }
+                .font(.caption2)
+                .foregroundStyle(Theme.tertiary)
+                .accessibilityHidden(true)
                 ForEach(impact.effects) { EffectRow(effect: $0) }
             }
         }
@@ -273,9 +284,21 @@ private struct EffectRow: View {
         }
     }
 
+    /// The difference rounded as it is shown, so a rounded zero reads "±0", never "+0" or "−0".
+    private func shownDiff(_ def: MetricDef) -> Double {
+        if case .duration = def.format { return effect.diff.rounded() }
+        let scale = pow(10, Double(def.decimals))
+        return (effect.diff * scale).rounded() / scale
+    }
+
     private func diffText(_ def: MetricDef) -> String {
-        let sign = effect.diff > 0 ? "+" : effect.diff < 0 ? "−" : "±"
-        let size = abs(effect.diff)
+        let d = shownDiff(def)
+        let sign = d > 0 ? "+" : d < 0 ? "−" : "±"
+        let size = abs(d)
+        // A difference between two percentages is in percentage points.
+        if def.format == .percent || def.unit == "%" {
+            return sign + Format.number(size, decimals: def.decimals) + " pts"
+        }
         switch def.format {
         case .duration: return sign + Format.duration(size)
         default: return sign + def.formatted(size)
@@ -284,7 +307,8 @@ private struct EffectRow: View {
 
     /// Colour only clear differences; the rest stay grey.
     private func color(_ def: MetricDef) -> Color {
-        guard effect.clear, let better = def.better, effect.diff != 0 else { return Theme.tertiary }
-        return (better == .higher) == (effect.diff > 0) ? Theme.recoveryGreen : Theme.recoveryRed
+        let d = shownDiff(def)
+        guard effect.clear, let better = def.better, d != 0 else { return Theme.tertiary }
+        return (better == .higher) == (d > 0) ? Theme.recoveryGreen : Theme.recoveryRed
     }
 }

@@ -240,6 +240,8 @@ async function status(): Promise<Response> {
       backfillProgress: progress,
       lastRunLog: state?.last_run_log ?? null,
     },
+    // The max heart rate the stored strain, stress and zones were computed with.
+    maxHr: typeof state?.max_hr_used === "number" ? { value: state.max_hr_used, source: state.max_hr_source ?? null } : null,
     devices: devices.map((d) => ({
       name: d.deviceVersion ?? null,
       type: d.deviceType ?? null,

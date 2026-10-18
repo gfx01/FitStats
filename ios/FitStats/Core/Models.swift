@@ -12,6 +12,14 @@ struct StatusResponse: Codable {
     let devices: [Device]
     let profile: Profile
     let settings: UserSettings
+    /// The max heart rate strain, stress and zones were computed with (server 1.4.1+).
+    let maxHr: MaxHrInfo?
+
+    struct MaxHrInfo: Codable {
+        let value: Double
+        /// "override", "observed" (your sustained peak) or "age" (208 − 0.7 × age).
+        let source: String
+    }
 
     struct Connection: Codable {
         let status: String

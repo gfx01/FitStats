@@ -119,11 +119,20 @@ enum Format {
     }
 
     /// Minutes from local midnight (negative = evening before) → "23:30"
+    /// Hours and minutes in the device's 12- or 24-hour style.
+    private static let clockFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.setLocalizedDateFormatFromTemplate("jmm")
+        f.timeZone = TimeZone(secondsFromGMT: 0)
+        return f
+    }()
+
+    /// Minutes from midnight as a time of day.
     static func clock(_ minutes: Double?) -> String {
         guard let minutes, minutes.isFinite else { return "–" }
         var m = Int(minutes.rounded()) % 1440
         if m < 0 { m += 1440 }
-        return String(format: "%02d:%02d", m / 60, m % 60)
+        return clockFormatter.string(from: Date(timeIntervalSince1970: Double(m * 60)))
     }
 
     private static let numberFormatters: [NumberFormatter] = (0...3).map { decimals in
@@ -174,7 +183,7 @@ enum Format {
     static func time(_ date: Date, zone: TimeZone?) -> String {
         let f = DateFormatter()
         f.timeZone = zone ?? .current
-        f.dateFormat = "HH:mm"
+        f.setLocalizedDateFormatFromTemplate("jmm")
         return f.string(from: date)
     }
 }

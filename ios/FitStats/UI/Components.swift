@@ -48,12 +48,12 @@ struct RingGauge<Center: View>: View {
     var body: some View {
         ZStack {
             Circle().stroke(Theme.track, lineWidth: lineWidth)
+            // The target band is drawn on the track itself, so it stays inside the ring.
             if let target {
                 Circle()
                     .trim(from: max(0, min(1, target.lowerBound)), to: max(0, min(1, target.upperBound)))
-                    .stroke(Color.white.opacity(0.22), style: StrokeStyle(lineWidth: lineWidth * 0.35, lineCap: .round))
+                    .stroke(color.opacity(0.3), style: StrokeStyle(lineWidth: lineWidth, lineCap: .butt))
                     .rotationEffect(.degrees(-90))
-                    .padding(-lineWidth * 0.95)
             }
             // A zero score draws no arc (a round cap would otherwise leave a dot at 12 o'clock).
             if progress > 0 {
@@ -159,6 +159,12 @@ struct MetricTile: View {
     var change: Double? = nil
     var better: Better? = nil
 
+    /// DeltaBadge shows nothing for changes under 0.5.
+    private var showsBadge: Bool {
+        guard let change else { return false }
+        return change.isFinite && abs(change) >= 0.5
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
@@ -166,42 +172,49 @@ struct MetricTile: View {
                 Text(title).font(.caption).foregroundStyle(Theme.secondary).lineLimit(1)
                 Spacer(minLength: 0)
             }
+            // A fixed line height, so a value shrunk to fit is as tall as its neighbours.
             Text(value)
                 .font(Theme.number(22))
                 .foregroundStyle(.white)
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
-            HStack(spacing: 6) {
-                if let sub {
-                    Text(sub).font(.caption2).foregroundStyle(Theme.tertiary).lineLimit(1)
+                .frame(height: 28, alignment: .leading)
+            if sub != nil || showsBadge {
+                HStack(spacing: 6) {
+                    if let sub {
+                        Text(sub).font(.caption2).foregroundStyle(Theme.tertiary).lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                    DeltaBadge(change: change, better: better)
                 }
-                Spacer(minLength: 0)
-                DeltaBadge(change: change, better: better)
             }
         }
         .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        // Fills its grid row (TwoColumnTiles), so tiles side by side are the same height.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Color.white.opacity(0.04)))
     }
 }
 
-/// Tiles in two equal columns. An odd last tile spans both, so no half row is left empty
-/// (LazyVGrid cannot span columns).
+/// Tiles in two equal columns. Tiles in a row share its height, and an odd last tile
+/// spans both columns, so no half row is left empty.
 struct TwoColumnTiles<Item: Hashable, Tile: View>: View {
     let items: [Item]
     @ViewBuilder var tile: (Item) -> Tile
 
+    private var rows: [[Item]] {
+        stride(from: 0, to: items.count, by: 2).map { Array(items[$0..<Swift.min($0 + 2, items.count)]) }
+    }
+
     var body: some View {
-        let odd = !items.count.isMultiple(of: 2)
-        let paired = odd ? Array(items.dropLast()) : items
-        VStack(spacing: 10) {
-            if !paired.isEmpty {
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
-                    ForEach(paired, id: \.self) { tile($0) }
+        let rows = self.rows
+        Grid(horizontalSpacing: 10, verticalSpacing: 10) {
+            ForEach(rows.indices, id: \.self) { i in
+                GridRow {
+                    ForEach(rows[i], id: \.self) { item in
+                        tile(item).gridCellColumns(rows[i].count == 1 ? 2 : 1)
+                    }
                 }
-            }
-            if odd, let last = items.last {
-                tile(last)
             }
         }
     }

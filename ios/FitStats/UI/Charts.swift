@@ -184,9 +184,13 @@ struct HeartRateDayChart: View {
                     .lineStyle(StrokeStyle(lineWidth: 1.5))
             }
             if let rhr {
+                // Labelled at the right end: the overnight trace runs along it on the left.
                 RuleMark(y: .value("Resting", rhr))
                     .foregroundStyle(Color.white.opacity(0.35))
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                    .annotation(position: .bottom, alignment: .trailing) {
+                        Text("resting \(Int(rhr.rounded()))").font(.caption2).foregroundStyle(Theme.tertiary)
+                    }
             }
         }
         .chartXScale(domain: 0...1440)

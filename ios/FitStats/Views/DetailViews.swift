@@ -241,7 +241,7 @@ struct StrainDetailView: View {
                 }
             }
             TrendCard(def: MetricCatalog.def("strain")!, endDate: date, color: Theme.strain)
-            Text("Strain is FitStats' own 0–100 scale: 100 × (1 − e^(−TRIMP/120)), where TRIMP is Banister's training impulse from your minute heart rate (minutes above 30% of heart-rate reserve).")
+            Text("Strain is FitStats' own 0\u{2060}–\u{2060}100 scale: 100 × (1 − e^(−TRIMP/120)), where TRIMP is Banister's training impulse from your minute heart rate (minutes above 30% of heart-rate reserve).")
                 .font(.caption)
                 .foregroundStyle(Theme.tertiary)
         }
@@ -324,7 +324,7 @@ struct StressDetailView: View {
                 }
             }
             TrendCard(def: MetricCatalog.def("stress")!, endDate: date, color: Theme.stress)
-            Text("Google Health does not provide daytime HRV, so FitStats estimates stress from how far your heart rate sits above resting while you are still: each minute scores 0 at 5% of heart-rate reserve and 100 at 30% or more. It is an estimate, not a medical measure.")
+            Text("Google Health does not provide daytime HRV, so FitStats estimates stress from how far your heart rate sits above your usual still heart rate while you are awake, still and not exercising or recovering from a workout: each minute scores 0 at or below your usual level (the median of the last 30 days) and 100 at 15% of heart-rate reserve above it. It is an estimate, not a medical measure.")
                 .font(.caption)
                 .foregroundStyle(Theme.tertiary)
         }

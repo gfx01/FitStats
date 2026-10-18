@@ -268,9 +268,11 @@ struct WorkoutDetailView: View {
         // The whole workout on the x axis, so minutes without heart rate show as a gap.
         let window = max(1, x.windowMinutes ?? 1)
         Card {
-            SectionHeader(title: "Heart rate", subtitle: "Minute by minute, with your average")
+            SectionHeader(title: "Heart rate", subtitle: "Minute by minute; the dashed line is this workout's average")
             if points.count >= 2 {
-                let avg = points.map(\.value).reduce(0, +) / Double(points.count)
+                let minuteAvg = points.map(\.value).reduce(0, +) / Double(points.count)
+                // At the Average HR tile's value when Google sends one, so the two agree.
+                let avg = x.avgHr ?? minuteAvg
                 let lowest = points.map(\.value).min() ?? 0
                 Chart {
                     ForEach(points) { p in
@@ -283,6 +285,9 @@ struct WorkoutDetailView: View {
                     RuleMark(y: .value("Average", avg))
                         .foregroundStyle(Color.white.opacity(0.4))
                         .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                        .annotation(position: .top, alignment: .leading) {
+                            Text("avg \(Int(avg.rounded()))").font(.caption2).foregroundStyle(Theme.tertiary)
+                        }
                 }
                 .chartXScale(domain: 0...window)
                 .chartXAxis {
@@ -361,7 +366,7 @@ struct WorkoutDetailView: View {
                 if let dayTrimp, dayTrimp > 0 {
                     KeyValueRow(key: "Share of the day's load", value: "\(Int((min(1, trimp / dayTrimp) * 100).rounded()))%")
                 }
-                Text("Workout strain is what this workout alone scores on the 0–100 day scale. Strain does not add up, so the day's strain is computed from the whole day's TRIMP.")
+                Text("Workout strain is what this workout alone scores on the 0\u{2060}–\u{2060}100 day scale. Strain does not add up, so the day's strain is computed from the whole day's TRIMP.")
                     .font(.caption)
                     .foregroundStyle(Theme.tertiary)
             }

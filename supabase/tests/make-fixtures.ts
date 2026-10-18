@@ -34,7 +34,10 @@ for (const date of alcohol) {
   if (typeof morning.rhr === "number") morning.rhr += 4;
 }
 await recomputeScores(addDays(today, -45), today, await loadSettings());
+// The screenshots' past day (the latest workout day before today) stays unlogged, to show "Log day".
+const unlogged = tables.fs_exercise.map((x) => String(x.date)).filter((d) => d < today).sort().at(-1);
 for (const [i, date] of logged.entries()) {
+  if (date === unlogged) continue;
   const tags = [
     ...(alcohol.has(date) ? ["alcohol"] : []),
     ...(i % 6 === 1 ? ["late_caffeine"] : []),
@@ -69,6 +72,7 @@ write("status.json", {
   devices: [{ name: "Fitbit Air", type: "TRACKER", batteryLevel: 81, batteryStatus: "High", lastSyncTime: new Date(Date.now() - 12 * 60000).toISOString() }],
   profile: { age: 31 },
   settings: tables.fs_user_settings[0],
+  maxHr: typeof state.max_hr_used === "number" ? { value: state.max_hr_used, source: state.max_hr_source } : null,
 });
 write("days.json", { from: days[0]?.date ?? today, to: today, today, days });
 write("stats.json", tables.fs_cache.find((c) => c.key === "stats")!.value);

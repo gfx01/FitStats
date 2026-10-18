@@ -68,8 +68,6 @@ final class ScreenshotTests: XCTestCase {
         shot("02-today-2")
         app.swipeUp()
         shot("03-today-3")
-        app.swipeUp()
-        shot("04-today-4")
         for _ in 0..<5 { app.swipeDown() }
 
         open(app, "ring-recovery", ["05-recovery", "06-recovery-2"])
@@ -135,7 +133,10 @@ final class ScreenshotTests: XCTestCase {
             sleep(1)
         }
         if workout.exists {
+            // A past day: no Tonight card, a "Log day" journal (make-fixtures leaves this day unlogged).
+            shot("04-today-past-day")
             for _ in 0..<6 where !workout.isHittable { app.swipeUp() }
+            shot("28-today-workouts")
             workout.tap()
             shot("26-workout")
             app.swipeUp()
@@ -173,13 +174,18 @@ final class ScreenshotTests: XCTestCase {
         XCTAssertTrue(done.waitForExistence(timeout: 5), "Home editor did not open")
         shot("38-home-editor")
         let list = app.collectionViews.containing(.any, identifier: "home-shown-scores").firstMatch
-        if list.exists { list.swipeUp() } else { app.swipeUp() }
+        let scroll = { if list.exists { list.swipeUp() } else { app.swipeUp() } }
         // Every card is on Home in this mode, so "More cards" is empty. Reset (kept in memory
         // only in this mode, nothing is stored) fills it with the add rows.
         let reset = app.buttons["home-reset"]
-        if reset.waitForExistence(timeout: 2), reset.isHittable {
+        for _ in 0..<5 where !(reset.exists && reset.isHittable) { scroll() }
+        if reset.exists, reset.isHittable {
             reset.tap()
-            _ = app.buttons["home-add-lastNight"].waitForExistence(timeout: 2)
+            let add = app.buttons["home-add-lastNight"]
+            _ = add.waitForExistence(timeout: 2)
+            for _ in 0..<5 where !(add.exists && add.isHittable) { scroll() }
+        } else {
+            XCTFail("home-reset not reachable")
         }
         shot("39-home-editor-2")
         if done.exists { done.tap() }

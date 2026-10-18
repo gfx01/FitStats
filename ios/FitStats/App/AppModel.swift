@@ -378,7 +378,8 @@ final class AppModel: ObservableObject {
     /// Median wear over the 30 days before `date`.
     func usualWear(before date: String) -> Double? {
         let from = Format.addDays(date, -30)
-        let values = days.filter { $0.date >= from && $0.date < date }.compactMap { $0.double("wear_min") }.sorted()
+        // Worn days only, as the server's low-wear rule (days without minute heart rate say nothing about usual wear).
+        let values = days.filter { $0.date >= from && $0.date < date }.compactMap { $0.double("wear_min") }.filter { $0 > 0 }.sorted()
         guard values.count >= 5 else { return nil }
         return values[values.count / 2]
     }

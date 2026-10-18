@@ -351,12 +351,17 @@ struct TodayView: View {
         if model.countsToward(def, day), def.format != .clock, key != "skin_temp_dev", let value, let base, base != 0 {
             change = (value - base) / abs(base) * 100
         }
+        // Google's VO2 max can be an estimate from your profile rather than a measurement.
+        let estimated = key == "vo2max" && (day.bool("vo2max_estimated") == true || day.string("vo2max_method") == "GOOGLE_DEMOGRAPHIC")
+        let avg = base.map { "30d avg \(def.formatted($0, withUnit: false))" }
+        // "So far" is said once, in the Activity header.
         return NavigationLink(value: DetailRoute.metric(key)) {
             MetricTile(title: def.shortLabel, value: def.formatted(value),
-                       sub: soFar ? "so far" : base.map { "30d avg \(def.formatted($0, withUnit: false))" },
+                       sub: soFar ? nil : estimated ? ["estimated", avg].compactMap { $0 }.joined(separator: " · ") : avg,
                        icon: def.icon, color: def.category.color, change: change, better: def.better)
         }
         .buttonStyle(.plain)
+        .accessibilityValue(Text(soFar ? "so far" : ""))
     }
 
     @ViewBuilder private func vitalsCard(_ day: DayRecord) -> some View {
@@ -376,7 +381,7 @@ struct TodayView: View {
         let goal = Double(model.status?.settings.stepGoal ?? 10000)
         let keys = ["calories_total", "calories_active", "azm_total", "distance_km", "floors", "active_min_total"].filter(model.recorded.contains)
         return Card {
-            SectionHeader(title: "Activity")
+            SectionHeader(title: "Activity", subtitle: date >= model.today ? "So far today" : nil)
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(Format.number(steps)).font(Theme.number(34))
                 Text("steps").foregroundStyle(Theme.secondary)
@@ -400,6 +405,7 @@ struct TodayView: View {
     }
 
     private func lowWearText(_ wear: Double) -> String {
+        if wear == 0 { return "No heart rate this day (the band wasn't worn), so its totals are left out of your averages." }
         let usual = model.usualWear(before: date).map { " (usually \(Format.duration($0)))" } ?? ""
         return "Band worn \(Format.duration(wear)) this day\(usual), so its totals are left out of your averages."
     }
