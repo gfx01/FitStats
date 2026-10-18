@@ -97,6 +97,11 @@ final class LiveHeartRateMonitor: NSObject, ObservableObject {
     /// Screens and cards showing live heart rate; Bluetooth runs while there is at least one.
     private var users = 0
     private var paused = false
+    /// Whether Bluetooth (or the fixture stream) is running.
+    private var active = false
+    /// The pending let-go after the last user left: moving from the Home card to the full
+    /// screen briefly has no user, and keeping the connection keeps the session's readings.
+    private var endWork: DispatchWorkItem?
     private var fixtureTimer: Timer?
 
     private var remembered: UUID? {
@@ -106,25 +111,33 @@ final class LiveHeartRateMonitor: NSObject, ObservableObject {
 
     func start() {
         users += 1
-        if users == 1 { begin() }
+        endWork?.cancel()
+        endWork = nil
+        if !active && !paused { begin() }
     }
 
     func stop() {
         users = Swift.max(0, users - 1)
-        if users == 0 { end() }
+        guard users == 0 else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.users == 0 else { return }
+            self.end()
+        }
+        endWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
     }
 
     /// The app went to the background: let go of the band until it comes back.
     func pause() {
-        guard users > 0, !paused else { return }
+        guard !paused else { return }
         paused = true
-        end()
+        if active { end() }
     }
 
     func resume() {
         guard paused else { return }
         paused = false
-        if users > 0 { begin() }
+        if users > 0 && !active { begin() }
     }
 
     /// Connect to a device the user picked from the list.
@@ -137,6 +150,7 @@ final class LiveHeartRateMonitor: NSObject, ObservableObject {
     // MARK: lifecycle
 
     private func begin() {
+        active = true
         resetSession()
         if fixtureMode {
             startFixture()
@@ -151,6 +165,9 @@ final class LiveHeartRateMonitor: NSObject, ObservableObject {
     }
 
     private func end() {
+        active = false
+        endWork?.cancel()
+        endWork = nil
         fixtureTimer?.invalidate()
         fixtureTimer = nil
         if let central {

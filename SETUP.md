@@ -152,7 +152,8 @@ second by second.
 1. In the Google Health app, open your Fitbit Air → **Share heart rate**, and turn on **Always
    visible** (or keep that screen open while you connect).
 2. In FitStats, tap the heart button at the top of **Today**, and allow Bluetooth when asked.
-3. FitStats finds the band and remembers it. You can also add a **Live heart rate** card to Home.
+3. FitStats finds the band and remembers it. You can also add a **Live heart rate** card to Home
+   (Today → Edit). The card connects by itself whenever Today is on screen, with no button to press.
 
 Live heart rate isn't saved, and it stops when you leave FitStats. If the band also sends
 beat-to-beat intervals, FitStats shows a live HRV estimate too.

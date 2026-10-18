@@ -1,11 +1,10 @@
 import SwiftUI
 
-/// Home: live heart rate from the band over Bluetooth, started from the card (Bluetooth runs
-/// only while it is started and the card is on screen).
+/// Home: live heart rate from the band over Bluetooth. It connects by itself while Today is on
+/// screen and lets go when you leave it or the app.
 struct LiveHeartRateHomeCard: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var live: LiveHeartRateMonitor
-    @State private var running = false
 
     var body: some View {
         Card {
@@ -17,36 +16,18 @@ struct LiveHeartRateHomeCard: View {
                 }
                 .accessibilityLabel("Open live heart rate")
             }
-            if running {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Image(systemName: "heart.fill")
-                        .foregroundStyle(Theme.heart)
-                        .symbolEffect(.bounce, value: live.samples.last?.id ?? 0)
-                    Text(bpmText).font(Theme.number(40))
-                    Text("bpm").foregroundStyle(Theme.secondary)
-                    Spacer()
-                    Button("Stop") { toggle() }
-                        .font(.subheadline.weight(.semibold))
-                }
-                Text(caption).font(.caption).foregroundStyle(Theme.tertiary)
-            } else {
-                Button {
-                    toggle()
-                } label: {
-                    Label("Start", systemImage: "dot.radiowaves.left.and.right")
-                        .font(.subheadline.weight(.semibold))
-                }
-                Text("Turn on Share heart rate for your Fitbit Air in the Google Health app first.")
-                    .font(.caption)
-                    .foregroundStyle(Theme.tertiary)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: "heart.fill")
+                    .foregroundStyle(isLive ? Theme.heart : Theme.tertiary)
+                    .symbolEffect(.bounce, value: live.samples.last?.id ?? 0)
+                Text(bpmText).font(Theme.number(40))
+                Text("bpm").foregroundStyle(Theme.secondary)
+                Spacer()
             }
+            Text(caption).font(.caption).foregroundStyle(Theme.tertiary)
         }
-        .onDisappear {
-            if running {
-                live.stop()
-                running = false
-            }
-        }
+        .onAppear { live.start() }
+        .onDisappear { live.stop() }
     }
 
     private var isLive: Bool {
@@ -64,18 +45,14 @@ struct LiveHeartRateHomeCard: View {
             return LiveZone(bpm: bpm, rhr: model.liveRestingHr, maxHr: model.liveMaxHr).name
         }
         switch live.state {
-        case .connected: return "Waiting for a reading…"
+        case .connected:
+            return live.latest?.contact == false ? "The band isn't on your wrist." : "Waiting for a reading…"
         case .connecting(let name): return "Connecting to \(name)…"
-        case .scanning: return "Looking for your Fitbit Air…"
+        case .scanning: return "Looking for your Fitbit Air. Turn on Share heart rate in the Google Health app."
         case .poweredOff: return "Turn on Bluetooth."
         case .unauthorized: return "Allow Bluetooth for FitStats in Settings."
         case .unsupported: return "Bluetooth isn't available."
         case .idle: return "Starting…"
         }
-    }
-
-    private func toggle() {
-        if running { live.stop() } else { live.start() }
-        running.toggle()
     }
 }
