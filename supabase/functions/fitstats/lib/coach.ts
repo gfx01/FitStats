@@ -8,8 +8,8 @@ import { type JournalEntry, journalEntries, tagLabel } from "./journal.ts";
 import { sleepPlan } from "./planner.ts";
 import type { DayRow } from "./scores.ts";
 import { fmtValue, lowerFirst, METRIC_BY_KEY, METRICS, type MetricDef } from "./stats.ts";
-import { type Account, clockFor, loadAccount, loadSettings, type UserSettings } from "./sync.ts";
-import { fallAsleepMinutes, type Json, maxHeartRate } from "./transform.ts";
+import { type Account, clockFor, loadAccount, loadSettings, maxHrInUse, type UserSettings } from "./sync.ts";
+import { awakeAfterOnset, fallAsleepMinutes, type Json, mainSleepOf } from "./transform.ts";
 import { addDays, daysBetween, round, type Ymd } from "./util.ts";
 
 type Row = Record<string, unknown>;
@@ -153,8 +153,24 @@ interface Ctx {
   tz: string | null;
 }
 
+/** Google's workout steps, or the minute steps when Google's are missing or implausibly few (over 1 m per step). */
+function workoutSteps(x: Row): { steps: number | null; from_minute_steps: boolean } {
+  const steps = num(x.steps), minute = num(x.steps_minute), dist = num(x.distance_m);
+  const useMinute = minute !== null && (steps === null || steps === 0 || (dist !== null && dist / steps > 1 && minute > steps));
+  return { steps: useMinute ? minute : steps, from_minute_steps: useMinute };
+}
+
+const ORIGIN: Record<string, string> = {
+  PASSIVELY_MEASURED: "auto-detected",
+  ACTIVELY_MEASURED: "tracked",
+  MANUAL: "logged manually",
+  DERIVED: "derived",
+};
+
 function workoutSummary(x: Row, tz: string | null): Row {
   const seconds = num(x.active_duration_s) ?? num(x.duration_s) ?? 0;
+  const window = Math.ceil((Date.parse(String(x.end_time)) - Math.floor(Date.parse(String(x.start_time)) / 60000) * 60000) / 60000);
+  const hrMinutes = num(x.hr_minutes);
   return {
     date: x.date,
     start: localTime(x.start_time, tz),
@@ -165,8 +181,12 @@ function workoutSummary(x: Row, tz: string | null): Row {
     calories: num(x.calories) === null ? null : Math.round(x.calories as number),
     distance_km: num(x.distance_m) === null ? null : round((x.distance_m as number) / 1000, 2),
     active_zone_minutes: x.azm ?? null,
-    max_hr: x.hr_max ?? null,
+    ...workoutSteps(x),
+    peak_minute_hr: x.hr_max ?? null,
     strain: x.strain ?? null,
+    // Strain and zones only cover the minutes with heart rate.
+    hr_coverage: hrMinutes === null || !(window > 0) ? null : `${hrMinutes} of ${window} min`,
+    origin: ORIGIN[String(x.recording_method)] ?? null,
   };
 }
 
@@ -245,11 +265,19 @@ export async function buildContext(ctx: Ctx, stats: Json | null): Promise<string
   lines.push(`Now: ${weekday(ctx.today)} ${ctx.today}, ${now} (${ctx.tz ?? "time zone unknown"}).`);
 
   const age = num((ctx.acc?.profile as Json | null)?.age);
-  const maxHr = maxHeartRate(age, ctx.settings.max_hr_override);
+  // The same max heart rate the stored strain, stress and zones were computed with.
+  const maxHr = await maxHrInUse(ctx.acc, ctx.settings, ctx.today, state);
+  const maxHrNote = maxHr.source === "override"
+    ? "set by the user"
+    : maxHr.source === "observed"
+    ? "the highest sustained heart rate they reached in the last year (a minute average backed by a neighbouring minute, so single spikes do not count), above the 208 − 0.7 × age estimate"
+    : age === null
+    ? "a default, since their age is unknown"
+    : "estimated as 208 − 0.7 × age";
   lines.push(
     `Person: ${age === null ? "age unknown" : `age ${age}`}, sex ${ctx.settings.sex === "unspecified" ? "not set" : ctx.settings.sex}, ` +
       `sleep need ${dur(ctx.settings.sleep_need_min)}, step goal ${ctx.settings.step_goal.toLocaleString("en-US")}, ` +
-      `max heart rate ${maxHr} bpm (${ctx.settings.max_hr_override ? "set by the user" : "estimated as 208 − 0.7 × age"}).`,
+      `max heart rate ${maxHr.value} bpm (${maxHrNote}).`,
   );
   const devices = Array.isArray((ctx.acc as unknown as Row | null)?.devices) ? ((ctx.acc as unknown as Row).devices as Json[]) : [];
   for (const dv of devices) {
@@ -282,14 +310,14 @@ export async function buildContext(ctx: Ctx, stats: Json | null): Promise<string
   const plan = sleepPlan(days as DayRow[], ctx.today, ctx.settings.sleep_need_min);
   const extras = [
     plan.strainMin ? `+ ${plan.strainMin} min for today's strain` : "",
-    plan.debtMin ? `+ ${plan.debtMin} min toward sleep debt` : "",
+    plan.debtMin ? `+ ${plan.debtMin} min to repay debt` : "",
     plan.napMin ? `− ${plan.napMin} min of naps today` : "",
   ].filter(Boolean).join(" ");
   const bedtime = plan.bedtimeMin !== null && plan.wakeMin !== null
     ? `in bed by ${clockText(plan.bedtimeMin)} to wake at ${clockText(plan.wakeMin)} (their usual ${plan.wakeBasis === "all" ? "" : `${plan.wakeBasis} `}wake time)`
     : "no bedtime yet (fewer than 3 recent wake times)";
   lines.push(
-    `Tonight's sleep plan (FitStats' rule, shown in the app): sleep need ${dur(plan.needMin)} (${dur(plan.baseMin)}${extras ? ` ${extras}` : ""}); ` +
+    `Tonight's sleep plan (FitStats' rule, shown in the app): need tonight ${dur(plan.needMin)} (base ${dur(plan.baseMin)}${extras ? ` ${extras}` : ""}); ` +
       `at ${Math.round(plan.efficiency * 100)}% sleep efficiency that is ${dur(plan.inBedMin)} in bed; ${bedtime}.`,
   );
 
@@ -394,7 +422,7 @@ export const TOOLS: Json[] = [
   {
     name: "get_day",
     description: "Everything recorded for one date: all metrics, how recovery and the sleep score were computed, sleep sessions with stage minutes and local times, " +
-      "workouts (with their own strain and peak heart rate), hourly heart rate, hourly stress, minutes in heart-rate-reserve zones (50–60/60–70/70–80/80–90/90+%), " +
+      "workouts (with their own strain, peak minute heart rate, heart-rate coverage and origin), hourly heart rate, hourly stress, minutes in heart-rate-reserve zones (50–60/60–70/70–80/80–90/90+%), " +
       "wear time, and the journal entry (tags and note) for that day.",
     input_schema: {
       type: "object",
@@ -481,6 +509,8 @@ export async function runTool(name: string, input: Json, ctx: Ctx, stats: Json |
         : null;
       const scores = (row?.score_details ?? null) as Json | null;
       const intraday = (row?.intraday_details ?? null) as Json | null;
+      // The day's sleep metrics come from the main session; every other one counts as a nap.
+      const mainSleep = mainSleepOf(sleeps, row?.sleep_main_id);
       return {
         date,
         is_today: date === ctx.today,
@@ -488,12 +518,15 @@ export async function runTool(name: string, input: Json, ctx: Ctx, stats: Json |
         recovery_breakdown: scores?.recovery ?? null,
         sleep_score_breakdown: scores?.sleep ?? null,
         strain_target: scores?.strainTarget ?? null,
-        sleep_sessions: sleeps.map((s) => ({
-          main: s.is_main, nap: s.is_nap, start: localTime(s.start_time, ctx.tz), end: localTime(s.end_time, ctx.tz),
-          asleep_min: s.minutes_asleep, awake_min: s.minutes_awake, deep_min: s.deep_min, light_min: s.light_min,
-          rem_min: s.rem_min, awakenings: s.awake_count,
-          fell_asleep_after_min: fallAsleepMinutes(s),
-        })),
+        sleep_sessions: sleeps.map((s) => {
+          const awake = awakeAfterOnset(s.stages);
+          return {
+            main: s === mainSleep, nap: s !== mainSleep, start: localTime(s.start_time, ctx.tz), end: localTime(s.end_time, ctx.tz),
+            asleep_min: s.minutes_asleep, awake_incl_falling_asleep_min: s.minutes_awake, deep_min: s.deep_min, light_min: s.light_min,
+            rem_min: s.rem_min, awakenings: awake?.awakenings ?? null, awake_after_falling_asleep_min: awake?.wasoMin ?? null,
+            fell_asleep_after_min: fallAsleepMinutes(s),
+          };
+        }),
         workouts: workouts.map((w) => workoutSummary(w, ctx.tz)),
         hourly_heart_rate: hourlyHr,
         hourly_stress: intraday?.stressHourly ?? null,
@@ -555,12 +588,13 @@ How to answer
 Score definitions
 - Recovery (0–100, each morning): HRV 45% (ln RMSSD against the previous 30 nights as a z-score), resting heart rate 25%, sleep score 20%, skin temperature and breathing rate 10%. 67+ is green ("ready to perform"), 34–66 yellow, below 34 red. It needs 5 nights of baseline first.
 - Strain (0–100, day total): 100 × (1 − e^(−TRIMP/120)), where TRIMP is Banister's training impulse from minute heart rate above 30% of heart-rate reserve. Suggested strain: 55–80 on green recovery, 35–60 on yellow, 10–35 on red.
-- Sleep score (0–100): duration against their sleep need 50%, efficiency 15%, deep + REM share 20%, bed and wake time consistency 15%.
-- Stress (0–100): how far heart rate sits above resting while awake, still and not exercising (Google Health has no daytime HRV): 0 at 5% of heart-rate reserve, 100 at 30% or more.
+- Sleep score (0–100): duration against their sleep need 50%, efficiency 15% (share of Fitbit's detected sleep period spent asleep: 85% or less scores 0, 98% or more full marks), deep + REM share 20%, bed and wake time consistency 15%.
+- Stress (0–100): how far heart rate sits above their usual still level while awake, still and not exercising (Google Health has no daytime HRV). A minute counts when it is outside sleep, workouts and the recovery after them (until heart rate is back near the level before the workout, 30–180 minutes), has no steps in it or the 3 minutes before and, when Fitbit's minute sedentary data is there, is marked sedentary. Each minute scores 0 at or below their usual still heart rate (median of the last 30 days; a fixed 14% of heart-rate reserve above resting until there are 7 days) and 100 at 15% of heart-rate reserve above it; the day is the average. Below 25 is low, 25–49 moderate, 50–74 high, 75 or more very high.
 - HRV is Fitbit's nightly RMSSD and resting heart rate is Fitbit's daily value.
-- Sleep plan (shown in the app as "Tonight"): sleep need + 0–45 min for the day's strain (0 at 35 or less, 45 at 85 or more) + a quarter of the last 7 nights' sleep debt (at most 60 min) − naps (at most 60 min); time in bed = need ÷ their typical sleep efficiency; bedtime = their usual wake time for tomorrow's kind of day − time in bed. Use its numbers when suggesting a bedtime.`;
+- Awakenings count only times awake after falling asleep and before the final wake-up; "awake after falling asleep" is the minutes of those. Fitbit's awake time also includes the stretch of falling asleep.
+- Sleep plan (shown in the app as "Tonight"): need tonight = their sleep need setting (the base) + 0–45 min for the day's strain (0 at 35 or less, 45 at 85 or more) + a quarter of the last 7 nights' sleep debt (at most 60 min; earlier days' naps count as sleep) − today's naps (at most 60 min); time in bed = need tonight ÷ their typical sleep efficiency; bedtime = their usual wake time for tomorrow's kind of day − time in bed. Use its numbers when suggesting a bedtime; call the plan's total "need tonight", not their sleep need.`;
 
-export const BRIEF_PROMPT = `Write my briefing for today. Three or four short lines, no greeting, each starting with a bold label: **Recovery**, **Today**, **Tonight**, and only if there is something worth saying, **Trend**. Recovery: today's score and its main drivers. Today: how hard to train (the strain range) and one concrete suggestion. Tonight: the bedtime and sleep need from tonight's sleep plan. Trend: one notable change over the last weeks. Under 90 words. If today's recovery isn't available yet, say so and base the advice on the last few days.`;
+export const BRIEF_PROMPT = `Write my briefing for today. Three or four short lines, no greeting, each starting with a bold label: **Recovery**, **Today**, **Tonight**, and only if there is something worth saying, **Trend**. Recovery: today's score and its main drivers. Today: how hard to train (the strain range) and one concrete suggestion. Tonight: the bedtime and the need tonight from tonight's sleep plan. Trend: one notable change over the last weeks. Under 90 words. If today's recovery isn't available yet, say so and base the advice on the last few days.`;
 
 export interface CoachUsage {
   requests: number;

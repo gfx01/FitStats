@@ -86,7 +86,8 @@ export const METRICS: MetricDef[] = [
   { key: "sleep_deep_min", label: "Deep sleep", unit: "min", decimals: 0, category: "sleep", agg: "avg", better: "higher", format: "duration", get: col("sleep_deep_min") },
   { key: "sleep_rem_min", label: "REM sleep", unit: "min", decimals: 0, category: "sleep", agg: "avg", better: "higher", format: "duration", get: col("sleep_rem_min") },
   { key: "sleep_light_min", label: "Light sleep", unit: "min", decimals: 0, category: "sleep", agg: "avg", better: null, format: "duration", get: col("sleep_light_min") },
-  { key: "sleep_awake_min", label: "Awake during sleep", unit: "min", decimals: 0, category: "sleep", agg: "avg", better: "lower", format: "duration", get: col("sleep_awake_min") },
+  { key: "sleep_awake_min", label: "Awake (incl. falling asleep)", unit: "min", decimals: 0, category: "sleep", agg: "avg", better: "lower", format: "duration", get: col("sleep_awake_min") },
+  { key: "sleep_waso_min", label: "Awake after falling asleep", unit: "min", decimals: 0, category: "sleep", agg: "avg", better: "lower", format: "duration", get: col("sleep_waso_min") },
   { key: "deep_pct", label: "Deep sleep share", unit: "%", decimals: 0, category: "sleep", agg: "avg", better: "higher", format: "percent", get: ratio("sleep_deep_min", "sleep_asleep_min") },
   { key: "rem_pct", label: "REM sleep share", unit: "%", decimals: 0, category: "sleep", agg: "avg", better: "higher", format: "percent", get: ratio("sleep_rem_min", "sleep_asleep_min") },
   {
@@ -124,6 +125,9 @@ export interface RangeStats {
   sum: number | null;
   slopePerWeek: number | null;
   prevMean: number | null;
+  /** mean − prevMean. */
+  change: number | null;
+  /** Null for clock times and deviations around zero, where a ratio means nothing. */
   changePct: number | null;
 }
 
@@ -140,6 +144,11 @@ export interface MetricStats {
 export const RANGES: [string, number | null][] = [["7", 7], ["30", 30], ["90", 90], ["365", 365], ["all", null]];
 
 type Point = { date: Ymd; v: number };
+
+/** Clock times (zero is midnight) and deviations around zero: compared by the absolute change only. */
+export function hasRelativeChange(def: MetricDef): boolean {
+  return def.format !== "clock" && def.key !== "skin_temp_dev";
+}
 
 /** False for day totals of today (still growing) and of low-wear days (incomplete). */
 export function countsToward(def: MetricDef, d: DayRow, today: Ymd): boolean {
@@ -199,16 +208,20 @@ function rangeStats(def: MetricDef, series: Point[], start: Ymd | null, end: Ymd
     sum: def.agg === "sum" && vals.length ? round(vals.reduce((a, b) => a + b, 0), d) : null,
     slopePerWeek: slope === null ? null : round(slope * 7, d),
     prevMean: round(prevMean, d),
-    changePct: m !== null && prevMean !== null && prevMean !== 0 ? round(((m - prevMean) / Math.abs(prevMean)) * 100, 1) : null,
+    change: m !== null && prevMean !== null ? round(m - prevMean, d) : null,
+    changePct: hasRelativeChange(def) && m !== null && prevMean !== null && prevMean !== 0
+      ? round(((m - prevMean) / Math.abs(prevMean)) * 100, 1)
+      : null,
   };
 }
 
 export function metricStats(def: MetricDef, days: DayRow[], today: Ymd): MetricStats {
   const series = seriesFor(def, days, today);
-  const end = addDays(today, 1);
+  // Day totals cover the last N complete days (today is still growing); averages include today.
+  const end = def.agg === "sum" ? today : addDays(today, 1);
   const ranges: Record<string, RangeStats> = {};
   for (const [name, len] of RANGES) {
-    ranges[name] = rangeStats(def, series, len === null ? null : addDays(today, -(len - 1)), end, len);
+    ranges[name] = rangeStats(def, series, len === null ? null : addDays(end, -len), end, len);
   }
   const wdStart = addDays(today, -89);
   const buckets: number[][] = [[], [], [], [], [], [], []];
@@ -422,38 +435,39 @@ export function insights(
   compare("recovery", "Recovery", false);
   compare("steps", "Steps", true);
 
-  // Sleep debt over the last 7 nights.
-  const sleepDef = METRIC_BY_KEY.get("sleep_asleep_min")!;
+  // Sleep debt over the last 7 nights; that day's naps count as sleep.
+  const sleepDef = METRIC_BY_KEY.get("sleep_asleep_min")!, napDef = METRIC_BY_KEY.get("nap_min")!;
   let debt = 0, nights = 0;
   for (let d = addDays(today, -6); d <= today; d = addDays(d, 1)) {
     const row = days.find((x) => x.date === d);
     const v = row ? sleepDef.get(row) : null;
     if (v === null) continue;
     nights++;
-    debt += Math.max(0, settings.sleep_need_min - v);
+    debt += Math.max(0, settings.sleep_need_min - v - (napDef.get(row!) ?? 0));
   }
   if (nights >= 3) {
     out.push({
       id: "sleep_debt",
       title: debt < 30 ? "Sleep need met" : `Sleep debt ${fmtDuration(debt)}`,
-      body: `Over the last ${nights} tracked nights you were ${fmtDuration(debt)} short of your ${fmtDuration(settings.sleep_need_min)} sleep need in total.`,
+      body: `Over the last ${nights} tracked nights, counting naps, you were ${fmtDuration(debt)} short of your ${fmtDuration(settings.sleep_need_min)} sleep need in total.`,
       tone: debt < 30 ? "positive" : debt > 180 ? "negative" : "neutral",
       metric: "sleep_asleep_min",
     });
   }
 
-  // Best weekday for sleep score over 90 days.
+  // Best night for sleep score over 90 days. Sleep is dated by the wake-up day, so the
+  // night is named after the evening before: waking on Sunday is a Saturday night.
   const ss = metricStats(METRIC_BY_KEY.get("sleep_score")!, days, today);
   const wd = ss.weekday.map((v, i) => ({ v, i })).filter((x) => x.v !== null) as { v: number; i: number }[];
   if (wd.length >= 5) {
-    const names = ["Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays", "Sundays"];
+    const eve = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
     const best = wd.reduce((a, b) => (b.v > a.v ? b : a));
     const worst = wd.reduce((a, b) => (b.v < a.v ? b : a));
     if (best.v - worst.v >= 5) {
       out.push({
         id: "sleep_weekday",
-        title: `You sleep best on ${names[best.i].replace(/s$/, "")} nights`,
-        body: `Average sleep score: ${names[best.i]} ${best.v.toFixed(0)}, ${names[worst.i]} ${worst.v.toFixed(0)} (last 90 days, by wake-up day).`,
+        title: `You sleep best on ${eve[best.i]} nights`,
+        body: `Average sleep score: ${eve[best.i]} nights ${best.v.toFixed(0)}, ${eve[worst.i]} nights ${worst.v.toFixed(0)} (last 90 days).`,
         tone: "neutral",
         metric: "sleep_score",
       });

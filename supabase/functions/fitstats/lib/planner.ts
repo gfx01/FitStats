@@ -3,7 +3,8 @@
 //
 //   need     = your sleep need
 //            + 0–45 min for today's strain (0 at strain 35 or less, 45 at 85 or more)
-//            + a quarter of the last 7 nights' sleep debt (at most 60 min)
+//            + a quarter of the last 7 nights' sleep debt (at most 60 min; naps on the
+//              days before today count as sleep)
 //            − today's naps (at most 60 min)
 //   in bed   = need ÷ your typical sleep efficiency (median of the last 14 nights, else 90 %)
 //   bedtime  = your usual wake time for tomorrow's kind of day (weekday or weekend,
@@ -44,10 +45,14 @@ export function sleepPlan(days: DayRow[], today: Ymd, sleepNeedMin: number): Sle
   const strain = num(todayRow?.strain) ?? 0;
   const strainMin = to5(45 * clamp((strain - 35) / 50, 0, 1));
 
+  // Today's naps come off only through napMin below, so they are not counted twice.
   let debt = 0;
   for (let d = addDays(today, -6); d <= today; d = addDays(d, 1)) {
-    const asleep = num(byDate.get(d)?.sleep_asleep_min);
-    if (asleep !== null) debt += Math.max(0, sleepNeedMin - asleep);
+    const row = byDate.get(d);
+    const asleep = num(row?.sleep_asleep_min);
+    if (asleep === null) continue;
+    const naps = d < today ? (num(row?.nap_min) ?? 0) : 0;
+    debt += Math.max(0, sleepNeedMin - asleep - naps);
   }
   const debtMin = Math.min(60, to5(debt / 4));
   const napMin = Math.min(60, to5(num(todayRow?.nap_min) ?? 0));

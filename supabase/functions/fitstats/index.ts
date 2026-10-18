@@ -18,11 +18,13 @@ import {
   clockFor,
   loadAccount,
   loadSettings,
+  maxHrInUse,
   rebuildStats,
-  recomputeIntraday,
+  recomputeHistory,
   recomputeScores,
   runSync,
 } from "./lib/sync.ts";
+import { mainSleepOf } from "./lib/transform.ts";
 import { addDays } from "./lib/util.ts";
 import { VERSION } from "./lib/version.ts";
 
@@ -270,7 +272,8 @@ async function day(params: URLSearchParams): Promise<Response> {
     db.select<Row>("fs_exercise", `select=*&date=eq.${date}&order=start_time.asc`),
   ]);
   const samples: Record<string, [number, number][]> = {};
-  const main = sleeps.find((s) => s.is_main) ?? sleeps[0];
+  // The session fs_days took its sleep columns from, so the detail screen shows the same night.
+  const main = mainSleepOf(sleeps, row?.sleep_main_id);
   if (main) {
     const rows = await db.select<Row>(
       "fs_samples",
@@ -300,6 +303,19 @@ function intOrNull(v: unknown): number | null {
   return Number.isFinite(n) ? Math.round(n) : null;
 }
 
+type SavedMaxHr = { max_hr_used: number | null; max_hr_source: string | null };
+
+/** Settings with the max heart rate strain, stress and zones use: "max_hr" {value, source}. */
+async function getSettings(): Promise<Response> {
+  const [acc, settings, state] = await Promise.all([
+    loadAccount(),
+    loadSettings(),
+    db.selectOne<SavedMaxHr>("fs_sync_state", "select=max_hr_used,max_hr_source&id=eq.1"),
+  ]);
+  const maxHr = await maxHrInUse(acc, settings, clockFor(acc).today(), state);
+  return json({ settings, max_hr: { value: maxHr.value, source: maxHr.source } });
+}
+
 async function saveSettings(req: Request): Promise<Response> {
   const body = (await req.json().catch(() => ({}))) as Row;
   const current = await loadSettings();
@@ -325,14 +341,17 @@ async function saveSettings(req: Request): Promise<Response> {
   const intradayChanged = settings.sex !== current.sex || settings.max_hr_override !== current.max_hr_override;
   const scoresChanged = intradayChanged || settings.sleep_need_min !== current.sleep_need_min ||
     settings.step_goal !== current.step_goal || settings.backfill_days !== current.backfill_days;
+  const state = await db.selectOne<SavedMaxHr>("fs_sync_state", "select=max_hr_used,max_hr_source&id=eq.1");
+  const maxHr = await maxHrInUse(acc, settings, today, state);
   if (scoresChanged) {
     background((async () => {
-      if (intradayChanged && acc) await recomputeIntraday(addDays(today, -settings.backfill_days), today, settings, acc);
-      await recomputeScores(addDays(today, -settings.backfill_days), today, settings);
+      // Recomputes the scores too and saves the max heart rate it used.
+      if (intradayChanged && acc) await recomputeHistory(today, settings, acc, maxHr);
+      else await recomputeScores(addDays(today, -settings.backfill_days), today, settings);
       await rebuildStats(today, settings);
     })());
   }
-  return json({ settings });
+  return json({ settings, max_hr: { value: maxHr.value, source: maxHr.source } });
 }
 
 /** GET: the tag list and entries (default: the last 400 days). POST: save or clear one day. */
@@ -419,7 +438,7 @@ Deno.serve(async (req: Request) => {
         return json({ started: true }, 202);
       case "settings":
         if (req.method === "POST") return await saveSettings(req);
-        return json({ settings: await loadSettings() });
+        return await getSettings();
       case "journal":
         return await journal(req, params);
       case "disconnect":

@@ -11,6 +11,7 @@ mkdirSync(out, { recursive: true });
 
 const { runSync, clockFor, loadSettings, rebuildStats, recomputeScores } = await import("../functions/fitstats/lib/sync.ts");
 const { addDays } = await import("../functions/fitstats/lib/util.ts");
+const { mainSleepOf } = await import("../functions/fitstats/lib/transform.ts");
 const { JOURNAL_TAGS, journalEntries, saveJournalEntry } = await import("../functions/fitstats/lib/journal.ts");
 const log = await runSync("fixtures", true, 95_000);
 if (log.status !== "ok") throw new Error(`sync failed: ${JSON.stringify(log)}`);
@@ -76,7 +77,8 @@ write("journal.json", { tags: JOURNAL_TAGS, entries: await journalEntries(addDay
 for (let i = 0; i < 7; i++) {
   const date = addDays(today, -i);
   const sleeps = tables.fs_sleep.filter((s) => s.date === date).sort((a, b) => String(a.start_time).localeCompare(String(b.start_time)));
-  const main = sleeps.find((s) => s.is_main) ?? sleeps[0];
+  const day = tables.fs_days.find((d) => d.date === date) ?? null;
+  const main = mainSleepOf(sleeps, day?.sleep_main_id);
   const samples: Record<string, [number, number][]> = {};
   if (main) {
     for (const s of tables.fs_samples) {
@@ -88,7 +90,7 @@ for (let i = 0; i < 7; i++) {
   const intra = tables.fs_intraday.find((r) => r.date === date);
   write(`day-${date}.json`, {
     date,
-    day: tables.fs_days.find((d) => d.date === date) ?? null,
+    day,
     intraday: intra ? { hr: intra.hr, steps: intra.steps } : null,
     sleeps,
     exercises: tables.fs_exercise.filter((x) => x.date === date),

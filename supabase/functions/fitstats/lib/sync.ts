@@ -6,9 +6,22 @@
 import * as db from "./db.ts";
 import { GoogleApiError, HealthClient, refreshAccessToken } from "./google.ts";
 import { journalEntries } from "./journal.ts";
-import { computeRecovery, computeSleepScore, computeStrain, computeStress, computeWorkoutLoad, type DayRow, strainTarget } from "./scores.ts";
+import {
+  computeRecovery,
+  computeSleepScore,
+  computeStrain,
+  computeStress,
+  computeWorkoutLoad,
+  COOL_DOWN_MAX,
+  coolDownMinutes,
+  type DayRow,
+  strainTarget,
+  STRESS_BASELINE_DAYS,
+  stressBaseline,
+} from "./scores.ts";
 import { buildStats } from "./stats.ts";
 import {
+  chooseMaxHr,
   DAILY_TYPES,
   dailyPointsToPatches,
   type DayPatch,
@@ -16,7 +29,7 @@ import {
   exercisePointToRow,
   type IntradayDay,
   type Json,
-  maxHeartRate,
+  type MaxHr,
   minutesBetween,
   placeMinuteRollups,
   ROLLUP_TYPES,
@@ -28,9 +41,11 @@ import {
   sleepPointToRow,
   type SleepRow,
   stepsByHour,
+  sustainedPeak,
+  vo2SamplePatches,
   wearMinutes,
 } from "./transform.ts";
-import { addDays, dateRange, LocalClock, median, MINUTES_PER_DAY, type Ymd, ymdFromGoogleDate } from "./util.ts";
+import { addDays, dateRange, LocalClock, median, MINUTES_PER_DAY, round, type Ymd, ymdFromGoogleDate } from "./util.ts";
 import { VERSION } from "./version.ts";
 
 export interface Account {
@@ -63,6 +78,9 @@ interface SyncState {
   last_recent_sync_at: string | null;
   recent_fingerprint: string | null;
   stats_dirty: boolean;
+  /** The max heart rate the stored history was computed with, and where it came from. */
+  max_hr_used: number | null;
+  max_hr_source: MaxHr["source"] | null;
 }
 
 interface TaskResult {
@@ -70,13 +88,18 @@ interface TaskResult {
   ok: boolean;
   count?: number;
   error?: string;
+  optional?: boolean;
 }
 
 interface RangeLog {
   range: string;
   ms: number;
   points: number;
+  /** Per successful task: what Google returned, or [points, dates] for daily types, so 0 points can be told from points that did not map. */
+  counts?: Record<string, number | [number, number]>;
   failed: TaskResult[];
+  /** Optional tasks that failed: logged, but the run stays ok. */
+  skipped?: TaskResult[];
   unchanged?: boolean;
 }
 
@@ -232,17 +255,38 @@ interface Task {
   name: string;
   columns: string[];
   run: () => Promise<number>;
+  /** Its failure (say Google rejects the data type for this device) is logged but leaves the run ok. */
+  optional?: boolean;
 }
 
 /** Day columns computed from minute heart rate, from minute steps, and from both. */
-const HR_COLUMNS = ["trimp", "strain", "intraday_details", "wear_min"];
+const HR_COLUMNS = ["trimp", "strain", "intraday_details", "wear_min", "hr_peak_sustained"];
 const STEPS_COLUMNS = ["steps_by_hour"];
-const STRESS_COLUMNS = ["stress", "stress_minutes"];
+const STRESS_COLUMNS = ["stress", "stress_minutes", "stress_still_hrr"];
 /** Derived columns that alone don't make a day worth a row. */
 const DERIVED_ONLY = new Set(["date", "intraday_details", "wear_min", "steps_by_hour"]);
+/** A new effective max heart rate this far from the one in use recomputes the history. */
+const MAX_HR_RECOMPUTE_BPM = 2;
 
-/** Minute mask (true = skip for stress) for sleep and exercise (+30 min cool-down) on one local day. */
-function exclusionMask(date: Ymd, sleeps: SleepRow[], exercises: ExerciseRow[], clock: LocalClock): boolean[] {
+type HrFor = (date: Ymd) => (number | null)[] | null | undefined;
+
+/** What stress leaves out for a workout: from its start until heart rate has recovered after it (coolDownMinutes). */
+function workoutExclusion(x: ExerciseRow, clock: LocalClock, hrFor: HrFor, rhr: number, maxHr: number, baselineHrr: number): [number, number] {
+  const start = Math.floor(Date.parse(x.start_time) / 60000) * 60000;
+  const end = Date.parse(x.end_time);
+  const before = minutesBetween(start - 30 * 60000, start, clock, hrFor);
+  const after = minutesBetween(end, end + (COOL_DOWN_MAX + 2) * 60000, clock, hrFor);
+  return [start, end + coolDownMinutes(before, after, rhr, maxHr, baselineHrr) * 60000];
+}
+
+/** Minute steps summed over a workout's window (the minutes minutesBetween covers), null without step data. */
+function workoutSteps(x: ExerciseRow, clock: LocalClock, stepsFor: HrFor): number | null {
+  const steps = minutesBetween(Date.parse(x.start_time), Date.parse(x.end_time), clock, stepsFor);
+  return steps.some((v) => typeof v === "number") ? steps.reduce<number>((a, v) => a + (v ?? 0), 0) : null;
+}
+
+/** Minute mask (true = skip for stress) for sleep and workouts with their recovery (`workouts`, ms ranges) on one local day. */
+function exclusionMask(date: Ymd, sleeps: SleepRow[], workouts: [number, number][], clock: LocalClock): boolean[] {
   const mask = new Array(MINUTES_PER_DAY).fill(false);
   const dayStart = clock.midnightMs(date);
   const dayEnd = clock.midnightMs(addDays(date, 1));
@@ -254,8 +298,32 @@ function exclusionMask(date: Ymd, sleeps: SleepRow[], exercises: ExerciseRow[], 
     for (let m = from; m < to; m++) mask[m] = true;
   };
   for (const s of sleeps) mark(Date.parse(s.start_time), Date.parse(s.end_time));
-  for (const x of exercises) mark(Date.parse(x.start_time), Date.parse(x.end_time) + 30 * 60000);
+  for (const [a, b] of workouts) mark(a, b);
   return mask;
+}
+
+/** Stress columns and details for one day; adds the day's still level to `still` for the next days' baselines. */
+function stressOfDay(
+  date: Ymd,
+  m: { hr: (number | null)[]; steps: (number | null)[]; sedentary: (number | null)[] | null },
+  ctx: { sleeps: SleepRow[]; exercises: ExerciseRow[]; excluded: [number, number][]; still: Map<Ymd, number>; clock: LocalClock; hrFor: HrFor },
+  rhr: number,
+  maxHr: number,
+): { row: Record<string, unknown>; details: Record<string, unknown> } {
+  const baseline = stressBaseline(date, ctx.still);
+  for (const x of ctx.exercises) {
+    if (x.date === date) ctx.excluded.push(workoutExclusion(x, ctx.clock, ctx.hrFor, rhr, maxHr, baseline.hrr));
+  }
+  const mask = exclusionMask(date, ctx.sleeps, ctx.excluded, ctx.clock);
+  const st = computeStress(m.hr, m.steps, rhr, maxHr, mask, baseline.hrr, m.sedentary);
+  if (st.stillHrr !== null) ctx.still.set(date, st.stillHrr);
+  return {
+    row: { stress: st.stress, stress_minutes: st.minutes, stress_still_hrr: st.stillHrr },
+    details: {
+      stressHourly: st.hourly,
+      stressBaseline: { hrr: round(baseline.hrr, 4), bpm: Math.round(rhr + baseline.hrr * (maxHr - rhr)), days: baseline.days },
+    },
+  };
 }
 
 /**
@@ -267,8 +335,8 @@ async function syncRange(
   start: Ymd,
   end: Ymd,
   clock: LocalClock,
-  acc: Account,
   settings: UserSettings,
+  maxHr: number,
   log: RunLog,
   previous: string | null = null,
 ): Promise<RangeResult> {
@@ -283,13 +351,16 @@ async function syncRange(
   const endMs = clock.midnightMs(end);
 
   const tasks: Task[] = [];
+  const dailyDates = new Map<string, number>();
   for (const [type, spec] of Object.entries(DAILY_TYPES)) {
     tasks.push({
       name: type,
       columns: spec.columns,
       run: async () => {
         const pts = await client.listDaily(type, start, end, type === "daily-heart-rate-zones");
-        patches.set(type, dailyPointsToPatches(type, pts));
+        const m = dailyPointsToPatches(type, pts);
+        patches.set(type, m);
+        dailyDates.set(type, m.size);
         return pts.length;
       },
     });
@@ -343,6 +414,32 @@ async function syncRange(
       return pts.length;
     },
   });
+  // Fitbit's own sedentary flag, per minute, for stress's stillness test.
+  tasks.push({
+    name: "intraday:sedentary",
+    columns: [],
+    optional: true,
+    run: async () => {
+      const pts = await client.rollup("sedentary-period", startMs, endMs, "60s");
+      placeMinuteRollups(pts, "sedentary", clock, minute);
+      return pts.length;
+    },
+  });
+  // VO2 max from samples, for days without Google's daily value. Whether a Fitbit Air
+  // produces either is unknown, so a rejected request leaves the run ok.
+  const vo2 = new Map<string, Map<Ymd, DayPatch>>();
+  for (const type of ["vo2-max", "run-vo2-max"] as const) {
+    tasks.push({
+      name: `samples:${type}`,
+      columns: [],
+      optional: true,
+      run: async () => {
+        const pts = await client.listSamples(type, startMs, endMs);
+        vo2.set(type, vo2SamplePatches(type, pts, clock));
+        return pts.length;
+      },
+    });
+  }
   for (const type of ["heart-rate-variability", "oxygen-saturation", "respiratory-rate-sleep-summary"]) {
     tasks.push({
       name: `samples:${type}`,
@@ -364,13 +461,18 @@ async function syncRange(
       results.push({ name: task.name, ok: true, count });
     } catch (e) {
       if (e instanceof TokenExpiredError) throw e;
-      results.push({ name: task.name, ok: false, error: String((e as Error).message ?? e).slice(0, 300) });
+      results.push({
+        name: task.name,
+        ok: false,
+        error: String((e as Error).message ?? e).slice(0, 300),
+        ...(task.optional ? { optional: true } : {}),
+      });
     }
   });
 
   const inRange = (d: Ymd) => d >= start && d < end;
   const sleepOk = ok.has("sleep"), exerciseOk = ok.has("exercise");
-  const hrOk = ok.has("intraday:hr"), stepsOk = ok.has("intraday:steps");
+  const hrOk = ok.has("intraday:hr"), stepsOk = ok.has("intraday:steps"), sedentaryOk = ok.has("intraday:sedentary");
 
   // Every row is built before anything is written, so an unchanged range can skip the writes.
   const uniqueSamples = [...new Map(samples.map((s) => [`${s.metric}|${s.t}`, s])).entries()]
@@ -384,6 +486,7 @@ async function syncRange(
       const row: Record<string, unknown> = { date };
       if (hrOk) row.hr = d.hr;
       if (stepsOk) row.steps = d.steps;
+      if (sedentaryOk) row.sedentary = d.sedentary;
       minuteRows.push(row);
     }
   }
@@ -400,8 +503,23 @@ async function syncRange(
       .map((p) => p.rhr)
       .filter((v): v is number => typeof v === "number"),
   ) ?? 60;
-  const age = typeof acc.profile?.age === "number" ? acc.profile.age : null;
-  const maxHr = maxHeartRate(age, settings.max_hr_override);
+
+  // Stress baselines need the still levels of the 30 days before the range; days in it follow in order.
+  const stressCtx = {
+    sleeps,
+    exercises,
+    excluded: [] as [number, number][],
+    still: new Map<Ymd, number>(),
+    clock,
+    hrFor: ((d: Ymd) => minute.get(d)?.hr) as HrFor,
+  };
+  if (hrOk && stepsOk) {
+    const prior = await db.select<{ date: Ymd; stress_still_hrr: number }>(
+      "fs_days",
+      `select=date,stress_still_hrr&date=gte.${addDays(start, -STRESS_BASELINE_DAYS)}&date=lt.${start}&stress_still_hrr=not.is.null`,
+    );
+    for (const d of prior) stressCtx.still.set(d.date, d.stress_still_hrr);
+  }
 
   const dayRows: Record<string, unknown>[] = [];
   for (const date of dateRange(start, end)) {
@@ -412,16 +530,25 @@ async function syncRange(
       const p = patches.get(task.name)?.get(date);
       if (p) Object.assign(row, p);
     }
+    if (ok.has("daily-vo2-max") && row.vo2max === null) {
+      const s = vo2.get("vo2-max")?.get(date) ?? vo2.get("run-vo2-max")?.get(date);
+      if (s) Object.assign(row, s);
+    }
     if (sleepOk) Object.assign(row, sleepDayPatch(date, sleeps, clock));
 
     const m = minute.get(date);
     // No minute heart rate on a day with other data: the band was not worn.
     if (hrOk) row.wear_min = m ? wearMinutes(m.hr) : 0;
+    // Google sends no Active Zone Minutes for a day without any: on a worn day that is 0, not missing.
+    if (ok.has("rollup:active-zone-minutes") && typeof row.wear_min === "number" && row.wear_min > 0 && row.azm_fat_burn === null) {
+      for (const c of ROLLUP_TYPES["active-zone-minutes"].columns) row[c] = 0;
+    }
     if (stepsOk && m) row.steps_by_hour = stepsByHour(m.steps);
     if (hrOk && m) {
       const rhr = typeof row.rhr === "number" ? row.rhr : rangeRhr;
       const strain = computeStrain(m.hr, rhr, maxHr, settings.sex);
       const details: Record<string, unknown> = { maxHr, rhrUsed: rhr };
+      row.hr_peak_sustained = sustainedPeak(m.hr);
       if (strain) {
         row.trimp = strain.trimp;
         row.strain = strain.strain;
@@ -429,11 +556,9 @@ async function syncRange(
         details.hrrZoneMinutes = strain.zoneMinutes;
       }
       if (stepsOk) {
-        const mask = exclusionMask(date, sleeps, exercises.filter((x) => x.date === date), clock);
-        const stress = computeStress(m.hr, m.steps, rhr, maxHr, mask);
-        row.stress = stress.stress;
-        row.stress_minutes = stress.minutes;
-        details.stressHourly = stress.hourly;
+        const day = stressOfDay(date, { hr: m.hr, steps: m.steps, sedentary: sedentaryOk ? m.sedentary : null }, stressCtx, rhr, maxHr);
+        Object.assign(row, day.row);
+        Object.assign(details, day.details);
       }
       row.intraday_details = details;
     }
@@ -442,17 +567,26 @@ async function syncRange(
     if (hasData) dayRows.push(row);
   }
 
-  // Load, zones and peak heart rate of each workout, from its minutes.
-  if (exerciseOk && hrOk) {
+  // Load, zones, peak heart rate and minute steps of each workout, from its minutes.
+  if (exerciseOk && (hrOk || stepsOk)) {
     exercises = exercises.map((x) => {
       const rhr = patches.get("daily-resting-heart-rate")?.get(x.date)?.rhr;
-      const hr = minutesBetween(Date.parse(x.start_time), Date.parse(x.end_time), clock, (d) => minute.get(d)?.hr);
-      return { ...x, ...computeWorkoutLoad(hr, typeof rhr === "number" ? rhr : rangeRhr, maxHr, settings.sex) };
+      const hr = () => minutesBetween(Date.parse(x.start_time), Date.parse(x.end_time), clock, (d) => minute.get(d)?.hr);
+      return {
+        ...x,
+        ...(hrOk ? computeWorkoutLoad(hr(), typeof rhr === "number" ? rhr : rangeRhr, maxHr, settings.sex) : {}),
+        ...(stepsOk ? { steps_minute: workoutSteps(x, clock, (d) => minute.get(d)?.steps) } : {}),
+      };
     });
   }
 
   const points = (sleepOk ? sleeps.length : 0) + (exerciseOk ? exercises.length : 0) + samples.length + dayRows.length;
-  const failed = results.filter((r) => !r.ok);
+  const failed = results.filter((r) => !r.ok && !r.optional);
+  const skipped = results.filter((r) => !r.ok && r.optional);
+  const counts: Record<string, number | [number, number]> = {};
+  for (const r of [...results].sort((a, b) => a.name.localeCompare(b.name))) {
+    if (r.ok) counts[r.name] = dailyDates.has(r.name) ? [r.count ?? 0, dailyDates.get(r.name)!] : r.count ?? 0;
+  }
   const fingerprint = await fingerprintOf({
     version: VERSION,
     start,
@@ -465,7 +599,7 @@ async function syncRange(
     days: dayRows,
   });
   if (previous !== null && fingerprint === previous) {
-    log.ranges.push({ range: `${start}..${end}`, ms: Date.now() - t0, points, failed, unchanged: true });
+    log.ranges.push({ range: `${start}..${end}`, ms: Date.now() - t0, points, counts, failed, ...(skipped.length ? { skipped } : {}), unchanged: true });
     return { points, fingerprint, unchanged: true };
   }
 
@@ -502,19 +636,29 @@ async function syncRange(
   if (minuteRows.length) await write("fs_intraday", () => db.upsert("fs_intraday", stamped(minuteRows), "date", 50));
   if (dayRows.length) await write("fs_days", () => db.upsert("fs_days", stamped(dayRows), "date", 100));
 
-  log.ranges.push({ range: `${start}..${end}`, ms: Date.now() - t0, points, failed: [...failed, ...writeFailures] });
+  log.ranges.push({
+    range: `${start}..${end}`,
+    ms: Date.now() - t0,
+    points,
+    counts,
+    failed: [...failed, ...writeFailures],
+    ...(skipped.length ? { skipped } : {}),
+  });
   return { points, fingerprint: writeFailures.length ? null : fingerprint, unchanged: false };
 }
 
 /**
- * A finished day is low-wear when it has under 60 % of your usual wear (median of
- * the previous 30 days). Without 5 days of history, or when you usually wear the
- * band under 10 hours (or minute heart rate is missing), no day is flagged.
+ * A finished day is low-wear when it has under 60 % of your usual wear (median of the
+ * worn days among the previous 30), or under 10 hours while there are fewer than 5 such
+ * days. When you usually wear the band under 10 hours, no day is judged. A day without
+ * minute heart rate (wear 0) is low-wear only once the account has any worn day
+ * (`anyWorn`), so an account that never records minute heart rate keeps its day totals.
  */
-export function lowWear(wear: unknown, previous: DayRow[], isFinished: boolean): boolean | null {
+export function lowWear(wear: unknown, previous: DayRow[], isFinished: boolean, anyWorn: boolean): boolean | null {
   if (!isFinished || typeof wear !== "number") return null;
-  const usual = previous.map((d) => d.wear_min).filter((v): v is number => typeof v === "number");
-  if (usual.length < 5) return null;
+  if (wear === 0) return anyWorn ? true : null;
+  const usual = previous.map((d) => d.wear_min).filter((v): v is number => typeof v === "number" && v > 0);
+  if (usual.length < 5) return wear < 600 ? true : null;
   const typical = median(usual)!;
   return typical >= 600 ? wear < 0.6 * typical : null;
 }
@@ -530,6 +674,8 @@ export async function recomputeScores(from: Ymd, to: Ymd, settings: UserSettings
     "sleep_bedtime_min", "sleep_waketime_min", "wear_min",
   ].join(",");
   const rows = await db.select<DayRow>("fs_days", `select=${cols}&date=gte.${addDays(from, -31)}&date=lte.${to}&order=date.asc`);
+  const anyWorn = rows.some((d) => typeof d.wear_min === "number" && d.wear_min > 0) ||
+    (await db.selectOne("fs_days", "select=date&wear_min=gt.0")) !== null;
   const out: Record<string, unknown>[] = [];
   for (let i = 0; i < rows.length; i++) {
     const day = rows[i];
@@ -548,36 +694,52 @@ export async function recomputeScores(from: Ymd, to: Ymd, settings: UserSettings
       sleep_score: sleep.score,
       recovery: recovery.score,
       score_details: { sleep, recovery, strainTarget: strainTarget(recovery.score) },
-      low_wear: lowWear(day.wear_min, prev30, day.date < to),
+      low_wear: lowWear(day.wear_min, prev30, day.date < to, anyWorn),
     });
   }
   if (out.length) await db.upsert("fs_days", out, "date", 200);
   return out.length;
 }
 
-/** Recomputes strain, stress and workout loads from stored minute data (after sex / max HR changes). */
-export async function recomputeIntraday(from: Ymd, to: Ymd, settings: UserSettings, acc: Account): Promise<number> {
+/**
+ * Recomputes strain, stress, the sustained heart-rate peak and workout loads from stored
+ * minute data (after sex / max HR changes), with `maxHr` (default: the effective one).
+ */
+export async function recomputeIntraday(from: Ymd, to: Ymd, settings: UserSettings, acc: Account, maxHr?: number): Promise<number> {
   const clock = clockFor(acc);
-  const age = typeof acc.profile?.age === "number" ? acc.profile.age : null;
-  const maxHr = maxHeartRate(age, settings.max_hr_override);
-  const info = await db.select<DayRow>("fs_days", `select=date,rhr&date=gte.${from}&date=lte.${to}`);
-  const rhrByDate = new Map(info.map((d) => [d.date, typeof d.rhr === "number" ? d.rhr : null]));
+  const hrMax = maxHr ?? (await effectiveMaxHr(acc, settings, to)).value;
+  const info = await db.select<DayRow>("fs_days", `select=date,rhr,stress_still_hrr&date=gte.${addDays(from, -STRESS_BASELINE_DAYS)}&date=lte.${to}`);
+  const rhrByDate = new Map(info.filter((d) => d.date >= from).map((d) => [d.date, typeof d.rhr === "number" ? d.rhr : null]));
   const fallbackRhr = median([...rhrByDate.values()].filter((v): v is number => v !== null)) ?? 60;
   const sleeps = await db.select<SleepRow>("fs_sleep", `select=date,start_time,end_time&date=gte.${from}&date=lte.${addDays(to, 1)}`);
-  const exercises = await db.select<ExerciseRow>("fs_exercise", `select=*&date=gte.${from}&date=lte.${to}`);
+  const exercises = await db.select<ExerciseRow>("fs_exercise", `select=*&date=gte.${from}&date=lte.${to}&order=start_time.asc`);
+  // Stress baselines start from the stored still levels before `from`; later days are rebuilt in order.
+  const stressCtx = {
+    sleeps: [] as SleepRow[],
+    exercises,
+    excluded: [] as [number, number][],
+    still: new Map<Ymd, number>(),
+    clock,
+    hrFor: (() => null) as HrFor,
+  };
+  for (const d of info) if (d.date < from && typeof d.stress_still_hrr === "number") stressCtx.still.set(d.date, d.stress_still_hrr);
   let count = 0;
   for (let s = from; s <= to; s = addDays(s, 30)) {
-    const rows = await db.select<{ date: Ymd; hr: (number | null)[] | null; steps: (number | null)[] | null }>(
+    const next = addDays(s, 30);
+    // A day either side: the minutes before a workout just after midnight, recovery past midnight.
+    const rows = await db.select<{ date: Ymd; hr: (number | null)[] | null; steps: (number | null)[] | null; sedentary: (number | null)[] | null }>(
       "fs_intraday",
-      `select=date,hr,steps&date=gte.${s}&date=lt.${addDays(s, 30)}&order=date.asc`,
+      `select=date,hr,steps,sedentary&date=gte.${addDays(s, -1)}&date=lte.${next}&order=date.asc`,
     );
+    const hrByDate = new Map(rows.map((r) => [r.date, r.hr]));
+    stressCtx.hrFor = (d) => hrByDate.get(d);
     const out: Record<string, unknown>[] = [];
     for (const r of rows) {
-      if (r.date > to || !r.hr) continue;
+      if (r.date < s || r.date >= next || r.date > to || !r.hr) continue;
       const rhr = rhrByDate.get(r.date) ?? fallbackRhr;
-      const strain = computeStrain(r.hr, rhr, maxHr, settings.sex);
+      const strain = computeStrain(r.hr, rhr, hrMax, settings.sex);
       const details: Record<string, unknown> = {
-        maxHr,
+        maxHr: hrMax,
         rhrUsed: rhr,
         hrMinutes: strain?.hrMinutes ?? null,
         hrrZoneMinutes: strain?.zoneMinutes ?? null,
@@ -586,33 +748,83 @@ export async function recomputeIntraday(from: Ymd, to: Ymd, settings: UserSettin
         date: r.date,
         trimp: strain?.trimp ?? null,
         strain: strain?.strain ?? null,
+        hr_peak_sustained: sustainedPeak(r.hr),
         stress: null,
         stress_minutes: null,
+        stress_still_hrr: null,
         intraday_details: details,
       };
       if (r.steps) {
-        const nearby = sleeps.filter((x) => x.date === r.date || x.date === addDays(r.date, 1));
-        const mask = exclusionMask(r.date, nearby, exercises.filter((x) => x.date === r.date), clock);
-        const st = computeStress(r.hr, r.steps, rhr, maxHr, mask);
-        row.stress = st.stress;
-        row.stress_minutes = st.minutes;
-        details.stressHourly = st.hourly;
+        stressCtx.sleeps = sleeps.filter((x) => x.date === r.date || x.date === addDays(r.date, 1));
+        const day = stressOfDay(r.date, { hr: r.hr, steps: r.steps, sedentary: r.sedentary }, stressCtx, rhr, hrMax);
+        Object.assign(row, day.row);
+        Object.assign(details, day.details);
       }
       out.push(row);
     }
     if (out.length) await db.upsert("fs_days", out, "date", 100);
     count += out.length;
 
-    const hrByDate = new Map(rows.map((r) => [r.date, r.hr]));
+    const stepsByDate = new Map(rows.map((r) => [r.date, r.steps]));
     const workouts = exercises
-      .filter((x) => x.date >= s && x.date < addDays(s, 30))
+      .filter((x) => x.date >= s && x.date < next)
       .map((x) => {
         const hr = minutesBetween(Date.parse(x.start_time), Date.parse(x.end_time), clock, (d) => hrByDate.get(d));
-        return { ...x, ...computeWorkoutLoad(hr, rhrByDate.get(x.date) ?? fallbackRhr, maxHr, settings.sex), updated_at: new Date().toISOString() };
+        return {
+          ...x,
+          ...computeWorkoutLoad(hr, rhrByDate.get(x.date) ?? fallbackRhr, hrMax, settings.sex),
+          steps_minute: workoutSteps(x, clock, (d) => stepsByDate.get(d)),
+          updated_at: new Date().toISOString(),
+        };
       });
     if (workouts.length) await db.upsert("fs_exercise", workouts, "id");
   }
   return count;
+}
+
+/**
+ * The effective max heart rate (see chooseMaxHr), with the highest fs_days.hr_peak_sustained
+ * of the 365 days up to `today` as the observed peak.
+ */
+export async function effectiveMaxHr(acc: Account | null, settings: UserSettings, today: Ymd): Promise<MaxHr> {
+  const age = typeof acc?.profile?.age === "number" ? acc.profile.age : null;
+  const top = settings.max_hr_override ? null : await db.selectOne<{ hr_peak_sustained: number }>(
+    "fs_days",
+    `select=hr_peak_sustained&date=gte.${addDays(today, -365)}&date=lte.${today}&hr_peak_sustained=not.is.null&order=hr_peak_sustained.desc`,
+  );
+  return chooseMaxHr(age, settings.max_hr_override, top?.hr_peak_sustained ?? null);
+}
+
+/**
+ * The max heart rate to compute with. The one the stored history used (`saved`) stays while
+ * the effective value is within 2 bpm of it, so a new peak 1 bpm higher does not recompute
+ * everything; otherwise the effective value, with `changed` set (an override applies exactly).
+ */
+export async function maxHrInUse(
+  acc: Account | null,
+  settings: UserSettings,
+  today: Ymd,
+  saved: { max_hr_used?: unknown; max_hr_source?: unknown } | null,
+): Promise<MaxHr & { changed: boolean }> {
+  const eff = await effectiveMaxHr(acc, settings, today);
+  const used = typeof saved?.max_hr_used === "number" ? saved.max_hr_used : null;
+  // An override applies exactly, and setting or removing one always recomputes.
+  const overrides = eff.source === "override" || saved?.max_hr_source === "override";
+  const keep = used !== null &&
+    (overrides ? eff.source === saved?.max_hr_source && eff.value === used : Math.abs(eff.value - used) < MAX_HR_RECOMPUTE_BPM);
+  if (keep) {
+    const source = saved?.max_hr_source === "override" || saved?.max_hr_source === "observed" || saved?.max_hr_source === "age" ? saved.max_hr_source : eff.source;
+    return { value: used, source, changed: false };
+  }
+  return { ...eff, changed: true };
+}
+
+/** Recomputes intraday-derived values and scores for the backfill window with `maxHr`, then saves it as the one in use. */
+export async function recomputeHistory(today: Ymd, settings: UserSettings, acc: Account, maxHr: MaxHr): Promise<void> {
+  const from = addDays(today, -settings.backfill_days);
+  await recomputeIntraday(from, today, settings, acc, maxHr.value);
+  await recomputeScores(from, today, settings);
+  await db.update("fs_sync_state", "id=eq.1", { max_hr_used: maxHr.value, max_hr_source: maxHr.source, updated_at: nowIso() });
 }
 
 async function statsBuiltAt(): Promise<number> {
@@ -658,6 +870,18 @@ export async function runSync(reason: string, force: boolean, budgetMs = 95_000)
       state.backfill_target = target;
     }
     if (!state.backfill_oldest) state.backfill_oldest = addDays(today, -RECENT_DAYS);
+    const wasDone = state.backfill_done;
+    // Kept while within 2 bpm of the value the history used. A bigger change (or none saved
+    // yet) recomputes the history first, so the recent days below match it.
+    let maxHr = await maxHrInUse(acc, settings, today, state);
+    let recomputed = false;
+    const recompute = async () => {
+      await recomputeHistory(today, settings, acc, maxHr);
+      state.max_hr_used = maxHr.value;
+      state.max_hr_source = maxHr.source;
+      recomputed = true;
+    };
+    if (maxHr.changed) await recompute();
 
     const recentStale = !state.last_recent_sync_at || Date.now() - Date.parse(state.last_recent_sync_at) > RECENT_STALE_MS;
     if (force || recentStale) {
@@ -666,7 +890,7 @@ export async function runSync(reason: string, force: boolean, budgetMs = 95_000)
       // last sync time the app shows is never newer than the data fetched here.
       await refreshDevices(client);
       const from = addDays(today, -RECENT_DAYS);
-      const recent = await syncRange(client, from, addDays(today, 1), clock, acc, settings, log, state.recent_fingerprint ?? null);
+      const recent = await syncRange(client, from, addDays(today, 1), clock, settings, maxHr.value, log, state.recent_fingerprint ?? null);
       if (!recent.unchanged) {
         await recomputeScores(from, today, settings);
         state.stats_dirty = true;
@@ -690,7 +914,7 @@ export async function runSync(reason: string, force: boolean, budgetMs = 95_000)
         state.backfill_done = true;
         break;
       }
-      const { points } = await syncRange(client, start, end, clock, acc, settings, log);
+      const { points } = await syncRange(client, start, end, clock, settings, maxHr.value, log);
       state.backfill_oldest = start;
       state.backfill_empty_chunks = points === 0 ? (state.backfill_empty_chunks ?? 0) + 1 : 0;
       if (start <= state.backfill_target! || state.backfill_empty_chunks >= EMPTY_CHUNKS_TO_STOP) {
@@ -706,10 +930,17 @@ export async function runSync(reason: string, force: boolean, budgetMs = 95_000)
       });
     }
 
-    if (backfilledFrom) await recomputeScores(backfilledFrom, today, settings);
-    if (backfilledFrom || state.stats_dirty) {
+    // A finished history import recomputes it all again: stress baselines and the observed
+    // heart-rate peak need the whole of it.
+    if (!wasDone && state.backfill_done) {
+      maxHr = await maxHrInUse(acc, settings, today, state);
+      await recompute();
+    } else if (backfilledFrom) {
+      await recomputeScores(backfilledFrom, today, settings);
+    }
+    if (backfilledFrom || recomputed || state.stats_dirty) {
       const built = await statsBuiltAt();
-      if (backfilledFrom || built < clock.midnightMs(today) || Date.now() - built > STATS_MAX_AGE_MS) {
+      if (backfilledFrom || recomputed || built < clock.midnightMs(today) || Date.now() - built > STATS_MAX_AGE_MS) {
         await rebuildStats(today, settings);
         state.stats_dirty = false;
       }

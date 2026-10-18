@@ -88,11 +88,13 @@ export const DAILY_TYPES: Record<string, DailySpec> = {
   },
   "daily-vo2-max": {
     field: "dailyVo2Max",
-    columns: ["vo2max", "vo2max_level", "vo2max_estimated"],
+    // vo2max_source/method: filled from the vo2-max or run-vo2-max samples on days without this (vo2SamplePatches).
+    columns: ["vo2max", "vo2max_level", "vo2max_estimated", "vo2max_source", "vo2max_method"],
     map: (v) => ({
       vo2max: num(v.vo2Max),
       vo2max_level: typeof v.cardioFitnessLevel === "string" ? v.cardioFitnessLevel : null,
       vo2max_estimated: typeof v.estimated === "boolean" ? v.estimated : null,
+      vo2max_source: num(v.vo2Max) === null ? null : "daily",
     }),
   },
   "daily-heart-rate-zones": {
@@ -243,7 +245,9 @@ export const ROLLUP_TYPES: Record<string, RollupSpec> = {
 
 /**
  * Per-date patches from a dailyRollUp response. A bucket without a value
- * object means "no data" (device not worn), never zero.
+ * object means "no data" (device not worn), never zero. Active Zone Minutes
+ * are the exception: Google sends nothing for a day without any, so syncRange
+ * fills 0 on days the band was worn.
  */
 export function rollupPointsToPatches(type: string, points: Json[]): Map<Ymd, DayPatch> {
   const spec = ROLLUP_TYPES[type];
@@ -346,7 +350,15 @@ export function sleepPointToRow(p: Json, clock: LocalClock): SleepRow | null {
   }
 
   const meta = obj(s.metadata) ?? {};
-  const hasStages = stageMinutes.DEEP !== undefined || stageMinutes.REM !== undefined;
+  const type = typeof s.type === "string" ? s.type : null;
+  // stagesSummary leaves out stage types with no minutes: in a STAGES session that is 0, not unknown.
+  if (type === "STAGES") {
+    for (const t of ["AWAKE", "LIGHT", "DEEP", "REM"]) {
+      stageMinutes[t] ??= 0;
+      stageCounts[t] ??= 0;
+    }
+  }
+  const hasStages = type ? type === "STAGES" : stageMinutes.DEEP !== undefined || stageMinutes.REM !== undefined;
   let asleep = int(summary?.minutesAsleep);
   if (asleep === null) {
     asleep = hasStages
@@ -364,7 +376,7 @@ export function sleepPointToRow(p: Json, clock: LocalClock): SleepRow | null {
     end_offset_s: roundOrNull(durationSeconds(interval.endUtcOffset)),
     is_main: meta.mainSleep === true,
     is_nap: meta.nap === true,
-    sleep_type: typeof s.type === "string" ? s.type : null,
+    sleep_type: type,
     minutes_asleep: asleep,
     minutes_awake: int(summary?.minutesAwake) ?? (stageMinutes.AWAKE ?? null),
     minutes_in_period: inPeriod,
@@ -402,23 +414,66 @@ export function fallAsleepMinutes(s: { start_time?: unknown; minutes_to_fall_asl
   return Math.max(0, Math.round((first[1] * 1000 - startMs) / 60000));
 }
 
+/**
+ * Awakenings and minutes awake after falling asleep (WASO) from a session's stages:
+ * the AWAKE segments after the first sleep stage starts and before the last one ends,
+ * so falling asleep and the final wake-up do not count. Touching segments count once.
+ * Null without stages.
+ */
+export function awakeAfterOnset(stages: unknown): { awakenings: number; wasoMin: number } | null {
+  if (!Array.isArray(stages)) return null;
+  const segs = (stages as unknown[]).filter((st): st is [number, number, number] =>
+    Array.isArray(st) && typeof st[0] === "number" && typeof st[1] === "number" && typeof st[2] === "number");
+  if (!segs.length) return null;
+  const asleep = segs.filter((st) => st[0] !== STAGE_CODE.AWAKE && st[0] !== STAGE_CODE.RESTLESS);
+  if (!asleep.length) return { awakenings: 0, wasoMin: 0 };
+  const onset = Math.min(...asleep.map((st) => st[1]));
+  const lastSleepEnd = Math.max(...asleep.map((st) => st[2]));
+  let awakenings = 0;
+  let seconds = 0;
+  let prevEnd = -Infinity;
+  for (const [code, a, b] of [...segs].sort((x, y) => x[1] - y[1])) {
+    if (code !== STAGE_CODE.AWAKE || a < onset || b > lastSleepEnd) continue;
+    if (a > prevEnd) awakenings++;
+    seconds += b - a;
+    prevEnd = b;
+  }
+  return { awakenings, wasoMin: Math.round(seconds / 60) };
+}
+
+type SleepLike = { id?: unknown; is_main?: unknown; is_nap?: unknown; minutes_asleep?: unknown; start_time?: unknown };
+
+/**
+ * A day's main sleep: the session `mainId` names (fs_days.sleep_main_id) when it is
+ * there, otherwise the best ranked: not a nap, then flagged main sleep, then the
+ * longest asleep. Google sometimes flags a nap as main sleep too, so neither flag
+ * alone decides.
+ */
+export function mainSleepOf<T extends SleepLike>(sessions: T[], mainId: unknown = null): T | null {
+  const named = typeof mainId === "string" ? sessions.find((s) => s.id === mainId) : undefined;
+  if (named) return named;
+  const rank = (s: T) => (s.is_nap === true ? 0 : 2) + (s.is_main === true ? 1 : 0);
+  const asleep = (s: T) => (typeof s.minutes_asleep === "number" ? s.minutes_asleep : 0);
+  return [...sessions].sort((a, b) =>
+    rank(b) - rank(a) || asleep(b) - asleep(a) || String(a.start_time).localeCompare(String(b.start_time))
+  )[0] ?? null;
+}
+
 /** fs_days sleep columns for one date from all sessions that ended on it. */
 export function sleepDayPatch(date: Ymd, sessions: SleepRow[], clock: LocalClock): DayPatch {
   const ofDay = sessions.filter((s) => s.date === date);
-  const naps = ofDay.filter((s) => !s.is_main);
-  let main = ofDay.find((s) => s.is_main) ?? null;
-  if (!main && ofDay.length > 0) {
-    main = [...ofDay].sort((a, b) => (b.minutes_asleep ?? 0) - (a.minutes_asleep ?? 0))[0];
-  }
-  const napMin = naps.filter((s) => s !== main).reduce((acc, s) => acc + (s.minutes_asleep ?? 0), 0);
+  const main = mainSleepOf(ofDay);
+  // Every session other than the main sleep is a nap, whatever Google's flags say.
+  const napMin = ofDay.filter((s) => s !== main).reduce((acc, s) => acc + (s.minutes_asleep ?? 0), 0);
   if (!main) {
     return {
-      sleep_start: null, sleep_end: null, sleep_asleep_min: null, sleep_in_bed_min: null,
+      sleep_main_id: null, sleep_start: null, sleep_end: null, sleep_asleep_min: null, sleep_in_bed_min: null,
       sleep_awake_min: null, sleep_deep_min: null, sleep_light_min: null, sleep_rem_min: null,
-      sleep_latency_min: null, sleep_awakenings: null, sleep_efficiency: null,
+      sleep_latency_min: null, sleep_awakenings: null, sleep_waso_min: null, sleep_efficiency: null,
       sleep_bedtime_min: null, sleep_waketime_min: null, sleep_has_stages: null, nap_min: napMin || null,
     };
   }
+  const awake = awakeAfterOnset(main.stages);
   const startMs = Date.parse(main.start_time);
   const endMs = Date.parse(main.end_time);
   const startOff = main.start_offset_s ?? clock.offsetSeconds(startMs);
@@ -426,6 +481,7 @@ export function sleepDayPatch(date: Ymd, sessions: SleepRow[], clock: LocalClock
   const inBed = main.minutes_in_period ?? Math.round((endMs - startMs) / 60000);
   const asleep = main.minutes_asleep;
   return {
+    sleep_main_id: main.id,
     sleep_start: main.start_time,
     sleep_end: main.end_time,
     sleep_asleep_min: asleep,
@@ -435,11 +491,12 @@ export function sleepDayPatch(date: Ymd, sessions: SleepRow[], clock: LocalClock
     sleep_light_min: main.light_min,
     sleep_rem_min: main.rem_min,
     sleep_latency_min: fallAsleepMinutes(main),
-    sleep_awakenings: main.awake_count,
+    sleep_awakenings: awake?.awakenings ?? null,
+    sleep_waso_min: awake?.wasoMin ?? null,
     sleep_efficiency: asleep !== null && inBed > 0 ? Math.min(1, asleep / inBed) : null,
     sleep_bedtime_min: minutesFromMidnight(startMs, startOff, date),
     sleep_waketime_min: minutesFromMidnight(endMs, endOff, date),
-    sleep_has_stages: main.deep_min !== null || main.rem_min !== null,
+    sleep_has_stages: main.sleep_type ? main.sleep_type === "STAGES" : main.deep_min !== null || main.rem_min !== null,
     nap_min: napMin || null,
   };
 }
@@ -470,6 +527,10 @@ export interface ExerciseRow {
   elevation_gain_m: number | null;
   avg_speed_mps: number | null;
   run_vo2max: number | null;
+  /** From DataPoint.dataSource: how it was recorded (PASSIVELY_MEASURED = auto-detected, MANUAL, …), by what. */
+  recording_method: string | null;
+  source_platform: string | null;
+  source_device: string | null;
 }
 
 export function exercisePointToRow(p: Json, clock: LocalClock): ExerciseRow | null {
@@ -486,6 +547,8 @@ export function exercisePointToRow(p: Json, clock: LocalClock): ExerciseRow | nu
   if (!date) return null;
   const m = obj(e.metricsSummary) ?? {};
   const zones = obj(m.heartRateZoneDurations) ?? {};
+  const source = obj(p.dataSource) ?? {};
+  const str = (v: unknown) => (typeof v === "string" && v ? v : null);
   const mm = (v: unknown) => {
     const n = num(v);
     return n === null ? null : n / 1000;
@@ -517,6 +580,9 @@ export function exercisePointToRow(p: Json, clock: LocalClock): ExerciseRow | nu
     elevation_gain_m: mm(m.elevationGainMillimeters),
     avg_speed_mps: mm(m.averageSpeedMillimetersPerSecond),
     run_vo2max: num(m.runVo2Max),
+    recording_method: str(source.recordingMethod),
+    source_platform: str(source.platform),
+    source_device: str(obj(source.device)?.displayName),
   };
 }
 
@@ -525,11 +591,33 @@ export function exercisePointToRow(p: Json, clock: LocalClock): ExerciseRow | nu
 export interface IntradayDay {
   hr: (number | null)[];
   steps: (number | null)[];
+  /** Seconds of each minute Fitbit counted as sedentary. */
+  sedentary: (number | null)[];
 }
 
 /** Minutes with heart-rate data: how long the band was worn. */
 export function wearMinutes(hr: (number | null)[]): number {
   return hr.reduce<number>((n, v) => (typeof v === "number" && v > 0 ? n + 1 : n), 0);
+}
+
+/** A minute counts toward the sustained peak when a neighbouring minute is at most this much lower. */
+export const PEAK_NEIGHBOUR_BPM = 15;
+
+/**
+ * Highest sustained heart rate of a day (fs_days.hr_peak_sustained): the highest minute
+ * average with a neighbouring minute at most 15 bpm below it, so an isolated optical
+ * spike (132, 194, 134) does not count but the top minute of a hard effort does.
+ */
+export function sustainedPeak(hr: (number | null)[]): number | null {
+  const at = (m: number) => (typeof hr[m] === "number" && hr[m]! > 0 ? hr[m]! : null);
+  let peak: number | null = null;
+  for (let m = 0; m < hr.length; m++) {
+    const v = at(m);
+    if (v === null || (peak !== null && v <= peak)) continue;
+    const near = Math.max(at(m - 1) ?? 0, at(m + 1) ?? 0);
+    if (near >= v - PEAK_NEIGHBOUR_BPM) peak = v;
+  }
+  return peak;
 }
 
 /** Cumulative minute steps at the end of each local hour (24 values), or null without step data. */
@@ -566,16 +654,20 @@ export function minutesBetween(
 }
 
 export function emptyIntraday(): IntradayDay {
-  return { hr: new Array(MINUTES_PER_DAY).fill(null), steps: new Array(MINUTES_PER_DAY).fill(null) };
+  return {
+    hr: new Array(MINUTES_PER_DAY).fill(null),
+    steps: new Array(MINUTES_PER_DAY).fill(null),
+    sedentary: new Array(MINUTES_PER_DAY).fill(null),
+  };
 }
 
 /**
  * Places 60 s rollUp windows into per-local-day minute slots.
- * `kind` picks the value: heart rate average or step count.
+ * `kind` picks the value: heart rate average, step count or sedentary seconds.
  */
 export function placeMinuteRollups(
   points: Json[],
-  kind: "hr" | "steps",
+  kind: "hr" | "steps" | "sedentary",
   clock: LocalClock,
   into: Map<Ymd, IntradayDay>,
 ): void {
@@ -586,6 +678,10 @@ export function placeMinuteRollups(
     if (kind === "hr") {
       const v = obj(p.heartRate);
       value = v ? num(v.beatsPerMinuteAvg) : null;
+      if (value !== null) value = Math.round(value);
+    } else if (kind === "sedentary") {
+      const v = obj(p.sedentaryPeriod);
+      value = v ? durationSeconds(v.durationSum) : null;
       if (value !== null) value = Math.round(value);
     } else {
       const v = obj(p.steps);
@@ -622,6 +718,27 @@ function sampleBase(v: Json, clock: LocalClock): { t: string; date: Ymd } | null
   return { t: new Date(ms).toISOString(), date };
 }
 
+/**
+ * fs_days VO2 max patches from the vo2-max or run-vo2-max samples (the latest of each
+ * local day), for days without Google's daily-vo2-max value. vo2max_method is
+ * Google's measurementMethod; GOOGLE_DEMOGRAPHIC means estimated from the profile.
+ */
+export function vo2SamplePatches(type: "vo2-max" | "run-vo2-max", points: Json[], clock: LocalClock): Map<Ymd, DayPatch> {
+  const out = new Map<Ymd, DayPatch>();
+  const latest = new Map<Ymd, string>();
+  for (const p of points) {
+    const v = obj(type === "vo2-max" ? p.vo2Max : p.runVo2Max);
+    const base = v && sampleBase(v, clock);
+    const val = v ? num(type === "vo2-max" ? v.vo2Max : v.runVo2Max) : null;
+    if (!base || val === null || val <= 0) continue;
+    if ((latest.get(base.date) ?? "") > base.t) continue;
+    latest.set(base.date, base.t);
+    const method = type === "vo2-max" && typeof v!.measurementMethod === "string" ? v!.measurementMethod : null;
+    out.set(base.date, { vo2max: val, vo2max_source: type === "vo2-max" ? "sample" : "run", vo2max_method: method });
+  }
+  return out;
+}
+
 export function samplePointsToRows(type: string, points: Json[], clock: LocalClock): SampleRow[] {
   const rows: SampleRow[] = [];
   for (const p of points) {
@@ -647,7 +764,8 @@ export function samplePointsToRows(type: string, points: Json[], clock: LocalClo
       ];
       for (const [metric, s] of stats) {
         const val = num(obj(s)?.breathsPerMinute);
-        if (val !== null) rows.push({ metric, ...base, value: val });
+        // Google sends 0 when it could not compute a stage's rate; no one breathes 0 times a minute.
+        if (val !== null && val > 0) rows.push({ metric, ...base, value: val });
       }
     }
   }
@@ -660,4 +778,21 @@ export function maxHeartRate(age: number | null, override: number | null): numbe
   if (override) return override;
   if (age && age > 5 && age < 110) return Math.round(208 - 0.7 * age); // Tanaka et al. 2001
   return 190;
+}
+
+export interface MaxHr {
+  value: number;
+  source: "override" | "observed" | "age";
+}
+
+/**
+ * The max heart rate strain, stress and zones use: the override, else the higher of the
+ * age estimate and `observedPeak` (the highest sustained heart rate of the last year,
+ * see sustainedPeak). Formulas underestimate some people, teenagers especially.
+ */
+export function chooseMaxHr(age: number | null, override: number | null, observedPeak: number | null): MaxHr {
+  if (override) return { value: override, source: "override" };
+  const estimate = maxHeartRate(age, null);
+  if (observedPeak !== null && observedPeak > estimate) return { value: observedPeak, source: "observed" };
+  return { value: estimate, source: "age" };
 }

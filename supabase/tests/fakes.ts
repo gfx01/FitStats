@@ -82,7 +82,9 @@ function postgrest(url: URL, init: RequestInit): Response {
     const order = params.get("order");
     if (order) {
       const [col, dir] = order.split(".");
-      rows = [...rows].sort((a, b) => (String(a[col]) < String(b[col]) ? -1 : String(a[col]) > String(b[col]) ? 1 : 0) * (dir === "desc" ? -1 : 1));
+      const cmp = (x: unknown, y: unknown) =>
+        typeof x === "number" && typeof y === "number" ? x - y : String(x) < String(y) ? -1 : String(x) > String(y) ? 1 : 0;
+      rows = [...rows].sort((a, b) => cmp(a[col], b[col]) * (dir === "desc" ? -1 : 1));
     }
     const offset = Number(params.get("offset") ?? 0), limit = Number(params.get("limit") ?? 1000);
     rows = rows.slice(offset, offset + limit);
@@ -132,7 +134,7 @@ export const calls: string[] = [];
  * Knobs to change what the fake API returns between runs. `nowMs` is fixed when the
  * module loads, so repeated runs see the same "now" (no data after it exists yet).
  */
-export const fakeData = { extraSteps: 0, nowMs: Date.now() };
+export const fakeData = { extraSteps: 0, nowMs: Date.now(), rejectTypes: [] as string[] };
 const ymdParts = (ymd: string) => {
   const [year, month, day] = ymd.split("-").map(Number);
   return { year, month, day };
@@ -147,6 +149,8 @@ const iso = (ms: number) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z")
 const localMs = (ymd: string, hh: number, mm = 0) => Date.parse(`${ymd}T00:00:00Z`) + (hh * 60 + mm) * 60000 - TZ_OFFSET_S * 1000;
 const seed = (s: string) => [...s].reduce((a, c) => (a * 31 + c.charCodeAt(0)) % 1000, 7);
 export const FIRST_DATA_DAY = "2026-08-20";
+/** No daily VO2 max that day, only a vo2-max sample estimated from the profile. */
+export const VO2_SAMPLE_DAY = "2026-10-05";
 
 function filterDates(filter: string): [string, string] {
   const m = /([\w.]+) >= "([^"]+)" AND [\w.]+ < "([^"]+)"/.exec(filter);
@@ -164,7 +168,7 @@ function dailyPoint(type: string, date: string): Row | null {
     case "daily-oxygen-saturation": return { dailyOxygenSaturation: { date: d, averagePercentage: 95 + (k % 3), lowerBoundPercentage: 93, upperBoundPercentage: 98 } };
     case "daily-respiratory-rate": return { dailyRespiratoryRate: { date: d, breathsPerMinute: 14 + (k % 10) / 10 } };
     case "daily-sleep-temperature-derivations": return { dailySleepTemperatureDerivations: { date: d, nightlyTemperatureCelsius: 34 + (k % 7) / 10, baselineTemperatureCelsius: 34.2, relativeNightlyStddev30dCelsius: 0.3 } };
-    case "daily-vo2-max": return { dailyVo2Max: { date: d, vo2Max: 46.5, cardioFitnessLevel: "GOOD" } };
+    case "daily-vo2-max": return date === VO2_SAMPLE_DAY ? null : { dailyVo2Max: { date: d, vo2Max: 46.5, cardioFitnessLevel: "GOOD" } };
     case "daily-heart-rate-zones": return { dailyHeartRateZones: { date: d, heartRateZones: [{ heartRateZoneType: "LIGHT", minBeatsPerMinute: "100", maxBeatsPerMinute: "120" }] } };
     default: return null;
   }
@@ -188,8 +192,12 @@ function minuteSteps(ms: number, hr: number): number {
   return h >= 7 && h < 22 && local.getUTCMinutes() % 10 === 0 ? 90 : 0;
 }
 
+/** A worn day without any Active Zone Minutes: Google sends the bucket without a value. */
+export const ZERO_AZM_DAY = "2026-09-29";
+
 function rollupValue(type: string, date: string): Row | null {
   if (date < FIRST_DATA_DAY) return null;
+  if (date === ZERO_AZM_DAY && type === "active-zone-minutes") return null;
   const k = seed(date);
   switch (type) {
     case "steps": return { steps: { countSum: String(Math.round((5000 + k * 7) * dayShareSoFar(date)) + fakeData.extraSteps) } };
@@ -262,6 +270,35 @@ function sleepFor(date: string): Row | null {
   };
 }
 
+/** On this day Google flags an afternoon nap as main sleep too and lists it before the night. */
+export const NAP_MAIN_DAY = "2026-09-08";
+
+/** 17:13–17:44, 22 min asleep, LIGHT and AWAKE stages only: the summary has no DEEP or REM entry. */
+function napFor(date: string): Row {
+  const start = localMs(date, 17, 13);
+  const at = (min: number) => iso(start + min * 60000);
+  return {
+    name: `users/me/dataTypes/sleep/dataPoints/n-${date}`,
+    sleep: {
+      interval: { startTime: at(0), endTime: at(31), startUtcOffset: `${TZ_OFFSET_S}s`, endUtcOffset: `${TZ_OFFSET_S}s`, civilEndTime: { date: ymdParts(date) } },
+      type: "STAGES",
+      metadata: { mainSleep: true, nap: true, processed: true },
+      stages: [
+        { type: "AWAKE", startTime: at(0), endTime: at(4) },
+        { type: "LIGHT", startTime: at(4), endTime: at(26) },
+        { type: "AWAKE", startTime: at(26), endTime: at(31) },
+      ],
+      summary: {
+        minutesAsleep: "22",
+        minutesInSleepPeriod: "31",
+        minutesAwake: "9",
+        minutesToFallAsleep: "0",
+        stagesSummary: [{ type: "LIGHT", minutes: "22", count: "1" }, { type: "AWAKE", minutes: "9", count: "2" }],
+      },
+    },
+  };
+}
+
 /** Minute heart rates of one local day (for the day rollup, consistent with the minute data). */
 function dayHeartRate(date: string): { min: number; avg: number; max: number } | null {
   const vals: number[] = [];
@@ -311,6 +348,10 @@ function googleFetch(url: URL, init: RequestInit): Response {
   const m = /^users\/me\/dataTypes\/([a-z0-9-]+)\/dataPoints(:\w+)?$/.exec(path);
   assert.ok(m, `unexpected path ${path}`);
   const [, type, op] = m!;
+  // "type" rejects every request for it, "type:op" (e.g. "sedentary-period:rollUp") one kind.
+  if (fakeData.rejectTypes.includes(type) || fakeData.rejectTypes.includes(`${type}${op ?? ""}`)) {
+    return Response.json({ error: { code: 400, message: `Data type ${type} is not supported`, status: "INVALID_ARGUMENT" } }, { status: 400 });
+  }
   if (method === "GET") {
     const filter = url.searchParams.get("filter") ?? "";
     const pageSize = Number(url.searchParams.get("pageSize"));
@@ -323,12 +364,13 @@ function googleFetch(url: URL, init: RequestInit): Response {
     }
     if (type === "sleep") {
       assert.ok(filter.startsWith("sleep.interval.civil_end_time >= "), filter);
-      return Response.json({ dataPoints: datesBetween(a, b).map(sleepFor).filter(Boolean) });
+      return Response.json({ dataPoints: datesBetween(a, b).flatMap((d) => [d === NAP_MAIN_DAY ? napFor(d) : null, sleepFor(d)]).filter(Boolean) });
     }
     if (type === "exercise") {
       assert.ok(filter.startsWith("exercise.interval.civil_start_time >= "), filter);
       const pts = datesBetween(a, b).filter((d) => d >= FIRST_DATA_DAY && seed(d) % 3 === 0).map((d) => ({
         name: `users/me/dataTypes/exercise/dataPoints/e-${d}`,
+        dataSource: { recordingMethod: "ACTIVELY_MEASURED", platform: "FITBIT", device: { formFactor: "FITNESS_BAND", displayName: "Fitbit Air" } },
         exercise: {
           interval: { startTime: iso(localMs(d, 18)), endTime: iso(localMs(d, 19)), startUtcOffset: "7200s", civilStartTime: { date: ymdParts(d) } },
           exerciseType: "RUNNING", displayName: "Run",
@@ -341,6 +383,13 @@ function googleFetch(url: URL, init: RequestInit): Response {
     assert.ok(filter.includes(".sample_time.physical_time >= "), filter);
     const sm = /"([^"]+)" AND .* < "([^"]+)"/.exec(filter)!;
     const s = Date.parse(sm[1]), e = Date.parse(sm[2]);
+    if (type === "vo2-max" || type === "run-vo2-max") {
+      assert.ok(filter.startsWith(`${type.replace(/-/g, "_")}.sample_time`), filter);
+      const t = localMs(VO2_SAMPLE_DAY, 8);
+      const sampleTime = { physicalTime: iso(t), utcOffset: "7200s" };
+      const vo2 = type === "vo2-max" && t >= s && t < e ? [{ vo2Max: { sampleTime, vo2Max: 44.1, measurementMethod: "GOOGLE_DEMOGRAPHIC" } }] : [];
+      return Response.json({ dataPoints: vo2 });
+    }
     const pts: Row[] = [];
     for (let t = s; t < e; t += 600_000) {
       const local = new Date(t + TZ_OFFSET_S * 1000);
@@ -381,7 +430,11 @@ function googleFetch(url: URL, init: RequestInit): Response {
       const hr = minuteHr(t);
       if (hr === null) continue;
       if (type === "heart-rate") all.push({ startTime: iso(t), endTime: iso(t + 60000), heartRate: { beatsPerMinuteAvg: hr } });
-      else all.push({ startTime: iso(t), endTime: iso(t + 60000), steps: { countSum: String(minuteSteps(t, hr)) } });
+      else if (type === "sedentary-period") {
+        // Fitbit counts still, awake minutes as sedentary; Google leaves out windows without any.
+        const awake = new Date(t + TZ_OFFSET_S * 1000).getUTCHours() >= 7;
+        if (awake && minuteSteps(t, hr) === 0 && hr <= 100) all.push({ startTime: iso(t), endTime: iso(t + 60000), sedentaryPeriod: { durationSum: "60s" } });
+      } else all.push({ startTime: iso(t), endTime: iso(t + 60000), steps: { countSum: String(minuteSteps(t, hr)) } });
     }
     const page = all.slice(offset, offset + body.pageSize);
     return Response.json({ rollupDataPoints: page, ...(offset + body.pageSize < all.length ? { nextPageToken: String(offset + body.pageSize) } : {}) });
@@ -456,7 +509,7 @@ function claudeFetch(init: RequestInit): Response {
   if (typeof last.content === "string" && last.content.startsWith("Write my briefing")) {
     const recovery = /\(today\): recovery (\d+)/.exec(summary)?.[1];
     const target = /Suggested strain for today: (\d+)–(\d+)/.exec(summary);
-    const need = /sleep need (\d+h \d+m)/.exec(summary)?.[1] ?? "8h 0m";
+    const need = /need tonight (\d+h \d+m)/.exec(summary)?.[1] ?? "8h 0m";
     const text = `**Recovery** ${recovery ?? "not in yet"}${recovery ? " — HRV is below your baseline, resting heart rate is normal." : ""}\n` +
       `**Today** Aim for strain ${target ? `${target[1]}–${target[2]}` : "in the middle range"}: a steady 45-minute run or a gym session, nothing all-out.\n` +
       `**Tonight** Lights out by 22:45 to get your ${need} before your usual 06:50 wake-up.\n` +

@@ -2,7 +2,7 @@
 // Fitbit's (both proprietary). Every component is returned so the app can
 // show exactly how a number was built.
 
-import { clamp, mean, median, MINUTES_PER_DAY, round, stdDev } from "./util.ts";
+import { addDays, clamp, mean, median, MINUTES_PER_DAY, round, stdDev, type Ymd } from "./util.ts";
 
 export type DayRow = Record<string, unknown> & { date: string };
 
@@ -37,14 +37,28 @@ interface HrLoad {
   maxBpm: number | null;
 }
 
-/** TRIMP, minutes with data and HRR zone minutes for any stretch of minute heart rate. */
+/** A minute more than this above both neighbours is an optical glitch, not effort. */
+export const SPIKE_BPM = 30;
+
+/** Minute heart rate with single-minute spikes (over 30 bpm above both non-null neighbours) replaced by the neighbours' mean. */
+export function despike(hr: (number | null)[]): (number | null)[] {
+  const out = hr.slice();
+  for (let m = 1; m + 1 < hr.length; m++) {
+    const v = hr[m], a = hr[m - 1], b = hr[m + 1];
+    if (typeof v !== "number" || typeof a !== "number" || typeof b !== "number" || a <= 0 || b <= 0) continue;
+    if (v - a > SPIKE_BPM && v - b > SPIKE_BPM) out[m] = Math.round((a + b) / 2);
+  }
+  return out;
+}
+
+/** TRIMP, minutes with data and HRR zone minutes for any stretch of minute heart rate (spikes removed). */
 function hrLoad(hr: (number | null)[], rhr: number, reserve: number, sex: string): HrLoad {
   const [a, b] = trimpCoefficients(sex);
   let trimp = 0;
   let hrMinutes = 0;
   let maxBpm: number | null = null;
   const zoneMinutes = [0, 0, 0, 0, 0];
-  for (const bpm of hr) {
+  for (const bpm of despike(hr)) {
     if (bpm === null || bpm === undefined || bpm <= 0) continue;
     hrMinutes++;
     if (maxBpm === null || bpm > maxBpm) maxBpm = bpm;
@@ -90,8 +104,11 @@ export function computeStrain(
 export interface WorkoutLoad {
   trimp: number | null;
   strain: number | null;
+  /** Highest minute average after removing spikes ("Peak minute HR"). */
   hr_max: number | null;
   hrr_zone_min: number[] | null;
+  /** Minutes of the workout window with heart rate. */
+  hr_minutes: number;
 }
 
 /**
@@ -99,14 +116,16 @@ export interface WorkoutLoad {
  * would score on the day scale; day strain is not the sum of workout strains.
  */
 export function computeWorkoutLoad(hr: (number | null)[], rhr: number, maxHr: number, sex: string): WorkoutLoad {
+  const hrMinutes = hr.filter((v) => typeof v === "number" && v > 0).length;
   const reserve = maxHr - rhr;
   const load = reserve >= 20 ? hrLoad(hr, rhr, reserve, sex) : null;
-  if (!load || load.hrMinutes < 5) return { trimp: null, strain: null, hr_max: null, hrr_zone_min: null };
+  if (!load || load.hrMinutes < 5) return { trimp: null, strain: null, hr_max: null, hrr_zone_min: null, hr_minutes: hrMinutes };
   return {
     trimp: round(load.trimp, 1),
     strain: strainFromTrimp(load.trimp),
     hr_max: load.maxBpm,
     hrr_zone_min: load.zoneMinutes,
+    hr_minutes: hrMinutes,
   };
 }
 
@@ -120,21 +139,86 @@ export function strainTarget(recovery: number | null): [number, number] | null {
 
 // --------------------------------------------------------------------- stress
 
-export const STRESS_FLOOR_HRR = 0.05;
-export const STRESS_SPAN_HRR = 0.25;
+/** A still minute scores 0 at your usual still heart rate and 100 this far (in heart-rate reserve) above it. */
+export const STRESS_SPAN_HRR = 0.15;
+/** Usual still HRR until there are STRESS_BASELINE_MIN_DAYS days of your own (pooled real data: median 0.14). */
+export const STRESS_BASELINE_HRR = 0.14;
+export const STRESS_BASELINE_DAYS = 30;
+export const STRESS_BASELINE_MIN_DAYS = 7;
+/** Seconds of a minute Fitbit must count as sedentary for the minute to be still. */
+export const SEDENTARY_MIN_S = 45;
+/** Workouts and the recovery after them are left out of stress for 30–180 minutes after the end. */
+export const COOL_DOWN_MIN = 30;
+export const COOL_DOWN_MAX = 180;
+/** Recovered: heart rate back within this much reserve of the level before the workout. */
+export const COOL_DOWN_HRR = 0.1;
 
 export interface StressResult {
   stress: number | null;
   minutes: number;
   hourly: (number | null)[];
+  /** Median HRR of the qualifying minutes (60 or more); later days' baselines are built from it. */
+  stillHrr: number | null;
+}
+
+/**
+ * Your usual still heart rate as heart-rate reserve: the median of the previous 30 days'
+ * still-minute medians (`still`, by date), or STRESS_BASELINE_HRR with fewer than 7 of them.
+ * `days` is how many of those days there were.
+ */
+export function stressBaseline(date: Ymd, still: Map<Ymd, number>): { hrr: number; days: number } {
+  const from = addDays(date, -STRESS_BASELINE_DAYS);
+  const vals = [...still].filter(([d]) => d >= from && d < date).map(([, v]) => v);
+  return { hrr: vals.length >= STRESS_BASELINE_MIN_DAYS ? median(vals)! : STRESS_BASELINE_HRR, days: vals.length };
+}
+
+/**
+ * Minutes after a workout's end that stress still leaves out: until heart rate is back,
+ * 2 minutes in a row, within 10 % of reserve of the level before the workout; at least
+ * 30, at most 180. The level before is the median of `before` (the 30 minutes before the
+ * start), or your usual still heart rate (`baselineHrr`) when that is lower or `before`
+ * has under 10 minutes: people walk or warm up before a game, and after long, hard
+ * sessions heart rate can sit 20–30 bpm above normal for 2–3 hours. `after` holds the
+ * minutes from the end on.
+ */
+export function coolDownMinutes(
+  before: (number | null)[],
+  after: (number | null)[],
+  rhr: number,
+  maxHr: number,
+  baselineHrr: number,
+): number {
+  const reserve = maxHr - rhr;
+  const pre = before.filter((v): v is number => typeof v === "number" && v > 0);
+  const usual = rhr + baselineHrr * reserve;
+  const level = pre.length >= 10 ? Math.min(median(pre)!, usual) : usual;
+  const limit = level + COOL_DOWN_HRR * reserve;
+  const recovered = (v: number | null | undefined) => typeof v === "number" && v > 0 && v <= limit;
+  for (let m = COOL_DOWN_MIN; m < COOL_DOWN_MAX; m++) {
+    if (recovered(after[m]) && recovered(after[m + 1])) return m;
+  }
+  return COOL_DOWN_MAX;
+}
+
+/** Minute sedentary seconds are usable when the day has some and none is over a minute. */
+function sedentaryUsable(sedentary: (number | null)[] | null): boolean {
+  let any = false;
+  for (const v of sedentary ?? []) {
+    if (v === null || v === undefined) continue;
+    if (v > 60) return false;
+    any = true;
+  }
+  return any;
 }
 
 /**
  * Stress 0–100 estimated from heart-rate elevation while still and awake.
  * Google Health exposes no daytime HRV, so this uses heart rate only:
- * per qualifying minute, s = clamp((HRR − 5 %) / 25 %, 0, 1); stress = 100 × mean(s).
- * A minute qualifies when it is outside sleep/exercise (`excluded`) and no
- * steps were taken in it or the 3 minutes before.
+ * per qualifying minute, s = clamp((HRR − baseline) / 15 %, 0, 1); stress = 100 × mean(s),
+ * where `baselineHrr` is your usual still HRR (stressBaseline).
+ * A minute qualifies when it is outside sleep, workouts and their recovery (`excluded`),
+ * no steps were taken in it or the 3 minutes before, and, when the day has Fitbit's
+ * minute sedentary data (`sedentary`, seconds), at least 45 s of it were sedentary.
  */
 export function computeStress(
   hr: (number | null)[],
@@ -142,13 +226,16 @@ export function computeStress(
   rhr: number,
   maxHr: number,
   excluded: boolean[],
+  baselineHrr = STRESS_BASELINE_HRR,
+  sedentary: (number | null)[] | null = null,
 ): StressResult {
   const hourlySum = new Array(24).fill(0);
   const hourlyCount = new Array(24).fill(0);
   const reserve = maxHr - rhr;
   const hasSteps = steps.some((s) => s !== null && s !== undefined);
+  const useSedentary = sedentaryUsable(sedentary);
+  const hrrs: number[] = [];
   let sum = 0;
-  let count = 0;
   if (reserve >= 20 && hasSteps) {
     for (let m = 0; m < MINUTES_PER_DAY; m++) {
       const bpm = hr[m];
@@ -161,19 +248,22 @@ export function computeStress(
         }
       }
       if (moving) continue;
+      if (useSedentary && (sedentary![m] ?? 0) < SEDENTARY_MIN_S) continue;
       const hrr = (bpm - rhr) / reserve;
-      const s = clamp((hrr - STRESS_FLOOR_HRR) / STRESS_SPAN_HRR, 0, 1);
+      const s = clamp((hrr - baselineHrr) / STRESS_SPAN_HRR, 0, 1);
       sum += s;
-      count++;
+      hrrs.push(hrr);
       const h = Math.floor(m / 60);
       hourlySum[h] += s;
       hourlyCount[h]++;
     }
   }
+  const count = hrrs.length;
   return {
     stress: count >= 60 ? round((100 * sum) / count, 1) : null,
     minutes: count,
     hourly: hourlySum.map((s, h) => (hourlyCount[h] >= 10 ? round((100 * s) / hourlyCount[h], 0) : null)),
+    stillHrr: count >= 60 ? round(median(hrrs), 4) : null,
   };
 }
 
@@ -207,7 +297,8 @@ function fmtMin(min: number): string {
 
 /**
  * Sleep score 0–100:
- *  duration 50 % (asleep ÷ sleep need), efficiency 15 % (70 %→0 … 95 %→100),
+ *  duration 50 % (asleep ÷ sleep need), efficiency 15 % (asleep ÷ sleep period: 85 %→0 … 98 %→100;
+ *  Fitbit's sleep period is auto-detected, not real time in bed, so most nights sit at 92–99 %),
  *  restoration 20 % (deep ≥ 15 % and REM ≥ 20 % of sleep score full marks),
  *  consistency 15 % (bed + wake time drift vs your 14-night median; 2 h drift → 0).
  */
@@ -230,7 +321,7 @@ export function computeSleepScore(day: DayRow, previous: DayRow[], sleepNeedMin:
     comps.push({
       key: "efficiency",
       label: "Efficiency",
-      value: round(clamp(((eff - 0.7) / 0.25) * 100, 0, 100), 0)!,
+      value: round(clamp(((eff - 0.85) / 0.13) * 100, 0, 100), 0)!,
       weight: 0.15,
       detail: `${Math.round(eff * 100)}% of time in bed asleep`,
     });

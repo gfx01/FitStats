@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { before, test } from "node:test";
 
-import { claudeFailures, claudeRequests, env, type Row, tables } from "./fakes.ts";
+import { claudeFailures, claudeRequests, env, NAP_MAIN_DAY, type Row, tables } from "./fakes.ts";
 
 const coach = await import("../functions/fitstats/lib/coach.ts");
 
@@ -120,6 +120,10 @@ test("tools: validation and data", async () => {
   assert.equal((day.hourly_heart_rate as unknown[]).length, 24);
   assert.ok((day.sleep_sessions as Row[]).length >= 1);
   assert.match(String((day.sleep_sessions as Row[])[0].start), /^\d{2}:\d{2}$/);
+  // The afternoon nap Google also flags as main sleep is a nap here too; the night is the main sleep.
+  const napSessions = (await coach.runTool("get_day", { date: NAP_MAIN_DAY }, ctx, null) as Row).sleep_sessions as Row[];
+  assert.deepEqual(napSessions.map((s) => [s.main, s.nap]), [[true, false], [false, true]]);
+  assert.deepEqual([napSessions[1].start, napSessions[1].awakenings, napSessions[1].awake_after_falling_asleep_min], ["17:13", 0, 0]);
   const empty = await coach.runTool("get_day", { date: "2026-01-01" }, ctx, null) as Row;
   assert.equal(empty.note, "Nothing was recorded on this date.");
 });
@@ -142,6 +146,7 @@ test("context: journal entries, tag effects and tonight's sleep plan", async () 
   assert.equal(evs.at(-1)!.type, "done", JSON.stringify(evs.filter((e) => e.type === "error")));
   const text = String((claudeRequests[before].system as Row[])[1].text);
   assert.match(text, /journal: Alcohol, Late meal; note "Birthday dinner"/);
-  assert.match(text, /Tonight's sleep plan \(FitStats' rule, shown in the app\): sleep need \d+h \d+m/);
+  assert.match(text, /Tonight's sleep plan \(FitStats' rule, shown in the app\): need tonight \d+h \d+m \(base 8h 0m/);
+  assert.doesNotMatch(text, /sleep need \d+h \d+m \(/, "the plan's total is never called the sleep need");
   assert.match(text, /in bed by \d\d:\d\d to wake at \d\d:\d\d/);
 });
