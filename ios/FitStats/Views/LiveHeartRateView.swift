@@ -109,7 +109,7 @@ struct LiveHeartRateView: View {
 
     private var statusText: String {
         switch live.state {
-        case .idle: return "Starting…"
+        case .idle: return live.enabled ? "Starting…" : "Live heart rate is off. Turn it on in Settings → Live heart rate."
         case .unsupported: return "This iPhone can't use Bluetooth for this."
         case .poweredOff: return "Turn on Bluetooth to see your live heart rate."
         case .unauthorized: return "FitStats isn't allowed to use Bluetooth. Turn it on in Settings → FitStats."

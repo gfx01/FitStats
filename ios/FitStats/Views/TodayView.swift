@@ -34,6 +34,7 @@ struct DetailDestination: View {
 struct TodayView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var coach: CoachStore
+    @EnvironmentObject private var live: LiveHeartRateMonitor
     @State private var selected: String?
     /// The cards on Home, in order (Views/Home/HomeLayout.swift).
     @AppStorage(HomeLayout.storageKey) private var storedCards = ""
@@ -198,7 +199,7 @@ struct TodayView: View {
         case .trainingLoad:
             TrainingLoadHomeCard(date: date)
         case .liveHeartRate:
-            if date == model.today { LiveHeartRateHomeCard() }
+            if date == model.today && live.enabled { LiveHeartRateHomeCard() }
         }
     }
 
@@ -231,11 +232,13 @@ struct TodayView: View {
             }
         }
         ToolbarItem(placement: .topBarTrailing) {
-            NavigationLink(value: DetailRoute.liveHeartRate) {
-                Image(systemName: "heart.text.square").foregroundStyle(Theme.heart)
+            if live.enabled {
+                NavigationLink(value: DetailRoute.liveHeartRate) {
+                    Image(systemName: "heart.text.square").foregroundStyle(Theme.heart)
+                }
+                .accessibilityLabel("Live heart rate")
+                .accessibilityIdentifier("open-live-hr")
             }
-            .accessibilityLabel("Live heart rate")
-            .accessibilityIdentifier("open-live-hr")
         }
         ToolbarItem(placement: .topBarTrailing) {
             Button { shift(1) } label: {

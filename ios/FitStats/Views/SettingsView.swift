@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var coach: CoachStore
+    @EnvironmentObject private var live: LiveHeartRateMonitor
     @State private var draft = UserSettings.defaults
     @State private var coachModel = ""
     @State private var useMaxHr = false
@@ -19,6 +20,7 @@ struct SettingsView: View {
                 accountSection
                 syncSection
                 deviceSection
+                liveSection
                 preferencesSection
                 coachSection
                 dataSection
@@ -170,6 +172,18 @@ struct SettingsView: View {
                     }
                 }
             }
+        }
+    }
+
+    private var liveSection: some View {
+        Section {
+            Toggle("Live heart rate", isOn: $live.enabled)
+        } header: {
+            Text("Live heart rate")
+        } footer: {
+            Text(live.enabled
+                 ? "FitStats connects to your Fitbit Air over Bluetooth while the live card or screen is open. Your band buzzes when FitStats connects and when it lets go, such as when you open or close the app."
+                 : "Off: FitStats doesn't use Bluetooth, and the live card and the heart button on Today are hidden. Your band won't buzz because of FitStats.")
         }
     }
 

@@ -78,12 +78,24 @@ final class LiveHeartRateMonitor: NSObject, ObservableObject {
     @Published private(set) var sessionMin: Int?
     @Published private(set) var sessionMax: Int?
     @Published private(set) var sessionAvg: Double?
+    /// The Settings switch. Off: no Bluetooth at all, and Today hides the live card and button.
+    @Published var enabled: Bool = UserDefaults.standard.object(forKey: LiveHeartRateMonitor.enabledKey) as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(enabled, forKey: Self.enabledKey)
+            if !enabled {
+                if active { end() }
+            } else if users > 0 && !paused && !active {
+                begin()
+            }
+        }
+    }
 
     static let heartRateService = CBUUID(string: "180D")
     static let measurementCharacteristic = CBUUID(string: "2A37")
     static let batteryService = CBUUID(string: "180F")
     static let batteryCharacteristic = CBUUID(string: "2A19")
     private static let rememberedKey = "liveHR.peripheral"
+    private static let enabledKey = "liveHR.enabled"
     private static let keepSeconds: TimeInterval = 600
 
     private let fixtureMode = !(ProcessInfo.processInfo.environment["FITSTATS_FIXTURES"] ?? "").isEmpty
@@ -113,7 +125,7 @@ final class LiveHeartRateMonitor: NSObject, ObservableObject {
         users += 1
         endWork?.cancel()
         endWork = nil
-        if !active && !paused { begin() }
+        if enabled && !active && !paused { begin() }
     }
 
     func stop() {
@@ -137,7 +149,7 @@ final class LiveHeartRateMonitor: NSObject, ObservableObject {
     func resume() {
         guard paused else { return }
         paused = false
-        if users > 0 && !active { begin() }
+        if enabled && users > 0 && !active { begin() }
     }
 
     /// Connect to a device the user picked from the list.

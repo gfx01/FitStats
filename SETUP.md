@@ -155,7 +155,8 @@ second by second.
 3. FitStats finds the band and remembers it. You can also add a **Live heart rate** card to Home
    (Today → Edit). The card connects by itself whenever Today is on screen, with no button to press.
 
-Live heart rate isn't saved, and it stops when you leave FitStats. If the band also sends
+Live heart rate isn't saved, and it stops when you leave FitStats. Your band buzzes when FitStats
+connects and when it lets go; to stop that, turn off **Settings → Live heart rate**. If the band also sends
 beat-to-beat intervals, FitStats shows a live HRV estimate too.
 
 ---
