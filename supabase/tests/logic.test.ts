@@ -337,6 +337,12 @@ test("stats: pearson, streaks, full payload", () => {
   assert.ok(Array.isArray(s.insights));
   const st = streak("x", "x", days, today, (d) => (d.steps as number) >= 12000, false);
   assert.ok(st.longest >= 1);
+  // An include-today streak keeps yesterday's run while today has no value yet.
+  const run = [day(addDays(today, -2), { recovery: 70 }), day(addDays(today, -1), { recovery: 80 }), day(today, {})];
+  const green = (d: Record<string, unknown>) => (typeof d.recovery === "number" ? d.recovery >= 67 : null);
+  assert.equal(streak("g", "g", run, today, green, true).current, 2);
+  assert.equal(streak("g", "g", run.slice(0, 2), today, green, true).current, 2, "no row for today yet");
+  assert.equal(streak("g", "g", [...run.slice(0, 2), day(today, { recovery: 50 })], today, green, true).current, 0);
   assert.equal(JSON.parse(JSON.stringify(s)).today, today);
 });
 

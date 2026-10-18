@@ -275,7 +275,9 @@ export function streak(
   let current = 0;
   for (let d = last; d >= first; d = addDays(d, -1)) {
     const row = byDate.get(d);
-    if (row && test(row) === true) current++;
+    const ok = row ? test(row) : null;
+    if (ok === true) current++;
+    else if (d === today && ok === null) continue; // today's value hasn't synced yet
     else break;
   }
   return { key, label, current, longest, longestEnd };
