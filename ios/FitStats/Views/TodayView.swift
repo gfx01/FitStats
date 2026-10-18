@@ -66,7 +66,7 @@ struct TodayView: View {
                 .padding(.bottom, 32)
             }
             .refreshable {
-                await model.refreshAll(force: true)
+                await model.pullToRefresh()
                 await model.loadDay(date, force: true)
             }
             .screenBackground()
@@ -289,21 +289,45 @@ struct TodayView: View {
         }
     }
 
+    /// When the server last fetched from Google, and when the band last synced with the
+    /// phone (the step FitStats cannot speed up).
     private var footer: some View {
-        HStack {
-            if model.isSyncing || model.isRefreshing { ProgressView().scaleEffect(0.8) }
-            Text("Synced \(Format.relative(model.status?.sync.lastRunAt))")
-                .font(.caption)
-                .foregroundStyle(Theme.tertiary)
-            Spacer()
-            Button {
-                Task { await model.syncNow() }
-            } label: {
-                Label("Sync now", systemImage: "arrow.clockwise").font(.caption.weight(.semibold))
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                if model.isSyncing {
+                    ProgressView().scaleEffect(0.8)
+                    Text("Getting the latest from Google…").font(.caption).foregroundStyle(Theme.secondary)
+                } else {
+                    Text(updatedText).font(.caption).foregroundStyle(Theme.tertiary)
+                }
+                Spacer()
+                Button {
+                    Task { await model.syncNow() }
+                } label: {
+                    Label("Sync now", systemImage: "arrow.clockwise").font(.caption.weight(.semibold))
+                }
+                .disabled(model.isSyncing)
             }
-            .disabled(model.isSyncing)
+            if let band = model.band, let synced = Format.timestamp(band.lastSyncTime) {
+                let name = band.name ?? "Your band"
+                if Date().timeIntervalSince(synced) > 30 * 60 {
+                    Label("\(name) last synced to your phone \(Format.relative(band.lastSyncTime)). Open the Google Health app to send newer data.",
+                          systemImage: "exclamationmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(Theme.recoveryYellow)
+                } else {
+                    Text("\(name) synced to your phone \(Format.relative(band.lastSyncTime))")
+                        .font(.caption)
+                        .foregroundStyle(Theme.tertiary)
+                }
+            }
         }
         .padding(.top, 4)
+    }
+
+    private var updatedText: String {
+        guard let fetched = model.status?.sync.lastRecentSyncAt else { return "Not updated yet" }
+        return "Updated \(Format.relative(fetched))"
     }
 }
 

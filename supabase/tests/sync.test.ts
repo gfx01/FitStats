@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { calls, FIRST_DATA_DAY, type Row, tables } from "./fakes.ts";
+import { calls, dbWrites, fakeData, FIRST_DATA_DAY, type Row, tables } from "./fakes.ts";
 
 test("full sync: backfill, scores and stats", async () => {
   const { runSync } = await import("../functions/fitstats/lib/sync.ts");
@@ -57,4 +57,44 @@ test("full sync: backfill, scores and stats", async () => {
   const again = await runSync("cron", false, 95_000);
   assert.equal(again.status, "ok");
   assert.equal(calls.length, 0, "fresh recent sync and finished backfill -> no API calls");
+});
+
+test("recent sync: unchanged data writes nothing, new data updates rows, scores and stats", async () => {
+  const { runSync, clockFor } = await import("../functions/fitstats/lib/sync.ts");
+  const { addDays } = await import("../functions/fitstats/lib/util.ts");
+  const fingerprint = tables.fs_sync_state[0].recent_fingerprint;
+  assert.match(String(fingerprint), /^[0-9a-f]{64}$/);
+  const device = (tables.fs_account[0].devices as Row[])[0];
+  assert.equal(device.deviceType, "TRACKER");
+  assert.equal(typeof device.lastSyncTime, "string", "band sync time stored with the recent sync");
+
+  const yesterday = addDays(clockFor(tables.fs_account[0] as never).today(), -1);
+  const day = () => tables.fs_days.find((d) => d.date === yesterday)!;
+  const stepsStats = () => ((tables.fs_cache.find((c) => c.key === "stats")!.value as Row).metrics as Record<string, Row>).steps;
+  const stepsBefore = day().steps as number;
+  const statsBefore = JSON.stringify(stepsStats());
+  const recoveryBefore = day().recovery;
+
+  // The app asks again: Google is called, but the data is the same, so nothing is written.
+  calls.length = 0;
+  dbWrites.length = 0;
+  const same = await runSync("app", true, 95_000);
+  assert.equal(same.status, "ok");
+  assert.ok(calls.some((c) => c.includes("dataTypes/steps")), "recent days fetched");
+  assert.equal(same.ranges[0].unchanged, true);
+  assert.deepEqual(dbWrites.filter((w) => !/fs_sync_state|fs_account/.test(w)), [], "no data rows, scores or stats written");
+  assert.equal(tables.fs_sync_state[0].recent_fingerprint, fingerprint);
+
+  // New steps at Google: rows, scores and stats follow.
+  fakeData.extraSteps = 1234;
+  dbWrites.length = 0;
+  const changed = await runSync("app", true, 95_000);
+  assert.equal(changed.status, "ok");
+  assert.notEqual(changed.ranges[0].unchanged, true);
+  assert.ok(dbWrites.includes("POST fs_days") && dbWrites.includes("POST fs_cache"), dbWrites.join(", "));
+  assert.equal(day().steps, stepsBefore + 1234);
+  assert.equal(day().recovery, recoveryBefore, "scores recomputed (steps do not move recovery)");
+  assert.notEqual(JSON.stringify(stepsStats()), statsBefore, "stats rebuilt");
+  assert.notEqual(tables.fs_sync_state[0].recent_fingerprint, fingerprint);
+  fakeData.extraSteps = 0;
 });

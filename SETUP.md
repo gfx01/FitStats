@@ -3,9 +3,10 @@
 FitStats turns the data from your Fitbit Air into Recovery, Strain, Sleep and
 Stress scores plus statistics for every metric. It has two parts:
 
-- **Server (Supabase project EFBB).** It signs in to Google Health and pulls new
-  data every 15 minutes, even when your phone is off. It computes the scores
-  and statistics and stores everything in your own database.
+- **Server (Supabase project EFBB).** It signs in to Google Health and checks
+  for new data every 5 minutes, even when your phone is off, and again whenever
+  you open the app. It computes the scores and statistics and stores everything
+  in your own database.
 - **iPhone app (installed with Sideloadly).** It shows what the server has
   computed.
 
@@ -77,7 +78,7 @@ Nothing needs to be redeployed.
 3. Allow **all** requested permissions.
 4. You land back in the app. The server starts importing your history in the
    background.
-   - Each run imports a few months of history, and runs repeat every 15
+   - Each run imports a few months of history, and runs repeat every 5
      minutes until the import is done. How fast this goes depends on Google's
      response times, which I couldn't measure without your account.
    - Settings shows the progress.
@@ -153,6 +154,7 @@ FitStats database).
 | Coach: "The coach needs a Claude API key" | Add `ANTHROPIC_API_KEY` (step 5), then tap Check again. |
 | Coach: "Anthropic rejected the API key" | The key was mistyped or revoked; create a new one and replace the secret. |
 | Coach: "… isn't available for this API key" | Pick another model in Settings → Coach. |
+| Today's numbers look behind | FitStats only sees what has reached Google. The line under Today says when your band last synced to your phone; open the Google Health app to sync it, then pull down in FitStats. |
 
 ## What is stored, and where
 

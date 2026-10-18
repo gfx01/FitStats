@@ -120,8 +120,8 @@ struct SettingsView: View {
 
     private var syncSection: some View {
         Section("Sync") {
-            KeyValueRow(key: "Last sync", value: Format.relative(model.status?.sync.lastRunAt))
-            KeyValueRow(key: "Last result", value: model.status?.sync.lastRunStatus ?? "–")
+            KeyValueRow(key: "Updated from Google", value: Format.relative(model.status?.sync.lastRecentSyncAt))
+            KeyValueRow(key: "Last run", value: "\(Format.relative(model.status?.sync.lastRunAt)) · \(model.status?.sync.lastRunStatus ?? "–")")
             if let sync = model.status?.sync {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
@@ -145,7 +145,7 @@ struct SettingsView: View {
                 }
             }
             .disabled(model.isSyncing)
-            Text("The server syncs automatically every 15 minutes, even when this app is closed.")
+            Text("The server checks Google for new data every 5 minutes, even when this app is closed, and again whenever you open it or pull to refresh. Your band's data only reaches Google after the band syncs with the Google Health app on your phone.")
                 .font(.caption)
                 .foregroundStyle(Theme.tertiary)
         }

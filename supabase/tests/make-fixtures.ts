@@ -38,7 +38,7 @@ write("status.json", {
     backfillProgress: 1,
     lastRunLog: null,
   },
-  devices: [{ name: "Fitbit Air", type: "TRACKER", batteryLevel: 81, batteryStatus: "High", lastSyncTime: new Date().toISOString() }],
+  devices: [{ name: "Fitbit Air", type: "TRACKER", batteryLevel: 81, batteryStatus: "High", lastSyncTime: new Date(Date.now() - 12 * 60000).toISOString() }],
   profile: { age: 31 },
   settings: tables.fs_user_settings[0],
 });

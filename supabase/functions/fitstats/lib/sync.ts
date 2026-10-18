@@ -1,6 +1,7 @@
 // Sync engine: pulls Google Health data into fs_* tables, then recomputes
-// scores and the statistics cache. Runs from cron every 15 minutes and on
-// demand from the app; a database lock prevents overlapping runs.
+// scores and the statistics cache. Runs from cron every 5 minutes and on
+// demand from the app; a database lock prevents overlapping runs. When the
+// recent days come back exactly as last time, nothing is written or recomputed.
 
 import * as db from "./db.ts";
 import { GoogleApiError, HealthClient, refreshAccessToken } from "./google.ts";
@@ -26,6 +27,7 @@ import {
   type SleepRow,
 } from "./transform.ts";
 import { addDays, dateRange, LocalClock, median, MINUTES_PER_DAY, type Ymd, ymdFromGoogleDate } from "./util.ts";
+import { VERSION } from "./version.ts";
 
 export interface Account {
   google_sub: string | null;
@@ -55,6 +57,7 @@ interface SyncState {
   backfill_done: boolean;
   backfill_empty_chunks: number;
   last_recent_sync_at: string | null;
+  recent_fingerprint: string | null;
 }
 
 interface TaskResult {
@@ -69,6 +72,15 @@ interface RangeLog {
   ms: number;
   points: number;
   failed: TaskResult[];
+  unchanged?: boolean;
+}
+
+interface RangeResult {
+  points: number;
+  /** Hash of everything the range would write; null when a write failed. */
+  fingerprint: string | null;
+  /** Same data as `previous`: nothing was written. */
+  unchanged: boolean;
 }
 
 export interface RunLog {
@@ -86,6 +98,8 @@ export class TokenExpiredError extends Error {}
 const BACKFILL_CHUNK_DAYS = 14;
 const EMPTY_CHUNKS_TO_STOP = 8;
 const RECENT_DAYS = 3;
+/** Cron runs every 5 minutes; anything older than this is fetched again. */
+const RECENT_STALE_MS = 4 * 60_000;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -163,14 +177,37 @@ async function refreshMeta(client: HealthClient, acc: Account): Promise<void> {
   } catch (e) {
     console.warn("settings", String(e));
   }
-  try {
-    const d = await client.listDevices();
-    patch.devices = d.pairedDevices ?? [];
-  } catch (e) {
-    console.warn("devices", String(e));
-  }
   await db.update("fs_account", "id=eq.1", patch);
 }
+
+/** Paired devices, fetched with every recent sync: the band's `lastSyncTime` (its last
+ * sync with the Fitbit app) tells whether newer data can be at Google yet. */
+async function refreshDevices(client: HealthClient): Promise<void> {
+  try {
+    const d = await client.listDevices();
+    await db.update("fs_account", "id=eq.1", { devices: d.pairedDevices ?? [], updated_at: nowIso() });
+  } catch (e) {
+    if (e instanceof TokenExpiredError) throw e;
+    console.warn("devices", String(e));
+  }
+}
+
+/** JSON with object keys sorted, so equal data always gives the same text. */
+function stableJson(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(stableJson).join(",")}]`;
+  if (v !== null && typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    return `{${Object.keys(o).sort().map((k) => `${JSON.stringify(k)}:${stableJson(o[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(v) ?? "null";
+}
+
+async function fingerprintOf(v: unknown): Promise<string> {
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(stableJson(v)));
+  return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+const byId = (a: { id: string }, b: { id: string }) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
 async function pool<T>(items: T[], size: number, fn: (item: T) => Promise<void>): Promise<void> {
   let next = 0;
@@ -209,7 +246,10 @@ function exclusionMask(date: Ymd, sleeps: SleepRow[], exercises: ExerciseRow[], 
   return mask;
 }
 
-/** Fetches every data type for [start, end) and writes it. Returns the number of data points seen. */
+/**
+ * Fetches every data type for [start, end) and writes it. When the result matches
+ * `previous` (the fingerprint of the last fetch of this range), nothing is written.
+ */
 async function syncRange(
   client: HealthClient,
   start: Ymd,
@@ -218,7 +258,8 @@ async function syncRange(
   acc: Account,
   settings: UserSettings,
   log: RunLog,
-): Promise<number> {
+  previous: string | null = null,
+): Promise<RangeResult> {
   const t0 = Date.now();
   const patches = new Map<string, Map<Ymd, DayPatch>>();
   const results: TaskResult[] = [];
@@ -316,59 +357,23 @@ async function syncRange(
   });
 
   const inRange = (d: Ymd) => d >= start && d < end;
-  let points = 0;
-
-  // Each write is isolated so one unexpected record cannot abort the whole range.
-  const writeFailures: TaskResult[] = [];
-  const write = async (name: string, fn: () => Promise<void>) => {
-    try {
-      await fn();
-    } catch (e) {
-      writeFailures.push({ name: `write:${name}`, ok: false, error: String((e as Error).message ?? e).slice(0, 300) });
-    }
-  };
-
-  // Sessions and samples.
-  if (ok.has("sleep")) {
-    await write("fs_sleep", async () => {
-      const rows = sleeps.map((s) => ({ ...s, updated_at: nowIso() }));
-      if (rows.length) await db.upsert("fs_sleep", rows, "id");
-      const keep = sleeps.filter((s) => inRange(s.date)).map((s) => s.id);
-      const notIn = keep.length ? `&id=not.in.${db.inList(keep)}` : "";
-      await db.remove("fs_sleep", `date=gte.${start}&date=lt.${end}${notIn}`);
-    });
-    points += sleeps.length;
-  }
-  if (ok.has("exercise")) {
-    await write("fs_exercise", async () => {
-      const rows = exercises.map((x) => ({ ...x, updated_at: nowIso() }));
-      if (rows.length) await db.upsert("fs_exercise", rows, "id");
-      const keep = exercises.map((x) => x.id);
-      const notIn = keep.length ? `&id=not.in.${db.inList(keep)}` : "";
-      await db.remove("fs_exercise", `date=gte.${start}&date=lt.${end}${notIn}`);
-    });
-    points += exercises.length;
-  }
-  if (samples.length) {
-    await write("fs_samples", async () => {
-      const unique = new Map(samples.map((s) => [`${s.metric}|${s.t}`, s]));
-      await db.upsert("fs_samples", [...unique.values()].map((s) => ({ ...s })), "metric,t", 1000);
-    });
-    points += samples.length;
-  }
-
-  // Minute data.
+  const sleepOk = ok.has("sleep"), exerciseOk = ok.has("exercise");
   const hrOk = ok.has("intraday:hr"), stepsOk = ok.has("intraday:steps");
+
+  // Every row is built before anything is written, so an unchanged range can skip the writes.
+  const uniqueSamples = [...new Map(samples.map((s) => [`${s.metric}|${s.t}`, s])).entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([, s]) => s);
+
+  const minuteRows: Record<string, unknown>[] = [];
   if (hrOk || stepsOk) {
-    const rows: Record<string, unknown>[] = [];
-    for (const [date, d] of minute) {
-      if (!inRange(date)) continue;
-      const row: Record<string, unknown> = { date, updated_at: nowIso() };
+    for (const date of [...minute.keys()].filter(inRange).sort()) {
+      const d = minute.get(date)!;
+      const row: Record<string, unknown> = { date };
       if (hrOk) row.hr = d.hr;
       if (stepsOk) row.steps = d.steps;
-      rows.push(row);
+      minuteRows.push(row);
     }
-    if (rows.length) await write("fs_intraday", () => db.upsert("fs_intraday", rows, "date", 50));
   }
 
   // Day rows: columns of failed tasks are left untouched in the database.
@@ -394,7 +399,7 @@ async function syncRange(
       const p = patches.get(task.name)?.get(date);
       if (p) Object.assign(row, p);
     }
-    if (ok.has("sleep")) Object.assign(row, sleepDayPatch(date, sleeps, clock));
+    if (sleepOk) Object.assign(row, sleepDayPatch(date, sleeps, clock));
 
     const m = minute.get(date);
     if (hrOk && m) {
@@ -418,21 +423,62 @@ async function syncRange(
     }
 
     const hasData = Object.entries(row).some(([k, v]) => k !== "date" && k !== "intraday_details" && v !== null);
-    if (hasData) {
-      row.updated_at = nowIso();
-      dayRows.push(row);
-    }
+    if (hasData) dayRows.push(row);
   }
-  if (dayRows.length) await write("fs_days", () => db.upsert("fs_days", dayRows, "date", 100));
-  points += dayRows.length;
 
-  log.ranges.push({
-    range: `${start}..${end}`,
-    ms: Date.now() - t0,
-    points,
-    failed: [...results.filter((r) => !r.ok), ...writeFailures],
+  const points = (sleepOk ? sleeps.length : 0) + (exerciseOk ? exercises.length : 0) + samples.length + dayRows.length;
+  const failed = results.filter((r) => !r.ok);
+  const fingerprint = await fingerprintOf({
+    version: VERSION,
+    start,
+    end,
+    ok: [...ok].sort(),
+    sleeps: sleepOk ? [...sleeps].sort(byId) : null,
+    exercises: exerciseOk ? [...exercises].sort(byId) : null,
+    samples: uniqueSamples,
+    minute: minuteRows,
+    days: dayRows,
   });
-  return points;
+  if (previous !== null && fingerprint === previous) {
+    log.ranges.push({ range: `${start}..${end}`, ms: Date.now() - t0, points, failed, unchanged: true });
+    return { points, fingerprint, unchanged: true };
+  }
+
+  // Each write is isolated so one unexpected record cannot abort the whole range.
+  const writeFailures: TaskResult[] = [];
+  const write = async (name: string, fn: () => Promise<void>) => {
+    try {
+      await fn();
+    } catch (e) {
+      writeFailures.push({ name: `write:${name}`, ok: false, error: String((e as Error).message ?? e).slice(0, 300) });
+    }
+  };
+  const stamped = (rows: object[]): Record<string, unknown>[] => rows.map((r) => ({ ...r, updated_at: nowIso() }));
+
+  if (sleepOk) {
+    await write("fs_sleep", async () => {
+      if (sleeps.length) await db.upsert("fs_sleep", stamped(sleeps), "id");
+      const keep = sleeps.filter((s) => inRange(s.date)).map((s) => s.id);
+      const notIn = keep.length ? `&id=not.in.${db.inList(keep)}` : "";
+      await db.remove("fs_sleep", `date=gte.${start}&date=lt.${end}${notIn}`);
+    });
+  }
+  if (exerciseOk) {
+    await write("fs_exercise", async () => {
+      if (exercises.length) await db.upsert("fs_exercise", stamped(exercises), "id");
+      const keep = exercises.map((x) => x.id);
+      const notIn = keep.length ? `&id=not.in.${db.inList(keep)}` : "";
+      await db.remove("fs_exercise", `date=gte.${start}&date=lt.${end}${notIn}`);
+    });
+  }
+  if (uniqueSamples.length) {
+    await write("fs_samples", () => db.upsert("fs_samples", uniqueSamples.map((s) => ({ ...s })), "metric,t", 1000));
+  }
+  if (minuteRows.length) await write("fs_intraday", () => db.upsert("fs_intraday", stamped(minuteRows), "date", 50));
+  if (dayRows.length) await write("fs_days", () => db.upsert("fs_days", stamped(dayRows), "date", 100));
+
+  log.ranges.push({ range: `${start}..${end}`, ms: Date.now() - t0, points, failed: [...failed, ...writeFailures] });
+  return { points, fingerprint: writeFailures.length ? null : fingerprint, unchanged: false };
 }
 
 /** Recomputes sleep score + recovery for dates >= from (baselines need the previous 30 days). */
@@ -554,15 +600,28 @@ export async function runSync(reason: string, force: boolean, budgetMs = 95_000)
     }
     if (!state.backfill_oldest) state.backfill_oldest = addDays(today, -RECENT_DAYS);
 
-    let earliestTouched: Ymd | null = null;
-    const recentStale = !state.last_recent_sync_at || Date.now() - Date.parse(state.last_recent_sync_at) > 12 * 60_000;
+    const recentStale = !state.last_recent_sync_at || Date.now() - Date.parse(state.last_recent_sync_at) > RECENT_STALE_MS;
     if (force || recentStale) {
+      // Recent days are finished (scores and stats included) before any backfill, so the
+      // app can show them as soon as last_recent_sync_at moves. Devices come first, so the
+      // band's last sync time the app shows is never newer than the data fetched here.
+      await refreshDevices(client);
       const from = addDays(today, -RECENT_DAYS);
-      await syncRange(client, from, addDays(today, 1), clock, acc, settings, log);
+      const recent = await syncRange(client, from, addDays(today, 1), clock, acc, settings, log, state.recent_fingerprint ?? null);
+      if (!recent.unchanged) {
+        await recomputeScores(from, today, settings);
+        await rebuildStats(today, settings);
+      }
       state.last_recent_sync_at = nowIso();
-      earliestTouched = from;
+      state.recent_fingerprint = recent.fingerprint;
+      await db.update("fs_sync_state", "id=eq.1", {
+        last_recent_sync_at: state.last_recent_sync_at,
+        recent_fingerprint: state.recent_fingerprint,
+        updated_at: nowIso(),
+      });
     }
 
+    let backfilledFrom: Ymd | null = null;
     while (!state.backfill_done && Date.now() - started < budgetMs - 35_000) {
       const end = state.backfill_oldest!;
       let start = addDays(end, -BACKFILL_CHUNK_DAYS);
@@ -571,13 +630,13 @@ export async function runSync(reason: string, force: boolean, budgetMs = 95_000)
         state.backfill_done = true;
         break;
       }
-      const points = await syncRange(client, start, end, clock, acc, settings, log);
+      const { points } = await syncRange(client, start, end, clock, acc, settings, log);
       state.backfill_oldest = start;
       state.backfill_empty_chunks = points === 0 ? (state.backfill_empty_chunks ?? 0) + 1 : 0;
       if (start <= state.backfill_target! || state.backfill_empty_chunks >= EMPTY_CHUNKS_TO_STOP) {
         state.backfill_done = true;
       }
-      earliestTouched = start;
+      backfilledFrom = start;
       await db.update("fs_sync_state", "id=eq.1", {
         backfill_oldest: state.backfill_oldest,
         backfill_target: state.backfill_target,
@@ -587,8 +646,8 @@ export async function runSync(reason: string, force: boolean, budgetMs = 95_000)
       });
     }
 
-    if (earliestTouched) {
-      await recomputeScores(earliestTouched, today, settings);
+    if (backfilledFrom) {
+      await recomputeScores(backfilledFrom, today, settings);
       await rebuildStats(today, settings);
     }
     if (log.ranges.some((r) => r.failed.length > 0)) log.status = "partial";

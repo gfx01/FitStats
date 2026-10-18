@@ -23,7 +23,10 @@ export const tables: Record<string, Row[]> = {
     time_zone: null, profile: null, google_settings: null, meta_fetched_at: null, google_sub: "sub", google_email: "me@example.com",
   }],
   fs_user_settings: [{ id: 1, sex: "unspecified", max_hr_override: null, sleep_need_min: 480, step_goal: 10000, backfill_days: 730 }],
-  fs_sync_state: [{ id: 1, backfill_oldest: null, backfill_target: null, backfill_done: false, backfill_empty_chunks: 0, last_recent_sync_at: null, lock_until: null }],
+  fs_sync_state: [{
+    id: 1, backfill_oldest: null, backfill_target: null, backfill_done: false, backfill_empty_chunks: 0,
+    last_recent_sync_at: null, recent_fingerprint: null, lock_until: null,
+  }],
   fs_days: [], fs_sleep: [], fs_exercise: [], fs_intraday: [], fs_samples: [], fs_cache: [],
   fs_coach_threads: [], fs_coach_messages: [],
 };
@@ -58,10 +61,14 @@ function filterRows(rows: Row[], params: URLSearchParams): Row[] {
   });
 }
 
+/** "METHOD table" for every write, for assertions. */
+export const dbWrites: string[] = [];
+
 function postgrest(url: URL, init: RequestInit): Response {
   const path = url.pathname.replace("/rest/v1/", "");
   const params = url.searchParams;
   const method = init.method ?? "GET";
+  if (method !== "GET" && !path.startsWith("rpc/")) dbWrites.push(`${method} ${path}`);
   const hdrs = init.headers as Record<string, string>;
   assert.equal(hdrs.apikey, "sb_secret_test");
   assert.equal(hdrs.Authorization, undefined, "secret keys must not be sent as Bearer tokens");
@@ -120,6 +127,8 @@ function postgrest(url: URL, init: RequestInit): Response {
 
 const TZ_OFFSET_S = 7200; // fake data uses fixed CEST wall clock for simplicity
 export const calls: string[] = [];
+/** Knobs to change what the fake API returns between runs. */
+export const fakeData = { extraSteps: 0 };
 const ymdParts = (ymd: string) => {
   const [year, month, day] = ymd.split("-").map(Number);
   return { year, month, day };
@@ -161,7 +170,7 @@ function rollupValue(type: string, date: string): Row | null {
   if (date < FIRST_DATA_DAY) return null;
   const k = seed(date);
   switch (type) {
-    case "steps": return { steps: { countSum: String(5000 + k * 7) } };
+    case "steps": return { steps: { countSum: String(5000 + k * 7 + fakeData.extraSteps) } };
     case "distance": return { distance: { millimetersSum: String((5000 + k * 7) * 750) } };
     case "floors": return { floors: { countSum: String(k % 15) } };
     case "active-zone-minutes": return { activeZoneMinutes: { sumInFatBurnHeartZone: "12", sumInCardioHeartZone: String(k % 30) } };
@@ -267,7 +276,11 @@ function googleFetch(url: URL, init: RequestInit): Response {
   calls.push(`${method} ${path}`);
   if (path === "users/me/profile") return Response.json({ age: 31, membershipStartDate: { year: 2026, month: 8, day: 1 } });
   if (path === "users/me/settings") return Response.json({ timeZone: "Europe/Budapest", utcOffset: "7200s" });
-  if (path === "users/me/pairedDevices") return Response.json({ pairedDevices: [{ deviceVersion: "Fitbit Air", batteryLevel: 81 }] });
+  if (path === "users/me/pairedDevices") {
+    return Response.json({
+      pairedDevices: [{ deviceVersion: "Fitbit Air", deviceType: "TRACKER", batteryLevel: 81, batteryStatus: "High", lastSyncTime: iso(Date.now() - 12 * 60000) }],
+    });
+  }
 
   const m = /^users\/me\/dataTypes\/([a-z0-9-]+)\/dataPoints(:\w+)?$/.exec(path);
   assert.ok(m, `unexpected path ${path}`);

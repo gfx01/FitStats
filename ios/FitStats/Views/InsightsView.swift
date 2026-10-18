@@ -21,7 +21,7 @@ struct InsightsView: View {
                 .padding(.horizontal, 16)
                 .padding(.bottom, 32)
             }
-            .refreshable { await model.refreshAll(force: true) }
+            .refreshable { await model.pullToRefresh() }
             .screenBackground()
             .navigationTitle("Insights")
             .navigationDestination(for: Correlation.ID.self) { id in

@@ -23,8 +23,8 @@ import {
   runSync,
 } from "./lib/sync.ts";
 import { addDays } from "./lib/util.ts";
+import { VERSION } from "./lib/version.ts";
 
-const VERSION = "1.1.0";
 const APP_SCHEME = "fitstats://";
 const DEFAULT_APP_REDIRECT = "fitstats://connected";
 
@@ -349,7 +349,7 @@ async function disconnect(params: URLSearchParams): Promise<Response> {
     await db.update("fs_account", "id=eq.1", { google_sub: null, google_email: null, profile: null, google_settings: null, devices: null });
     await db.update("fs_sync_state", "id=eq.1", {
       backfill_oldest: null, backfill_target: null, backfill_done: false, backfill_empty_chunks: 0,
-      last_recent_sync_at: null, last_run_log: null,
+      last_recent_sync_at: null, recent_fingerprint: null, last_run_log: null,
     });
   }
   await db.remove("fs_app_keys", "key_hash=not.is.null");

@@ -11,7 +11,7 @@ questions about your data.
 
 ```
 Fitbit Air → Google Health app → Google Health API v4
-                                        │  (every 15 min, pg_cron)
+                                        │  (every 5 min via pg_cron, and when the app opens)
                          Supabase Edge Function `fitstats`
                            ├─ OAuth (Google web client, PKCE)
                            ├─ sync + history backfill → fs_* tables

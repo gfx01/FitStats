@@ -21,6 +21,7 @@ final class AppModel: ObservableObject {
     let coach = CoachStore()
     private let authenticator = WebAuthenticator()
     private var lastRefresh: Date?
+    private var lastSyncRequest: Date?
     /// API-shaped JSON used instead of the server for CI screenshots (see supabase/tests/make-fixtures.ts).
     private let fixtureDir: URL?
 
@@ -75,6 +76,14 @@ final class AppModel: ObservableObject {
         return s == "expired" || s == "error" || s == "disconnected"
     }
 
+    /// The band among the paired devices. Its `lastSyncTime` is when it last synced with the
+    /// phone app (Google Health, formerly Fitbit): nothing it recorded after that can be at
+    /// Google yet.
+    var band: StatusResponse.Device? {
+        let devices = status?.devices ?? []
+        return devices.first { $0.type == "TRACKER" } ?? devices.first
+    }
+
     // MARK: - Cache
 
     private func loadCache() {
@@ -126,7 +135,10 @@ final class AppModel: ObservableObject {
 
     // MARK: - Loading
 
-    func refreshAll(force: Bool = false) async {
+    /// Reloads status, days and stats from the server. `full` refetches the whole history
+    /// (otherwise only the last 10 days, plus the whole history when the import has moved or
+    /// every 12 h). Afterwards, starts a sync with Google if the server's copy is stale.
+    func refreshAll(force: Bool = false, full: Bool = false) async {
         if fixtureDir != nil { return }
         guard let api else { return }
         if !force, let last = lastRefresh, Date().timeIntervalSince(last) < 20 { return }
@@ -136,9 +148,10 @@ final class AppModel: ObservableObject {
             let (s, sData) = try await api.fetch(StatusResponse.self, "status")
             status = s
             DiskCache.save(sData, as: "status.json")
-            // Full history at most every 12 h (or on pull-to-refresh); otherwise only recent days.
-            let lastFull = UserDefaults.standard.double(forKey: "lastFullDaysFetch")
-            let needFull = force || days.isEmpty || Date().timeIntervalSince1970 - lastFull > 12 * 3600
+            let defaults = UserDefaults.standard
+            let lastFull = defaults.double(forKey: "lastFullDaysFetch")
+            let importMoved = s.sync.backfillOldest != defaults.string(forKey: "fullFetchBackfillOldest")
+            let needFull = full || importMoved || days.isEmpty || Date().timeIntervalSince1970 - lastFull > 12 * 3600
             let from = needFull
                 ? Format.addDays(s.today, -min(max(s.settings.backfillDays, 90), 1825))
                 : Format.addDays(s.today, -10)
@@ -146,7 +159,8 @@ final class AppModel: ObservableObject {
             if needFull {
                 days = d.days
                 DiskCache.save(dData, as: "days.json")
-                UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "lastFullDaysFetch")
+                defaults.set(Date().timeIntervalSince1970, forKey: "lastFullDaysFetch")
+                defaults.set(s.sync.backfillOldest, forKey: "fullFetchBackfillOldest")
             } else {
                 var merged = days.filter { $0.date < from }
                 merged.append(contentsOf: d.days)
@@ -164,7 +178,21 @@ final class AppModel: ObservableObject {
             errorMessage = nil
         } catch {
             handle(error)
+            return
         }
+        if let s = status, autoSyncDue(s) {
+            Task { await syncNow() }
+        }
+    }
+
+    /// True when the server last fetched recent data from Google over 3 minutes ago
+    /// (cron runs every 5), and no sync was asked for in the last 3 minutes.
+    private func autoSyncDue(_ s: StatusResponse) -> Bool {
+        guard !isSyncing, s.connection.status == "ok" else { return false }
+        if let last = lastSyncRequest, Date().timeIntervalSince(last) < 180 { return false }
+        guard let fetched = Format.timestamp(s.sync.lastRecentSyncAt) else { return true }
+        let now = Format.timestamp(s.serverTime) ?? Date()
+        return now.timeIntervalSince(fetched) > 180
     }
 
     @discardableResult
@@ -182,24 +210,36 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Asks the server to sync now, then polls until the run finishes (max ~2.5 min).
+    /// Asks the server to fetch the latest data from Google now, then reloads as soon as the
+    /// recent days are saved (the server finishes those before any history import).
     func syncNow() async {
         guard fixtureDir == nil, let api, !isSyncing else { return }
         isSyncing = true
+        lastSyncRequest = Date()
         defer { isSyncing = false }
+        let before = status?.sync.lastRecentSyncAt
         do {
             _ = try await api.post("sync")
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
-            for _ in 0..<40 {
-                let (s, _) = try await api.fetch(StatusResponse.self, "status")
+            let started = Date()
+            while Date().timeIntervalSince(started) < 60 {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                if Task.isCancelled { return }
+                let (s, data) = try await api.fetch(StatusResponse.self, "status")
                 status = s
-                if !s.sync.running { break }
-                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                DiskCache.save(data, as: "status.json")
+                // A run already in progress (cron) makes the server skip this request; its own
+                // recent sync, or its end, is just as good.
+                if s.sync.lastRecentSyncAt != before || !s.sync.running { break }
             }
             await refreshAll(force: true)
         } catch {
             handle(error)
         }
+    }
+
+    /// Pull to refresh: a sync with Google, or a reload while one is already running.
+    func pullToRefresh() async {
+        if isSyncing { await refreshAll(force: true) } else { await syncNow() }
     }
 
     func saveSettings(_ settings: UserSettings) async -> Bool {
@@ -209,7 +249,7 @@ final class AppModel: ObservableObject {
             _ = try await api.post("settings", body: body)
             noticeMessage = "Settings saved. Scores are being recalculated."
             try? await Task.sleep(nanoseconds: 4_000_000_000)
-            await refreshAll(force: true)
+            await refreshAll(force: true, full: true)
             return true
         } catch {
             handle(error)
@@ -228,6 +268,8 @@ final class AppModel: ObservableObject {
         KeyStore.delete()
         DiskCache.clear()
         UserDefaults.standard.removeObject(forKey: "lastFullDaysFetch")
+        UserDefaults.standard.removeObject(forKey: "fullFetchBackfillOldest")
+        lastSyncRequest = nil
         appKey = nil
         status = nil
         days = []
