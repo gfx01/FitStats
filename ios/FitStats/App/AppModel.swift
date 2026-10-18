@@ -6,9 +6,16 @@ final class AppModel: ObservableObject {
     @Published private(set) var appKey: String?
     @Published private(set) var status: StatusResponse?
     @Published private(set) var days: [DayRecord] = [] {
-        didSet { daysByDate = Dictionary(days.map { ($0.date, $0) }, uniquingKeysWith: { _, b in b }) }
+        didSet {
+            daysByDate = Dictionary(days.map { ($0.date, $0) }, uniquingKeysWith: { _, b in b })
+            recorded = Set(MetricCatalog.all.filter { def in days.contains { def.value($0) != nil } }.map(\.key))
+        }
     }
     @Published private(set) var daysByDate: [String: DayRecord] = [:]
+    /// Metrics with at least one value in your history; tiles for the others stay hidden.
+    @Published private(set) var recorded: Set<String> = []
+    @Published private(set) var journal: [String: JournalEntry] = [:]
+    @Published private(set) var journalTags: [JournalTag] = []
     @Published private(set) var stats: StatsPayload?
     @Published private(set) var dayDetails: [String: DayDetail] = [:]
     @Published private(set) var isRefreshing = false
@@ -59,6 +66,7 @@ final class AppModel: ObservableObject {
         status = load(StatusResponse.self, "status.json")
         days = load(DaysResponse.self, "days.json")?.days ?? []
         stats = load(StatsPayload.self, "stats.json")
+        if let j = load(JournalResponse.self, "journal.json") { applyJournal(j) }
         for offset in 0..<7 {
             let date = Format.addDays(today, -offset)
             if let detail = load(DayDetail.self, "day-\(date).json") { dayDetails[date] = detail }
@@ -91,6 +99,7 @@ final class AppModel: ObservableObject {
         if let d = DiskCache.load("status.json"), let s = try? decoder.decode(StatusResponse.self, from: d) { status = s }
         if let d = DiskCache.load("days.json"), let r = try? decoder.decode(DaysResponse.self, from: d) { days = r.days }
         if let d = DiskCache.load("stats.json"), let s = try? decoder.decode(StatsPayload.self, from: d) { stats = s }
+        if let d = DiskCache.load("journal.json"), let j = try? decoder.decode(JournalResponse.self, from: d) { applyJournal(j) }
     }
 
     // MARK: - Connect
@@ -172,6 +181,10 @@ final class AppModel: ObservableObject {
             if let result = try? await api.fetch(StatsPayload.self, "stats") {
                 stats = result.0
                 DiskCache.save(result.1, as: "stats.json")
+            }
+            if let result = try? await api.fetch(JournalResponse.self, "journal") {
+                applyJournal(result.0)
+                DiskCache.save(result.1, as: "journal.json")
             }
             dayDetails[s.today] = nil
             lastRefresh = Date()
@@ -274,6 +287,8 @@ final class AppModel: ObservableObject {
         status = nil
         days = []
         stats = nil
+        journal = [:]
+        journalTags = []
         dayDetails = [:]
         coach.reset()
     }
@@ -289,10 +304,14 @@ final class AppModel: ObservableObject {
 
     // MARK: - Derived data
 
+    /// False for day totals of today (still growing) and of days you barely wore the band.
+    func countsToward(_ def: MetricDef, _ day: DayRecord) -> Bool {
+        !def.isDayTotal || (day.date < today && day.bool("low_wear") != true)
+    }
+
     func series(_ def: MetricDef, from: String, through: String) -> [DayPoint] {
         days.compactMap { day in
-            guard day.date >= from, day.date <= through else { return nil }
-            if def.isDayTotal && day.date >= today { return nil }
+            guard day.date >= from, day.date <= through, countsToward(def, day) else { return nil }
             guard let v = def.value(day), let date = Format.chartDate(day.date) else { return nil }
             return DayPoint(date: date, value: v)
         }
@@ -302,11 +321,129 @@ final class AppModel: ObservableObject {
     func baseline(_ def: MetricDef, before date: String, days count: Int = 30) -> Double? {
         let from = Format.addDays(date, -count)
         let values = days.compactMap { d -> Double? in
-            guard d.date >= from, d.date < date else { return nil }
+            guard d.date >= from, d.date < date, countsToward(def, d) else { return nil }
             return def.value(d)
         }
         guard values.count >= 3 else { return nil }
         return values.reduce(0, +) / Double(values.count)
+    }
+
+    /// Steps you usually have by `minute` of the day: each of the previous 30 full days' total,
+    /// scaled by the share of its minute steps taken by then. Nil with fewer than 5 such days.
+    func typicalSteps(before date: String, atMinute minute: Int) -> Double? {
+        let from = Format.addDays(date, -30)
+        let h = min(23, max(0, minute / 60))
+        let values = days.compactMap { d -> Double? in
+            guard d.date >= from, d.date < date, d.bool("low_wear") != true, let total = d.double("steps"),
+                  let byHour = d.json("steps_by_hour")?.array?.compactMap(\.double), byHour.count == 24,
+                  let full = byHour.last, full > 0 else { return nil }
+            let before = h == 0 ? 0 : byHour[h - 1]
+            let byThen = before + (byHour[h] - before) * Double(minute - h * 60) / 60
+            return total * byThen / full
+        }
+        guard values.count >= 5 else { return nil }
+        return values.reduce(0, +) / Double(values.count)
+    }
+
+    /// Local minute of the newest minute data loaded for `date`, i.e. how far its totals reach.
+    func lastDataMinute(_ date: String) -> Int? {
+        guard let intra = dayDetails[date]?.intraday else { return nil }
+        let lastHr = intra.hr?.lastIndex { $0 != nil }
+        let lastSteps = intra.steps?.lastIndex { $0 != nil }
+        return [lastHr, lastSteps].compactMap { $0 }.max()
+    }
+
+    /// The current minute of the day in the server's time zone.
+    var localMinuteNow: Int {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = zone ?? .current
+        let c = cal.dateComponents([.hour, .minute], from: Date())
+        return (c.hour ?? 0) * 60 + (c.minute ?? 0)
+    }
+
+    /// Median wear over the 30 days before `date`.
+    func usualWear(before date: String) -> Double? {
+        let from = Format.addDays(date, -30)
+        let values = days.filter { $0.date >= from && $0.date < date }.compactMap { $0.double("wear_min") }.sorted()
+        guard values.count >= 5 else { return nil }
+        return values[values.count / 2]
+    }
+
+    var sleepPlan: SleepPlan {
+        SleepPlan.plan(days: daysByDate, today: today, sleepNeedMin: Double(status?.settings.sleepNeedMin ?? 480))
+    }
+
+    // MARK: - Journal
+
+    private func applyJournal(_ response: JournalResponse) {
+        journalTags = response.tags
+        journal = Dictionary(response.entries.map { ($0.date, $0) }, uniquingKeysWith: { _, b in b })
+    }
+
+    func tagLabel(_ tag: String) -> String { journalTags.first { $0.id == tag }?.label ?? tag }
+
+    func tagIcon(_ tag: String) -> String { journalTags.first { $0.id == tag }?.icon ?? "tag.fill" }
+
+    /// Your own tags (not built in), most used first.
+    var customTags: [String] {
+        let builtIn = Set(journalTags.map(\.id))
+        var counts: [String: Int] = [:]
+        for entry in journal.values {
+            for tag in entry.tags where !builtIn.contains(tag) { counts[tag, default: 0] += 1 }
+        }
+        return counts.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }.map(\.key)
+    }
+
+    /// Saves one day's entry; an empty tag list means "nothing to note".
+    func saveJournal(date: String, tags: [String], note: String) async -> Bool {
+        let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        let entry = JournalEntry(date: date, tags: tags, note: trimmed.isEmpty ? nil : trimmed)
+        if fixtureDir != nil {
+            journal[date] = entry
+            return true
+        }
+        guard let api else { return false }
+        struct Saved: Decodable { let entry: JournalEntry? }
+        do {
+            let body = try JSONEncoder().encode(entry)
+            let data = try await api.post("journal", body: body)
+            journal[date] = (try? JSONDecoder().decode(Saved.self, from: data))?.entry ?? entry
+            refreshStatsSoon()
+            return true
+        } catch {
+            handle(error)
+            return false
+        }
+    }
+
+    func clearJournal(date: String) async {
+        if fixtureDir != nil {
+            journal[date] = nil
+            return
+        }
+        guard let api else { return }
+        struct Clear: Encodable {
+            let date: String
+            let clear = true
+        }
+        do {
+            let body = try JSONEncoder().encode(Clear(date: date))
+            _ = try await api.post("journal", body: body)
+            journal[date] = nil
+            refreshStatsSoon()
+        } catch {
+            handle(error)
+        }
+    }
+
+    /// Tag effects are rebuilt on the server right after a journal change.
+    private func refreshStatsSoon() {
+        Task {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard let api, let result = try? await api.fetch(StatsPayload.self, "stats") else { return }
+            stats = result.0
+            DiskCache.save(result.1, as: "stats.json")
+        }
     }
 
     func csvExport() -> URL? {

@@ -9,14 +9,41 @@ const out = process.argv[2];
 if (!out) throw new Error("usage: make-fixtures.ts <outDir>");
 mkdirSync(out, { recursive: true });
 
-const { runSync, clockFor } = await import("../functions/fitstats/lib/sync.ts");
+const { runSync, clockFor, loadSettings, rebuildStats, recomputeScores } = await import("../functions/fitstats/lib/sync.ts");
 const { addDays } = await import("../functions/fitstats/lib/util.ts");
+const { JOURNAL_TAGS, journalEntries, saveJournalEntry } = await import("../functions/fitstats/lib/journal.ts");
 const log = await runSync("fixtures", true, 95_000);
 if (log.status !== "ok") throw new Error(`sync failed: ${JSON.stringify(log)}`);
 
 const acc = tables.fs_account[0];
 const state = tables.fs_sync_state[0];
 const today = clockFor(acc as never).today();
+
+// Demo journal for the screenshots: "alcohol" sits on the days before the 8 worst
+// sleep scores of the last 45 nights, and those mornings get a lower HRV and a
+// higher resting heart rate, so that tag shows a clear (and plausible) effect.
+// The other tags are spread evenly and show none.
+const scoreAfter = (d: string) => Number(tables.fs_days.find((r) => r.date === addDays(d, 1))?.sleep_score ?? 100);
+const logged = Array.from({ length: 45 }, (_, i) => addDays(today, -45 + i));
+const alcohol = new Set([...logged].sort((a, b) => scoreAfter(a) - scoreAfter(b)).slice(0, 8));
+for (const date of alcohol) {
+  const morning = tables.fs_days.find((r) => r.date === addDays(date, 1));
+  if (!morning) continue;
+  if (typeof morning.hrv_rmssd === "number") morning.hrv_rmssd -= 12;
+  if (typeof morning.rhr === "number") morning.rhr += 4;
+}
+await recomputeScores(addDays(today, -45), today, await loadSettings());
+for (const [i, date] of logged.entries()) {
+  const tags = [
+    ...(alcohol.has(date) ? ["alcohol"] : []),
+    ...(i % 6 === 1 ? ["late_caffeine"] : []),
+    ...(i % 9 === 4 ? ["stressful_day"] : []),
+    ...(i % 10 === 2 ? ["Cold shower"] : []),
+  ];
+  await saveJournalEntry({ date, tags }, today);
+}
+await saveJournalEntry({ date: today, tags: ["late_caffeine", "stressful_day"], note: "Long day at work, coffee at 4 pm." }, today);
+await rebuildStats(today, await loadSettings());
 const byDate = (a: Row, b: Row) => String(a.date).localeCompare(String(b.date));
 const days = [...tables.fs_days].sort(byDate);
 const write = (name: string, value: unknown) => writeFileSync(join(out, name), JSON.stringify(value));
@@ -44,6 +71,7 @@ write("status.json", {
 });
 write("days.json", { from: days[0]?.date ?? today, to: today, today, days });
 write("stats.json", tables.fs_cache.find((c) => c.key === "stats")!.value);
+write("journal.json", { tags: JOURNAL_TAGS, entries: await journalEntries(addDays(today, -400)) });
 
 for (let i = 0; i < 7; i++) {
   const date = addDays(today, -i);

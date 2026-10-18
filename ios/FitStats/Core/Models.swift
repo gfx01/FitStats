@@ -170,9 +170,14 @@ struct Exercise: Codable, Identifiable {
     let elevationGainM: Double?
     let avgSpeedMps: Double?
     let runVo2max: Double?
+    /// From the minute heart rate during the workout (server lib/scores.ts).
+    let trimp: Double?
+    let strain: Double?
+    let hrMax: Double?
+    let hrrZoneMin: [Double?]?
 
     enum CodingKeys: String, CodingKey {
-        case id, date, name, calories, steps, azm
+        case id, date, name, calories, steps, azm, trimp, strain
         case startTime = "start_time"
         case endTime = "end_time"
         case exerciseType = "exercise_type"
@@ -187,6 +192,8 @@ struct Exercise: Codable, Identifiable {
         case elevationGainM = "elevation_gain_m"
         case avgSpeedMps = "avg_speed_mps"
         case runVo2max = "run_vo2max"
+        case hrMax = "hr_max"
+        case hrrZoneMin = "hrr_zone_min"
     }
 }
 
@@ -215,6 +222,48 @@ struct StatsPayload: Codable {
     let streaks: [Streak]
     let correlations: [Correlation]
     let insights: [Insight]
+    /// Missing in stats cached by older servers.
+    let journal: [TagImpact]?
+}
+
+struct TagImpact: Codable, Identifiable {
+    let tag: String
+    let label: String
+    let days: Int
+    let effects: [TagEffect]
+    var id: String { tag }
+}
+
+/// An outcome on the day after tagged days versus the day after other logged days.
+struct TagEffect: Codable, Identifiable {
+    let metric: String
+    let with: Double
+    let without: Double
+    let diff: Double
+    let nWith: Int
+    let nWithout: Int
+    let t: Double?
+    let clear: Bool
+    var id: String { metric }
+}
+
+// MARK: - Journal
+
+struct JournalTag: Codable, Identifiable, Hashable {
+    let id: String
+    let label: String
+    let icon: String
+}
+
+struct JournalEntry: Codable, Equatable {
+    let date: String
+    var tags: [String]
+    var note: String?
+}
+
+struct JournalResponse: Codable {
+    let tags: [JournalTag]
+    let entries: [JournalEntry]
 }
 
 struct MetricStats: Codable {

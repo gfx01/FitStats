@@ -9,6 +9,8 @@ struct InsightsView: View {
                 VStack(spacing: 14) {
                     if let stats = model.stats {
                         insightsSection(stats.insights)
+                        JournalImpactsCard(impacts: stats.journal ?? [])
+                            .accessibilityIdentifier("journal-impacts")
                         streaksSection(stats.streaks)
                         correlationsSection(stats.correlations)
                     } else {

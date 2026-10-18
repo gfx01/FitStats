@@ -5,7 +5,7 @@
 //   (code/state)       Google OAuth callback — this function's URL is the redirect URI
 //   cron               pg_cron trigger, authenticated with x-cron-secret
 //   health             unauthenticated setup check
-//   status | days | day | stats | sync | settings | disconnect
+//   status | days | day | stats | sync | settings | journal | disconnect
 //                      app routes, authenticated with x-app-key
 //   coach | coach_status | coach_threads | coach_thread | coach_delete | coach_brief
 //                      Claude coach (lib/coach.ts), also x-app-key
@@ -13,6 +13,7 @@
 import { coachBrief, coachDelete, coachStatus, coachThread, coachThreads, handleCoach, isCoachModel } from "./lib/coach.ts";
 import * as db from "./lib/db.ts";
 import { decodeIdToken, exchangeCode, GOOGLE_AUTH_URL, HEALTH_SCOPES, HealthClient, OAUTH_SCOPES } from "./lib/google.ts";
+import { JOURNAL_TAGS, journalEntries, JournalInputError, saveJournalEntry } from "./lib/journal.ts";
 import {
   clockFor,
   loadAccount,
@@ -334,6 +335,26 @@ async function saveSettings(req: Request): Promise<Response> {
   return json({ settings });
 }
 
+/** GET: the tag list and entries (default: the last 400 days). POST: save or clear one day. */
+async function journal(req: Request, params: URLSearchParams): Promise<Response> {
+  const today = clockFor(await loadAccount()).today();
+  if (req.method !== "POST") {
+    const from = params.get("from") ?? addDays(today, -400);
+    if (!YMD.test(from)) return json({ error: "from must be YYYY-MM-DD" }, 400);
+    return json({ tags: JOURNAL_TAGS, entries: await journalEntries(from) });
+  }
+  const body = (await req.json().catch(() => ({}))) as Row;
+  try {
+    const entry = await saveJournalEntry(body, today);
+    // Tag effects are part of the statistics cache.
+    background(loadSettings().then((settings) => rebuildStats(today, settings)));
+    return json({ entry });
+  } catch (e) {
+    if (e instanceof JournalInputError) return json({ error: "invalid journal entry", detail: e.message }, 400);
+    throw e;
+  }
+}
+
 async function disconnect(params: URLSearchParams): Promise<Response> {
   await db.update("fs_account", "id=eq.1", {
     refresh_token: null,
@@ -343,9 +364,9 @@ async function disconnect(params: URLSearchParams): Promise<Response> {
     updated_at: new Date().toISOString(),
   });
   if (params.get("wipe") === "true") {
-    for (const t of ["fs_days", "fs_sleep", "fs_exercise", "fs_intraday", "fs_samples", "fs_cache", "fs_coach_messages", "fs_coach_threads"]) {
-      await db.remove(t, t === "fs_samples" ? "metric=not.is.null" : t === "fs_cache" ? "key=not.is.null" : t === "fs_days" || t === "fs_intraday" ? "date=not.is.null" : "id=not.is.null");
-    }
+    const tables = ["fs_days", "fs_sleep", "fs_exercise", "fs_intraday", "fs_samples", "fs_cache", "fs_journal", "fs_coach_messages", "fs_coach_threads"];
+    const keyColumn: Record<string, string> = { fs_samples: "metric", fs_cache: "key", fs_days: "date", fs_intraday: "date", fs_journal: "date" };
+    for (const t of tables) await db.remove(t, `${keyColumn[t] ?? "id"}=not.is.null`);
     await db.update("fs_account", "id=eq.1", { google_sub: null, google_email: null, profile: null, google_settings: null, devices: null });
     await db.update("fs_sync_state", "id=eq.1", {
       backfill_oldest: null, backfill_target: null, backfill_done: false, backfill_empty_chunks: 0,
@@ -399,6 +420,8 @@ Deno.serve(async (req: Request) => {
       case "settings":
         if (req.method === "POST") return await saveSettings(req);
         return json({ settings: await loadSettings() });
+      case "journal":
+        return await journal(req, params);
       case "disconnect":
         if (req.method !== "POST") return json({ error: "use POST" }, 405);
         return await disconnect(params);

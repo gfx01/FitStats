@@ -226,7 +226,12 @@ struct StrainDetailView: View {
             if let exercises = detail?.exercises, !exercises.isEmpty {
                 Card {
                     SectionHeader(title: "Workouts")
-                    ForEach(exercises) { WorkoutRow(exercise: $0, zone: model.zone) }
+                    ForEach(exercises) { x in
+                        NavigationLink(value: DetailRoute.workout(date, x.id)) {
+                            WorkoutRow(exercise: x, zone: model.zone)
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
             }
             TrendCard(def: MetricCatalog.def("strain")!, endDate: date, color: Theme.strain)
@@ -238,7 +243,7 @@ struct StrainDetailView: View {
 
 }
 
-private struct ZoneBars: View {
+struct ZoneBars: View {
     let minutes: [Double]
 
     var body: some View {

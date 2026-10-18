@@ -5,7 +5,8 @@
 
 import * as db from "./db.ts";
 import { GoogleApiError, HealthClient, refreshAccessToken } from "./google.ts";
-import { computeRecovery, computeSleepScore, computeStrain, computeStress, type DayRow, strainTarget } from "./scores.ts";
+import { journalEntries } from "./journal.ts";
+import { computeRecovery, computeSleepScore, computeStrain, computeStress, computeWorkoutLoad, type DayRow, strainTarget } from "./scores.ts";
 import { buildStats } from "./stats.ts";
 import {
   DAILY_TYPES,
@@ -16,6 +17,7 @@ import {
   type IntradayDay,
   type Json,
   maxHeartRate,
+  minutesBetween,
   placeMinuteRollups,
   ROLLUP_TYPES,
   rollupPointsToPatches,
@@ -25,6 +27,8 @@ import {
   sleepDayPatch,
   sleepPointToRow,
   type SleepRow,
+  stepsByHour,
+  wearMinutes,
 } from "./transform.ts";
 import { addDays, dateRange, LocalClock, median, MINUTES_PER_DAY, type Ymd, ymdFromGoogleDate } from "./util.ts";
 import { VERSION } from "./version.ts";
@@ -230,8 +234,12 @@ interface Task {
   run: () => Promise<number>;
 }
 
-const STRAIN_COLUMNS = ["trimp", "strain", "intraday_details"];
+/** Day columns computed from minute heart rate, from minute steps, and from both. */
+const HR_COLUMNS = ["trimp", "strain", "intraday_details", "wear_min"];
+const STEPS_COLUMNS = ["steps_by_hour"];
 const STRESS_COLUMNS = ["stress", "stress_minutes"];
+/** Derived columns that alone don't make a day worth a row. */
+const DERIVED_ONLY = new Set(["date", "intraday_details", "wear_min", "steps_by_hour"]);
 
 /** Minute mask (true = skip for stress) for sleep and exercise (+30 min cool-down) on one local day. */
 function exclusionMask(date: Ymd, sleeps: SleepRow[], exercises: ExerciseRow[], clock: LocalClock): boolean[] {
@@ -383,7 +391,8 @@ async function syncRange(
   // Day rows: columns of failed tasks are left untouched in the database.
   const columns = new Set<string>();
   for (const task of tasks) if (ok.has(task.name)) for (const c of task.columns) columns.add(c);
-  if (hrOk) for (const c of STRAIN_COLUMNS) columns.add(c);
+  if (hrOk) for (const c of HR_COLUMNS) columns.add(c);
+  if (stepsOk) for (const c of STEPS_COLUMNS) columns.add(c);
   if (hrOk && stepsOk) for (const c of STRESS_COLUMNS) columns.add(c);
 
   const rangeRhr = median(
@@ -406,6 +415,9 @@ async function syncRange(
     if (sleepOk) Object.assign(row, sleepDayPatch(date, sleeps, clock));
 
     const m = minute.get(date);
+    // No minute heart rate on a day with other data: the band was not worn.
+    if (hrOk) row.wear_min = m ? wearMinutes(m.hr) : 0;
+    if (stepsOk && m) row.steps_by_hour = stepsByHour(m.steps);
     if (hrOk && m) {
       const rhr = typeof row.rhr === "number" ? row.rhr : rangeRhr;
       const strain = computeStrain(m.hr, rhr, maxHr, settings.sex);
@@ -426,8 +438,17 @@ async function syncRange(
       row.intraday_details = details;
     }
 
-    const hasData = Object.entries(row).some(([k, v]) => k !== "date" && k !== "intraday_details" && v !== null);
+    const hasData = Object.entries(row).some(([k, v]) => !DERIVED_ONLY.has(k) && v !== null);
     if (hasData) dayRows.push(row);
+  }
+
+  // Load, zones and peak heart rate of each workout, from its minutes.
+  if (exerciseOk && hrOk) {
+    exercises = exercises.map((x) => {
+      const rhr = patches.get("daily-resting-heart-rate")?.get(x.date)?.rhr;
+      const hr = minutesBetween(Date.parse(x.start_time), Date.parse(x.end_time), clock, (d) => minute.get(d)?.hr);
+      return { ...x, ...computeWorkoutLoad(hr, typeof rhr === "number" ? rhr : rangeRhr, maxHr, settings.sex) };
+    });
   }
 
   const points = (sleepOk ? sleeps.length : 0) + (exerciseOk ? exercises.length : 0) + samples.length + dayRows.length;
@@ -485,12 +506,28 @@ async function syncRange(
   return { points, fingerprint: writeFailures.length ? null : fingerprint, unchanged: false };
 }
 
-/** Recomputes sleep score + recovery for dates >= from (baselines need the previous 30 days). */
+/**
+ * A finished day is low-wear when it has under 60 % of your usual wear (median of
+ * the previous 30 days). Without 5 days of history, or when you usually wear the
+ * band under 10 hours (or minute heart rate is missing), no day is flagged.
+ */
+export function lowWear(wear: unknown, previous: DayRow[], isFinished: boolean): boolean | null {
+  if (!isFinished || typeof wear !== "number") return null;
+  const usual = previous.map((d) => d.wear_min).filter((v): v is number => typeof v === "number");
+  if (usual.length < 5) return null;
+  const typical = median(usual)!;
+  return typical >= 600 ? wear < 0.6 * typical : null;
+}
+
+/**
+ * Recomputes sleep score, recovery and the low-wear flag for dates from..to (baselines
+ * need the previous 30 days). `to` is today, whose wear is still growing.
+ */
 export async function recomputeScores(from: Ymd, to: Ymd, settings: UserSettings): Promise<number> {
   const cols = [
     "date", "hrv_rmssd", "rhr", "resp_rate", "skin_temp_c", "skin_temp_baseline_c", "skin_temp_stddev_c",
     "sleep_asleep_min", "sleep_in_bed_min", "sleep_deep_min", "sleep_rem_min", "sleep_has_stages",
-    "sleep_bedtime_min", "sleep_waketime_min",
+    "sleep_bedtime_min", "sleep_waketime_min", "wear_min",
   ].join(",");
   const rows = await db.select<DayRow>("fs_days", `select=${cols}&date=gte.${addDays(from, -31)}&date=lte.${to}&order=date.asc`);
   const out: Record<string, unknown>[] = [];
@@ -511,13 +548,14 @@ export async function recomputeScores(from: Ymd, to: Ymd, settings: UserSettings
       sleep_score: sleep.score,
       recovery: recovery.score,
       score_details: { sleep, recovery, strainTarget: strainTarget(recovery.score) },
+      low_wear: lowWear(day.wear_min, prev30, day.date < to),
     });
   }
   if (out.length) await db.upsert("fs_days", out, "date", 200);
   return out.length;
 }
 
-/** Recomputes strain and stress from stored minute data (after sex / max HR changes). */
+/** Recomputes strain, stress and workout loads from stored minute data (after sex / max HR changes). */
 export async function recomputeIntraday(from: Ymd, to: Ymd, settings: UserSettings, acc: Account): Promise<number> {
   const clock = clockFor(acc);
   const age = typeof acc.profile?.age === "number" ? acc.profile.age : null;
@@ -526,7 +564,7 @@ export async function recomputeIntraday(from: Ymd, to: Ymd, settings: UserSettin
   const rhrByDate = new Map(info.map((d) => [d.date, typeof d.rhr === "number" ? d.rhr : null]));
   const fallbackRhr = median([...rhrByDate.values()].filter((v): v is number => v !== null)) ?? 60;
   const sleeps = await db.select<SleepRow>("fs_sleep", `select=date,start_time,end_time&date=gte.${from}&date=lte.${addDays(to, 1)}`);
-  const exercises = await db.select<ExerciseRow>("fs_exercise", `select=date,start_time,end_time&date=gte.${from}&date=lte.${to}`);
+  const exercises = await db.select<ExerciseRow>("fs_exercise", `select=*&date=gte.${from}&date=lte.${to}`);
   let count = 0;
   for (let s = from; s <= to; s = addDays(s, 30)) {
     const rows = await db.select<{ date: Ymd; hr: (number | null)[] | null; steps: (number | null)[] | null }>(
@@ -564,6 +602,15 @@ export async function recomputeIntraday(from: Ymd, to: Ymd, settings: UserSettin
     }
     if (out.length) await db.upsert("fs_days", out, "date", 100);
     count += out.length;
+
+    const hrByDate = new Map(rows.map((r) => [r.date, r.hr]));
+    const workouts = exercises
+      .filter((x) => x.date >= s && x.date < addDays(s, 30))
+      .map((x) => {
+        const hr = minutesBetween(Date.parse(x.start_time), Date.parse(x.end_time), clock, (d) => hrByDate.get(d));
+        return { ...x, ...computeWorkoutLoad(hr, rhrByDate.get(x.date) ?? fallbackRhr, maxHr, settings.sex), updated_at: new Date().toISOString() };
+      });
+    if (workouts.length) await db.upsert("fs_exercise", workouts, "id");
   }
   return count;
 }
@@ -574,8 +621,11 @@ async function statsBuiltAt(): Promise<number> {
 }
 
 export async function rebuildStats(today: Ymd, settings: UserSettings): Promise<void> {
-  const days = await db.select<DayRow>("fs_days", "select=*&order=date.asc");
-  const stats = buildStats(days, today, settings);
+  const [days, journal] = await Promise.all([
+    db.select<DayRow>("fs_days", "select=*&order=date.asc"),
+    journalEntries(addDays(today, -400)),
+  ]);
+  const stats = buildStats(days, today, settings, journal);
   await db.upsert("fs_cache", [{ key: "stats", value: stats, updated_at: nowIso() }], "key");
 }
 

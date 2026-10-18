@@ -2,8 +2,10 @@
 
 A Bevel-style iPhone app for a Fitbit Air. It shows Recovery, Strain, Sleep
 and Stress scores, plus trends, records, streaks and correlations for every
-metric the Google Health API provides, and a Claude-powered coach that answers
-questions about your data.
+metric the Google Health API provides, a sleep planner (tonight's need and
+bedtime), workout details with heart-rate zones, a daily journal whose tags
+are compared with the night and morning after, and a Claude-powered coach that
+answers questions about your data.
 
 **To install and connect, follow [SETUP.md](SETUP.md).**
 

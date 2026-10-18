@@ -6,6 +6,7 @@ enum DetailRoute: Hashable {
     case sleep(String)
     case stress(String)
     case metric(String)
+    case workout(String, String) // date, exercise id
 }
 
 struct DetailDestination: View {
@@ -23,6 +24,7 @@ struct DetailDestination: View {
             } else {
                 EmptyStateView(icon: "questionmark", title: "Unknown metric", message: key)
             }
+        case .workout(let date, let id): WorkoutDetailView(date: date, exerciseId: id)
         }
     }
 }
@@ -45,6 +47,8 @@ struct TodayView: View {
                     banners
                     if let day {
                         scoresCard(day)
+                        if date == model.today { SleepPlanCard(plan: model.sleepPlan) }
+                        JournalCard(date: date)
                         vitalsCard(day)
                         activityCard(day)
                         heartCard(day)
@@ -209,28 +213,34 @@ struct TodayView: View {
 
     // MARK: vitals & activity
 
+    /// Day totals are only compared when the day is complete: today's are "so far" and a
+    /// low-wear day's are incomplete. Everything else is compared with the 30-day average.
     private func tile(_ key: String, _ day: DayRecord) -> some View {
         let def = MetricCatalog.def(key)!
         let value = def.value(day)
         let base = model.baseline(def, before: date)
+        let soFar = def.isDayTotal && date >= model.today
         var change: Double? = nil
-        if def.format != .clock, key != "skin_temp_dev", let value, let base, base != 0 {
+        if model.countsToward(def, day), def.format != .clock, key != "skin_temp_dev", let value, let base, base != 0 {
             change = (value - base) / abs(base) * 100
         }
         return NavigationLink(value: DetailRoute.metric(key)) {
             MetricTile(title: def.shortLabel, value: def.formatted(value),
-                       sub: base.map { "30d avg \(def.formatted($0, withUnit: false))" },
+                       sub: soFar ? "so far" : base.map { "30d avg \(def.formatted($0, withUnit: false))" },
                        icon: def.icon, color: def.category.color, change: change, better: def.better)
         }
         .buttonStyle(.plain)
     }
 
-    private func vitalsCard(_ day: DayRecord) -> some View {
-        Card {
-            SectionHeader(title: "Vitals", subtitle: "Measured overnight, compared with your 30-day average")
-            LazyVGrid(columns: grid, spacing: 10) {
-                ForEach(["rhr", "hrv_rmssd", "spo2_avg", "resp_rate", "skin_temp_dev", "vo2max"], id: \.self) { key in
-                    tile(key, day)
+    @ViewBuilder private func vitalsCard(_ day: DayRecord) -> some View {
+        let keys = ["rhr", "hrv_rmssd", "spo2_avg", "resp_rate", "skin_temp_dev", "vo2max"].filter(model.recorded.contains)
+        if !keys.isEmpty {
+            Card {
+                SectionHeader(title: "Vitals", subtitle: "Measured overnight, compared with your 30-day average")
+                LazyVGrid(columns: grid, spacing: 10) {
+                    ForEach(keys, id: \.self) { key in
+                        tile(key, day)
+                    }
                 }
             }
         }
@@ -239,6 +249,7 @@ struct TodayView: View {
     private func activityCard(_ day: DayRecord) -> some View {
         let steps = day.double("steps")
         let goal = Double(model.status?.settings.stepGoal ?? 10000)
+        let keys = ["calories_total", "calories_active", "azm_total", "distance_km", "floors", "active_min_total"].filter(model.recorded.contains)
         return Card {
             SectionHeader(title: "Activity")
             HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -249,12 +260,49 @@ struct TodayView: View {
             }
             ProgressView(value: min(1, (steps ?? 0) / max(goal, 1)))
                 .tint(Theme.strain)
-            LazyVGrid(columns: grid, spacing: 10) {
-                ForEach(["calories_total", "calories_active", "azm_total", "distance_km", "floors", "active_min_total"], id: \.self) { key in
-                    tile(key, day)
+            stepsComparison(day)
+            if !keys.isEmpty {
+                LazyVGrid(columns: grid, spacing: 10) {
+                    ForEach(keys, id: \.self) { key in
+                        tile(key, day)
+                    }
                 }
             }
+            if day.bool("low_wear") == true, let wear = day.double("wear_min") {
+                Label(lowWearText(wear), systemImage: "exclamationmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(Theme.recoveryYellow)
+            }
         }
+    }
+
+    private func lowWearText(_ wear: Double) -> String {
+        let usual = model.usualWear(before: date).map { " (usually \(Format.duration($0)))" } ?? ""
+        return "Band worn \(Format.duration(wear)) this day\(usual), so its totals are left out of your averages."
+    }
+
+    /// Today: steps against what you usually have by the time the data reaches. Other days:
+    /// against the 30-day average. Never for an incomplete (low-wear) day.
+    @ViewBuilder private func stepsComparison(_ day: DayRecord) -> some View {
+        if let steps = day.double("steps"), day.bool("low_wear") != true {
+            if date == model.today {
+                let minute = model.lastDataMinute(date) ?? model.localMinuteNow
+                if let typical = model.typicalSteps(before: date, atMinute: minute) {
+                    comparison("Usually \(Format.number(typical)) by \(Format.clock(Double(minute)))", steps, typical)
+                }
+            } else if let base = model.baseline(MetricCatalog.def("steps")!, before: date) {
+                comparison("30-day average \(Format.number(base))", steps, base)
+            }
+        }
+    }
+
+    private func comparison(_ text: String, _ value: Double, _ base: Double) -> some View {
+        HStack(spacing: 6) {
+            Text(text).font(.caption).foregroundStyle(Theme.tertiary)
+            Spacer()
+            DeltaBadge(change: base > 0 ? (value - base) / base * 100 : nil, better: .higher)
+        }
+        .accessibilityElement(children: .combine)
     }
 
     // MARK: heart & workouts
@@ -284,7 +332,13 @@ struct TodayView: View {
         if let exercises = detail?.exercises, !exercises.isEmpty {
             Card {
                 SectionHeader(title: "Workouts")
-                ForEach(exercises) { WorkoutRow(exercise: $0, zone: model.zone) }
+                ForEach(exercises) { x in
+                    NavigationLink(value: DetailRoute.workout(date, x.id)) {
+                        WorkoutRow(exercise: x, zone: model.zone)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("workout-row")
+                }
             }
         }
     }
@@ -380,25 +434,29 @@ struct WorkoutRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: icon)
+            Image(systemName: exercise.symbol)
                 .font(.title3)
                 .frame(width: 40, height: 40)
                 .background(Circle().fill(Theme.strain.opacity(0.18)))
                 .foregroundStyle(Theme.strain)
             VStack(alignment: .leading, spacing: 3) {
-                Text(exercise.name ?? (exercise.exerciseType ?? "Workout").capitalized)
+                Text(exercise.displayName)
                     .font(.subheadline.weight(.semibold))
                 Text(subtitle).font(.caption).foregroundStyle(Theme.secondary)
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 3) {
-                Text(Format.duration((exercise.activeDurationS ?? exercise.durationS).map { $0 / 60 }))
+                Text(Format.duration(exercise.minutes))
                     .font(Theme.number(15, weight: .semibold))
-                if let hr = exercise.avgHr {
+                if let strain = exercise.strain {
+                    Text("strain \(Format.number(strain, decimals: 1))").font(.caption2).foregroundStyle(Theme.tertiary)
+                } else if let hr = exercise.avgHr {
                     Text("\(Int(hr)) bpm avg").font(.caption2).foregroundStyle(Theme.tertiary)
                 }
             }
+            Image(systemName: "chevron.right").font(.caption2).foregroundStyle(Theme.tertiary)
         }
+        .contentShape(Rectangle())
     }
 
     private var subtitle: String {
@@ -408,18 +466,5 @@ struct WorkoutRow: View {
         if let m = exercise.distanceM, m > 0 { parts.append(String(format: "%.2f km", m / 1000)) }
         if let azm = exercise.azm, azm > 0 { parts.append("\(Int(azm)) AZM") }
         return parts.joined(separator: " · ")
-    }
-
-    private var icon: String {
-        switch exercise.exerciseType ?? "" {
-        case "RUNNING", "TREADMILL", "TRAIL_RUN", "INCLINE_RUN": return "figure.run"
-        case "WALKING", "HIKING", "POWER_WALKING", "TREADMILL_WALK", "INCLINE_WALK": return "figure.walk"
-        case "BIKING", "OUTDOOR_BIKE", "STATIONARY_BIKE", "SPINNING", "MOUNTAIN_BIKE": return "figure.outdoor.cycle"
-        case "SWIMMING", "SWIMMING_POOL", "SWIMMING_OPEN_WATER": return "figure.pool.swim"
-        case "STRENGTH_TRAINING", "WEIGHTLIFTING", "WEIGHTS", "FREE_WEIGHTS", "POWERLIFTING": return "dumbbell.fill"
-        case "YOGA", "PILATES", "STRETCHING": return "figure.yoga"
-        case "HIIT", "CROSSFIT", "CIRCUIT_TRAINING", "TABATA_WORKOUT": return "bolt.heart.fill"
-        default: return "figure.mixed.cardio"
-        }
     }
 }

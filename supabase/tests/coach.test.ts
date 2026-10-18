@@ -130,3 +130,18 @@ test("delete removes the thread and its messages", async () => {
   assert.equal(tables.fs_coach_threads.length, 0);
   assert.equal(tables.fs_coach_messages.filter((m) => m.thread_id === thread).length, 0);
 });
+
+test("context: journal entries, tag effects and tonight's sleep plan", async () => {
+  const { saveJournalEntry } = await import("../functions/fitstats/lib/journal.ts");
+  const { clockFor } = await import("../functions/fitstats/lib/sync.ts");
+  const today = clockFor(tables.fs_account[0] as never).today();
+  const yesterday = new Date(Date.parse(`${today}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+  await saveJournalEntry({ date: yesterday, tags: ["Alcohol", "late meal"], note: "Birthday dinner" }, today);
+  const before = claudeRequests.length;
+  const evs = await events(await coach.handleCoach(post({ message: "Why did I sleep badly?" })));
+  assert.equal(evs.at(-1)!.type, "done", JSON.stringify(evs.filter((e) => e.type === "error")));
+  const text = String((claudeRequests[before].system as Row[])[1].text);
+  assert.match(text, /journal: Alcohol, Late meal; note "Birthday dinner"/);
+  assert.match(text, /Tonight's sleep plan \(FitStats' rule, shown in the app\): sleep need \d+h \d+m/);
+  assert.match(text, /in bed by \d\d:\d\d to wake at \d\d:\d\d/);
+});

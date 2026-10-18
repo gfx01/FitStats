@@ -4,8 +4,10 @@
 // the system prompt and tools to look up anything else in the database.
 
 import * as db from "./db.ts";
+import { type JournalEntry, journalEntries, tagLabel } from "./journal.ts";
+import { sleepPlan } from "./planner.ts";
 import type { DayRow } from "./scores.ts";
-import { fmtValue, METRIC_BY_KEY, METRICS, type MetricDef } from "./stats.ts";
+import { fmtValue, lowerFirst, METRIC_BY_KEY, METRICS, type MetricDef } from "./stats.ts";
 import { type Account, clockFor, loadAccount, loadSettings, type UserSettings } from "./sync.ts";
 import { type Json, maxHeartRate } from "./transform.ts";
 import { addDays, daysBetween, round, type Ymd } from "./util.ts";
@@ -137,10 +139,6 @@ function num(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
-function lowerFirst(s: string): string {
-  return s.length > 1 && s[1] === s[1].toLowerCase() ? s[0].toLowerCase() + s.slice(1) : s;
-}
-
 function list(items: string[]): string {
   if (items.length <= 1) return items.join("");
   return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
@@ -167,12 +165,19 @@ function workoutSummary(x: Row, tz: string | null): Row {
     calories: num(x.calories) === null ? null : Math.round(x.calories as number),
     distance_km: num(x.distance_m) === null ? null : round((x.distance_m as number) / 1000, 2),
     active_zone_minutes: x.azm ?? null,
+    max_hr: x.hr_max ?? null,
+    strain: x.strain ?? null,
   };
+}
+
+function journalText(entry: JournalEntry): string {
+  const tags = entry.tags.length ? entry.tags.map(tagLabel).join(", ") : "nothing to note";
+  return `journal: ${tags}${entry.note ? `; note "${entry.note}"` : ""}`;
 }
 
 const DAY_TOTALS = new Set(["strain", "stress", "steps", "azm_total"]);
 
-function dayLine(row: Row, workouts: Row[], isToday: boolean): string {
+function dayLine(row: Row, workouts: Row[], isToday: boolean, entry?: JournalEntry): string {
   const d = row as DayRow;
   const parts: string[] = [];
   const add = (key: string, label: string) => {
@@ -199,8 +204,11 @@ function dayLine(row: Row, workouts: Row[], isToday: boolean): string {
   add("steps", "steps");
   add("azm_total", "AZM");
   if (workouts.length) {
-    parts.push(`workouts: ${workouts.map((w) => `${w.name ?? w.type ?? "workout"} ${w.minutes} min${w.avg_hr ? ` @${w.avg_hr} bpm` : ""}`).join(", ")}`);
+    parts.push(`workouts: ${workouts.map((w) => `${w.name ?? w.type ?? "workout"} ${w.minutes} min${w.avg_hr ? ` @${w.avg_hr} bpm` : ""}${w.strain !== null ? `, strain ${w.strain}` : ""}`).join(", ")}`);
   }
+  const wear = num(d.wear_min);
+  if (d.low_wear === true && wear !== null) parts.push(`band worn only ${dur(wear)}, so day totals are incomplete and left out of averages`);
+  if (entry) parts.push(journalText(entry));
   return `${row.date} ${weekday(String(row.date))}${isToday ? " (today)" : ""}: ${parts.length ? parts.join(" · ") : "no data"}`;
 }
 
@@ -220,10 +228,12 @@ const SUMMARY_KEYS = [
 
 export async function buildContext(ctx: Ctx, stats: Json | null): Promise<string> {
   const from = addDays(ctx.today, -13);
-  const [days, workouts, state] = await Promise.all([
-    db.select<Row>("fs_days", `select=*&date=gte.${from}&date=lte.${ctx.today}&order=date.asc`),
+  // 28 days for the sleep plan's usual wake time; 14 are listed.
+  const [days, workouts, state, journal] = await Promise.all([
+    db.select<Row>("fs_days", `select=*&date=gte.${addDays(ctx.today, -27)}&date=lte.${ctx.today}&order=date.asc`),
     db.select<Row>("fs_exercise", `select=*&date=gte.${from}&date=lte.${ctx.today}&order=start_time.asc`),
     db.selectOne<Row>("fs_sync_state", "select=*&id=eq.1"),
+    journalEntries(from, ctx.today),
   ]);
   const lines: string[] = [];
   let now = "";
@@ -243,7 +253,7 @@ export async function buildContext(ctx: Ctx, stats: Json | null): Promise<string
   );
   const devices = Array.isArray((ctx.acc as unknown as Row | null)?.devices) ? ((ctx.acc as unknown as Row).devices as Json[]) : [];
   for (const dv of devices) {
-    lines.push(`Device: ${dv.deviceVersion ?? "Fitbit"}${dv.batteryLevel !== undefined ? `, battery ${dv.batteryLevel}%` : ""}${dv.lastSyncTime ? `, last synced to Google ${String(dv.lastSyncTime).slice(0, 16).replace("T", " ")} UTC` : ""}.`);
+    lines.push(`Device: ${dv.deviceVersion ?? "Fitbit"}${dv.batteryLevel !== undefined ? `, battery ${dv.batteryLevel}%` : ""}${dv.lastSyncTime ? `, last synced with the phone app ${String(dv.lastSyncTime).slice(0, 16).replace("T", " ")} UTC` : ""}.`);
   }
   if (state) {
     const imported = state.backfill_done ? `history imported back to ${state.backfill_oldest ?? "?"}` : `history import still running (back to ${state.backfill_oldest ?? "?"} so far)`;
@@ -251,12 +261,13 @@ export async function buildContext(ctx: Ctx, stats: Json | null): Promise<string
     lines.push(`FitStats sync: last run ${last}, ${imported}.`);
   }
 
-  lines.push("", "Last 14 days (strain, stress, steps and AZM are day totals; today's are partial):");
+  lines.push("", "Last 14 days (strain, stress, steps and AZM are day totals; today's are partial; journal tags are what they did that day):");
   const byDate = new Map(days.map((d) => [String(d.date), d]));
+  const entries = new Map(journal.map((e) => [e.date, e]));
   for (let d = from; d <= ctx.today; d = addDays(d, 1)) {
     const row = byDate.get(d) ?? { date: d };
     const ws = workouts.filter((w) => w.date === d).map((w) => workoutSummary(w, ctx.tz));
-    lines.push(dayLine(row, ws, d === ctx.today));
+    lines.push(dayLine(row, ws, d === ctx.today, entries.get(d)));
   }
 
   const todayRow = byDate.get(ctx.today);
@@ -268,6 +279,19 @@ export async function buildContext(ctx: Ctx, stats: Json | null): Promise<string
     if (sl) lines.push(`How last night's sleep score was computed: ${sl}.`);
     if (Array.isArray(details.strainTarget)) lines.push(`Suggested strain for today: ${details.strainTarget[0]}–${details.strainTarget[1]}.`);
   }
+  const plan = sleepPlan(days as DayRow[], ctx.today, ctx.settings.sleep_need_min);
+  const extras = [
+    plan.strainMin ? `+ ${plan.strainMin} min for today's strain` : "",
+    plan.debtMin ? `+ ${plan.debtMin} min toward sleep debt` : "",
+    plan.napMin ? `− ${plan.napMin} min of naps today` : "",
+  ].filter(Boolean).join(" ");
+  const bedtime = plan.bedtimeMin !== null && plan.wakeMin !== null
+    ? `in bed by ${clockText(plan.bedtimeMin)} to wake at ${clockText(plan.wakeMin)} (their usual ${plan.wakeBasis === "all" ? "" : `${plan.wakeBasis} `}wake time)`
+    : "no bedtime yet (fewer than 3 recent wake times)";
+  lines.push(
+    `Tonight's sleep plan (FitStats' rule, shown in the app): sleep need ${dur(plan.needMin)} (${dur(plan.baseMin)}${extras ? ` ${extras}` : ""}); ` +
+      `at ${Math.round(plan.efficiency * 100)}% sleep efficiency that is ${dur(plan.inBedMin)} in bed; ${bedtime}.`,
+  );
 
   const metrics = (stats?.metrics ?? null) as Record<string, Json> | null;
   if (!metrics) {
@@ -306,6 +330,23 @@ export async function buildContext(ctx: Ctx, stats: Json | null): Promise<string
   if (corr.length) {
     lines.push("", "Notable correlations over the last 180 days (Pearson r):");
     for (const c of corr) lines.push(`- ${c.title}: r = ${c.r} (${c.strength}, ${c.n} days)`);
+  }
+  const impacts = Array.isArray(stats?.journal) ? (stats!.journal as Json[]) : [];
+  if (impacts.length) {
+    lines.push("", "Journal tags: the night and morning after tagged days vs after other logged days (365 days; clear = Welch |t| ≥ 2):");
+    for (const impact of impacts) {
+      const effects = (Array.isArray(impact.effects) ? impact.effects : []) as Json[];
+      if (!effects.length) {
+        lines.push(`- ${impact.label}: tagged ${dayCount(impact.days)}, not enough logged days to compare yet (3+ with and 3+ without).`);
+        continue;
+      }
+      const parts = effects.map((e) => {
+        const def = METRIC_BY_KEY.get(String(e.metric))!;
+        return `${lowerFirst(def.label)} ${fmt(def, Number(e.with))} vs ${fmt(def, Number(e.without))}${e.clear ? " (clear)" : " (not clear)"}`;
+      });
+      const first = effects[0];
+      lines.push(`- ${impact.label} (${first.nWith} vs ${first.nWithout} days): ${parts.join("; ")}.`);
+    }
   }
   const streaks = Array.isArray(stats?.streaks) ? (stats!.streaks as Json[]) : [];
   if (streaks.length) {
@@ -353,7 +394,8 @@ export const TOOLS: Json[] = [
   {
     name: "get_day",
     description: "Everything recorded for one date: all metrics, how recovery and the sleep score were computed, sleep sessions with stage minutes and local times, " +
-      "workouts, hourly heart rate, hourly stress, and minutes in heart-rate-reserve zones (50–60/60–70/70–80/80–90/90+%).",
+      "workouts (with their own strain and peak heart rate), hourly heart rate, hourly stress, minutes in heart-rate-reserve zones (50–60/60–70/70–80/80–90/90+%), " +
+      "wear time, and the journal entry (tags and note) for that day.",
     input_schema: {
       type: "object",
       properties: { date: { type: "string", description: "YYYY-MM-DD" } },
@@ -399,7 +441,7 @@ export async function runTool(name: string, input: Json, ctx: Ctx, stats: Json |
       const out: Row[] = [];
       for (const r of rows) {
         const values = defs.map((d) => [d.key, rnd(d.get(r as DayRow), d.decimals + 1)] as const);
-        if (values.some(([, v]) => v !== null)) out.push({ date: r.date, ...Object.fromEntries(values) });
+        if (values.some(([, v]) => v !== null)) out.push({ date: r.date, ...Object.fromEntries(values), ...(r.low_wear === true ? { low_wear: true } : {}) });
       }
       return { from, to, today: ctx.today, days: out };
     }
@@ -414,13 +456,15 @@ export async function runTool(name: string, input: Json, ctx: Ctx, stats: Json |
     case "get_day": {
       const date = String(input.date ?? "");
       if (!YMD.test(date)) throw new ToolError("date must be YYYY-MM-DD");
-      const [row, intra, sleeps, workouts] = await Promise.all([
+      const [row, intra, sleeps, workouts, journal] = await Promise.all([
         db.selectOne<Row>("fs_days", `select=*&date=eq.${date}`),
         db.selectOne<Row>("fs_intraday", `select=hr&date=eq.${date}`),
         db.select<Row>("fs_sleep", `select=*&date=eq.${date}&order=start_time.asc`),
         db.select<Row>("fs_exercise", `select=*&date=eq.${date}&order=start_time.asc`),
+        journalEntries(date, date),
       ]);
-      if (!row && !sleeps.length && !workouts.length) return { date, note: "Nothing was recorded on this date." };
+      const entry = journal[0] ? { tags: journal[0].tags.map(tagLabel), note: journal[0].note } : null;
+      if (!row && !sleeps.length && !workouts.length && !entry) return { date, note: "Nothing was recorded on this date." };
       const metrics: Row = {};
       if (row) {
         for (const d of METRICS) {
@@ -454,6 +498,9 @@ export async function runTool(name: string, input: Json, ctx: Ctx, stats: Json |
         hourly_stress: intraday?.stressHourly ?? null,
         hr_reserve_zone_minutes: intraday?.hrrZoneMinutes ?? null,
         max_hr_used: intraday?.maxHr ?? null,
+        wear_minutes: row?.wear_min ?? null,
+        low_wear: row?.low_wear ?? null,
+        journal: entry,
       };
     }
     case "get_workouts": {
@@ -491,6 +538,8 @@ export const INSTRUCTIONS = `You are the FitStats coach: a friendly, knowledgeab
 
 What you know
 - A summary of their data is at the end of this prompt, refreshed on every message. Use the tools to look up anything else: any metric for any date range, one day in detail (sleep stages, workouts, hourly heart rate and stress), workouts, and full statistics per metric. Look things up rather than guess.
+- Their journal: tags they log for a day (alcohol, late meal, …) and short notes. Tag effects compare the night and morning after tagged days with those after other logged days; with few days they are hints, not findings.
+- Days they wore the band for under 60% of their usual time are "low wear": their day totals are incomplete and left out of averages.
 - Recovery, strain, sleep score and stress are FitStats' own formulas, defined below. They are not Bevel's, Whoop's or Fitbit's scores.
 
 How to answer
@@ -507,9 +556,10 @@ Score definitions
 - Strain (0–100, day total): 100 × (1 − e^(−TRIMP/120)), where TRIMP is Banister's training impulse from minute heart rate above 30% of heart-rate reserve. Suggested strain: 55–80 on green recovery, 35–60 on yellow, 10–35 on red.
 - Sleep score (0–100): duration against their sleep need 50%, efficiency 15%, deep + REM share 20%, bed and wake time consistency 15%.
 - Stress (0–100): how far heart rate sits above resting while awake, still and not exercising (Google Health has no daytime HRV): 0 at 5% of heart-rate reserve, 100 at 30% or more.
-- HRV is Fitbit's nightly RMSSD and resting heart rate is Fitbit's daily value.`;
+- HRV is Fitbit's nightly RMSSD and resting heart rate is Fitbit's daily value.
+- Sleep plan (shown in the app as "Tonight"): sleep need + 0–45 min for the day's strain (0 at 35 or less, 45 at 85 or more) + a quarter of the last 7 nights' sleep debt (at most 60 min) − naps (at most 60 min); time in bed = need ÷ their typical sleep efficiency; bedtime = their usual wake time for tomorrow's kind of day − time in bed. Use its numbers when suggesting a bedtime.`;
 
-export const BRIEF_PROMPT = `Write my briefing for today. Three or four short lines, no greeting, each starting with a bold label: **Recovery**, **Today**, **Tonight**, and only if there is something worth saying, **Trend**. Recovery: today's score and its main drivers. Today: how hard to train (the strain range) and one concrete suggestion. Tonight: a bedtime that fits my sleep need and usual wake time. Trend: one notable change over the last weeks. Under 90 words. If today's recovery isn't available yet, say so and base the advice on the last few days.`;
+export const BRIEF_PROMPT = `Write my briefing for today. Three or four short lines, no greeting, each starting with a bold label: **Recovery**, **Today**, **Tonight**, and only if there is something worth saying, **Trend**. Recovery: today's score and its main drivers. Today: how hard to train (the strain range) and one concrete suggestion. Tonight: the bedtime and sleep need from tonight's sleep plan. Trend: one notable change over the last weeks. Under 90 words. If today's recovery isn't available yet, say so and base the advice on the last few days.`;
 
 export interface CoachUsage {
   requests: number;

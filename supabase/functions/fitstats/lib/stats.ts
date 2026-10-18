@@ -1,6 +1,8 @@
 // Statistics over fs_days: per-metric ranges, weekday patterns, records,
-// streaks, lagged correlations and plain-language insights.
+// streaks, lagged correlations, journal tag effects and plain-language insights.
+// Day totals leave out today (still growing) and days you barely wore the band.
 
+import { tagLabel } from "./journal.ts";
 import type { DayRow } from "./scores.ts";
 import { addDays, daysBetween, mean, median, round, stdDev, weekdayIndex, type Ymd } from "./util.ts";
 
@@ -139,10 +141,15 @@ export const RANGES: [string, number | null][] = [["7", 7], ["30", 30], ["90", 9
 
 type Point = { date: Ymd; v: number };
 
+/** False for day totals of today (still growing) and of low-wear days (incomplete). */
+export function countsToward(def: MetricDef, d: DayRow, today: Ymd): boolean {
+  return def.agg !== "sum" || (d.date < today && d.low_wear !== true);
+}
+
 function seriesFor(def: MetricDef, days: DayRow[], today: Ymd): Point[] {
   const out: Point[] = [];
   for (const d of days) {
-    if (def.agg === "sum" && d.date >= today) continue; // today's totals are still growing
+    if (!countsToward(def, d, today)) continue;
     const v = def.get(d);
     if (v !== null) out.push({ date: d.date, v });
   }
@@ -330,11 +337,8 @@ export function correlations(days: DayRow[], today: Ymd, windowDays = 180): Corr
     const dx = METRIC_BY_KEY.get(pair.x)!, dy = METRIC_BY_KEY.get(pair.y)!;
     const xs: number[] = [], ys: number[] = [];
     for (let d = start; d <= today; d = addDays(d, 1)) {
-      const xd = addDays(d, -pair.lag);
-      if (dx.agg === "sum" && xd >= today) continue;
-      if (dy.agg === "sum" && d >= today) continue;
-      const xr = byDate.get(xd), yr = byDate.get(d);
-      if (!xr || !yr) continue;
+      const xr = byDate.get(addDays(d, -pair.lag)), yr = byDate.get(d);
+      if (!xr || !yr || !countsToward(dx, xr, today) || !countsToward(dy, yr, today)) continue;
       const xv = dx.get(xr), yv = dy.get(yr);
       if (xv === null || yv === null) continue;
       xs.push(xv);
@@ -365,7 +369,10 @@ function pctChange(a: number | null, b: number | null): number | null {
 }
 
 function windowMean(def: MetricDef, days: DayRow[], from: Ymd, toExclusive: Ymd): number | null {
-  const vals = days.filter((d) => d.date >= from && d.date < toExclusive).map(def.get).filter((v): v is number => v !== null);
+  const vals = days
+    .filter((d) => d.date >= from && d.date < toExclusive && (def.agg !== "sum" || d.low_wear !== true))
+    .map(def.get)
+    .filter((v): v is number => v !== null);
   return vals.length >= 3 ? mean(vals) : null;
 }
 
@@ -466,6 +473,105 @@ export function insights(
   return out;
 }
 
+// -------------------------------------------------------------------- journal
+
+/** What follows a journal day: that night's sleep (dated by wake-up) and the next morning. */
+export const JOURNAL_OUTCOMES = ["sleep_score", "sleep_asleep_min", "hrv_rmssd", "rhr", "recovery"];
+const MIN_JOURNAL_DAYS = 3;
+
+export interface TagEffect {
+  metric: string;
+  /** Mean after tagged days and after the other logged days. */
+  with: number;
+  without: number;
+  diff: number;
+  nWith: number;
+  nWithout: number;
+  /** Welch's t; |t| ≥ 2 counts as a clear difference. */
+  t: number | null;
+  clear: boolean;
+}
+
+export interface TagImpact {
+  tag: string;
+  label: string;
+  /** Tagged days in the window (the last one may not have a following night yet). */
+  days: number;
+  effects: TagEffect[];
+}
+
+function welchT(a: number[], b: number[]): number | null {
+  const va = (stdDev(a) ?? 0) ** 2 / a.length, vb = (stdDev(b) ?? 0) ** 2 / b.length;
+  const diff = mean(a)! - mean(b)!;
+  if (va + vb === 0) return diff === 0 ? 0 : null;
+  return diff / Math.sqrt(va + vb);
+}
+
+/**
+ * Per tag: each outcome on the day after tagged days versus the day after other
+ * logged days (an entry with no tags counts as logged). Needs 3+ days on each side.
+ */
+export function journalImpacts(days: DayRow[], entries: { date: Ymd; tags: string[] }[], today: Ymd, windowDays = 365): TagImpact[] {
+  const byDate = new Map(days.map((d) => [d.date, d]));
+  const start = addDays(today, -windowDays);
+  const logged = entries.filter((e) => e.date >= start && e.date <= today);
+  const counts = new Map<string, number>();
+  for (const e of logged) for (const t of e.tags) counts.set(t, (counts.get(t) ?? 0) + 1);
+  const out: TagImpact[] = [];
+  for (const [tag, n] of counts) {
+    const effects: TagEffect[] = [];
+    for (const key of JOURNAL_OUTCOMES) {
+      const def = METRIC_BY_KEY.get(key)!;
+      const withVals: number[] = [], withoutVals: number[] = [];
+      for (const e of logged) {
+        const next = byDate.get(addDays(e.date, 1));
+        const v = next ? def.get(next) : null;
+        if (v !== null) (e.tags.includes(tag) ? withVals : withoutVals).push(v);
+      }
+      if (withVals.length < MIN_JOURNAL_DAYS || withoutVals.length < MIN_JOURNAL_DAYS) continue;
+      const d = def.decimals + 1;
+      const t = welchT(withVals, withoutVals);
+      effects.push({
+        metric: key,
+        with: round(mean(withVals), d)!,
+        without: round(mean(withoutVals), d)!,
+        diff: round(mean(withVals)! - mean(withoutVals)!, d)!,
+        nWith: withVals.length,
+        nWithout: withoutVals.length,
+        t: round(t, 1),
+        clear: t !== null && Math.abs(t) >= 2,
+      });
+    }
+    out.push({ tag, label: tagLabel(tag), days: n, effects });
+  }
+  return out.sort((a, b) => b.days - a.days || a.label.localeCompare(b.label));
+}
+
+/** "Sleep score" → "sleep score", but "HRV (RMSSD)" stays. */
+export function lowerFirst(s: string): string {
+  return s.length > 1 && s[1] === s[1].toLowerCase() ? s[0].toLowerCase() + s.slice(1) : s;
+}
+
+function journalInsight(impacts: TagImpact[]): Insight | null {
+  let best: { impact: TagImpact; effect: TagEffect } | null = null;
+  for (const impact of impacts) {
+    for (const effect of impact.effects) {
+      if (effect.clear && (!best || Math.abs(effect.t ?? 0) > Math.abs(best.effect.t ?? 0))) best = { impact, effect };
+    }
+  }
+  if (!best) return null;
+  const { impact, effect } = best;
+  const def = METRIC_BY_KEY.get(effect.metric)!;
+  const good = def.better === null ? null : (def.better === "higher") === effect.diff > 0;
+  return {
+    id: `journal_${impact.tag}_${effect.metric}`,
+    title: `After ${lowerFirst(impact.label)} days: ${lowerFirst(def.label)} ${effect.diff > 0 ? "higher" : "lower"} by ${fmtValue(def, Math.abs(effect.diff))}`,
+    body: `${fmtValue(def, effect.with)} after the ${effect.nWith} days you tagged ${lowerFirst(impact.label)}, ${fmtValue(def, effect.without)} after ${effect.nWithout} other logged days. A pattern in your data, not proof of cause.`,
+    tone: good === null ? "neutral" : good ? "positive" : "negative",
+    metric: effect.metric,
+  };
+}
+
 // ---------------------------------------------------------------------- build
 
 export interface StatsPayload {
@@ -477,12 +583,14 @@ export interface StatsPayload {
   streaks: Streak[];
   correlations: Correlation[];
   insights: Insight[];
+  journal: TagImpact[];
 }
 
 export function buildStats(
   daysUnsorted: DayRow[],
   today: Ymd,
   settings: { sleep_need_min: number; step_goal: number },
+  journal: { date: Ymd; tags: string[] }[] = [],
 ): StatsPayload {
   const days = [...daysUnsorted].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   const metrics: Record<string, MetricStats> = {};
@@ -504,6 +612,10 @@ export function buildStats(
       (d) => (typeof d.recovery === "number" ? d.recovery >= 67 : null), true),
   ];
   const corr = correlations(days, today);
+  const impacts = journalImpacts(days, journal, today);
+  const notes = insights(days, today, settings, corr);
+  const fromJournal = journalInsight(impacts);
+  if (fromJournal) notes.push(fromJournal);
   return {
     generatedAt: new Date().toISOString(),
     today,
@@ -512,6 +624,7 @@ export function buildStats(
     metrics,
     streaks,
     correlations: corr,
-    insights: insights(days, today, settings, corr),
+    insights: notes,
+    journal: impacts,
   };
 }

@@ -15,21 +15,28 @@ import {
   dailyPointsToPatches,
   exercisePointToRow,
   maxHeartRate,
+  minutesBetween,
   placeMinuteRollups,
   rollupPointsToPatches,
   samplePointsToRows,
   sleepDayPatch,
   sleepPointToRow,
+  stepsByHour,
   type IntradayDay,
+  wearMinutes,
 } from "../functions/fitstats/lib/transform.ts";
 import {
   computeRecovery,
   computeSleepScore,
   computeStrain,
   computeStress,
+  computeWorkoutLoad,
   strainTarget,
 } from "../functions/fitstats/lib/scores.ts";
-import { buildStats, pearson, streak } from "../functions/fitstats/lib/stats.ts";
+import { buildStats, countsToward, journalImpacts, lowerFirst, METRIC_BY_KEY, pearson, streak } from "../functions/fitstats/lib/stats.ts";
+import { normalizeTags } from "../functions/fitstats/lib/journal.ts";
+import { sleepPlan } from "../functions/fitstats/lib/planner.ts";
+import { lowWear } from "../functions/fitstats/lib/sync.ts";
 
 const budapest = new LocalClock("Europe/Budapest");
 
@@ -330,4 +337,123 @@ test("stats: pearson, streaks, full payload", () => {
   const st = streak("x", "x", days, today, (d) => (d.steps as number) >= 12000, false);
   assert.ok(st.longest >= 1);
   assert.equal(JSON.parse(JSON.stringify(s)).today, today);
+});
+
+test("wear, steps by hour, workout minutes and workout load", () => {
+  const hr: (number | null)[] = new Array(1440).fill(null);
+  for (let m = 0; m < 600; m++) hr[m] = 60;
+  assert.equal(wearMinutes(hr), 600);
+  const steps: (number | null)[] = new Array(1440).fill(null);
+  assert.equal(stepsByHour(steps), null, "no step data");
+  steps[30] = 100;
+  steps[61] = 50;
+  steps[1439] = 7;
+  const byHour = stepsByHour(steps)!;
+  assert.equal(byHour.length, 24);
+  assert.deepEqual(byHour.slice(0, 3), [100, 150, 150]);
+  assert.equal(byHour[23], 157);
+
+  // 23:50–00:20 local spans two days of minute slots.
+  const start = budapest.midnightMs("2026-10-18") - 10 * 60000;
+  const day1 = new Array(1440).fill(null), day2 = new Array(1440).fill(null);
+  day1[1430] = 140;
+  day2[5] = 150;
+  const mins = minutesBetween(start, start + 30 * 60000, budapest, (d) => (d === "2026-10-17" ? day1 : d === "2026-10-18" ? day2 : null));
+  assert.equal(mins.length, 30);
+  assert.equal(mins[0], 140);
+  assert.equal(mins[15], 150);
+
+  const run = computeWorkoutLoad(new Array(40).fill(160), 55, 190, "male");
+  assert.ok(run.trimp! > 50 && run.strain! > 30, JSON.stringify(run));
+  assert.equal(run.hr_max, 160);
+  assert.equal(run.hrr_zone_min!.reduce((a, b) => a + b, 0), 40);
+  assert.equal(run.hrr_zone_min![2], 40, "160 bpm is 78% of reserve: zone 70–80%");
+  assert.deepEqual(computeWorkoutLoad([150, 150, null], 55, 190, "male"), { trimp: null, strain: null, hr_max: null, hrr_zone_min: null });
+});
+
+test("low wear: relative to your usual wear, never on unfinished days", () => {
+  const usual = (n: number, wear: number) => Array.from({ length: n }, (_, i) => day(addDays("2026-10-01", i), { wear_min: wear }));
+  assert.equal(lowWear(500, usual(4, 1400), true), null, "under 5 days of history");
+  assert.equal(lowWear(500, usual(10, 1400), true), true);
+  assert.equal(lowWear(900, usual(10, 1400), true), false);
+  assert.equal(lowWear(500, usual(10, 1400), false), null, "today is unfinished");
+  assert.equal(lowWear(100, usual(10, 400), true), null, "usually worn under 10 h: not judged");
+  assert.equal(lowWear(null, usual(10, 1400), true), null);
+
+  const today = "2026-10-18";
+  const days = Array.from({ length: 40 }, (_, i) => day(addDays(today, -39 + i), { steps: 8000, low_wear: false }));
+  days[30] = day(days[30].date, { steps: 900, low_wear: true });
+  const steps = METRIC_BY_KEY.get("steps")!, rhr = METRIC_BY_KEY.get("rhr")!;
+  assert.equal(countsToward(steps, days[30], today), false);
+  assert.equal(countsToward(rhr, days[30], today), true, "only day totals are affected");
+  assert.equal(countsToward(steps, days[39], today), false, "today is still growing");
+  const s = buildStats(days, today, { sleep_need_min: 480, step_goal: 10000 });
+  assert.equal(s.metrics.steps.ranges["30"].mean, 8000, "the low-wear day is left out");
+  assert.equal(s.metrics.steps.worst!.value, 8000);
+});
+
+test("journal: tags are normalized, effects need 3+ days on each side", () => {
+  assert.deepEqual(normalizeTags(["Alcohol", " late   meal ", "alcohol", "Cold shower", ""]), ["alcohol", "late_meal", "Cold shower"]);
+  assert.deepEqual(normalizeTags([]), []);
+  assert.equal(normalizeTags("alcohol"), null);
+  assert.equal(normalizeTags([1]), null);
+  assert.equal(normalizeTags(Array.from({ length: 21 }, (_, i) => `t${i}`)), null);
+  assert.equal(normalizeTags(["x".repeat(40)])![0].length, 30);
+
+  const today = "2026-10-18";
+  const days = Array.from({ length: 60 }, (_, i) => day(addDays(today, -59 + i), { sleep_score: 80 + (i % 3), hrv_rmssd: 50 }));
+  const entries = Array.from({ length: 40 }, (_, i) => ({ date: addDays(today, -40 + i), tags: i % 4 === 0 ? ["alcohol"] : i % 13 === 0 ? ["travel"] : [] }));
+  // Nights after alcohol days score ~12 lower.
+  for (const e of entries) {
+    if (!e.tags.includes("alcohol")) continue;
+    const next = days.find((d) => d.date === addDays(e.date, 1))! as Record<string, unknown>;
+    next.sleep_score = (next.sleep_score as number) - 12;
+  }
+  const impacts = journalImpacts(days, entries, today);
+  const alcohol = impacts.find((i) => i.tag === "alcohol")!;
+  assert.equal(alcohol.label, "Alcohol");
+  assert.equal(alcohol.days, 10);
+  const score = alcohol.effects.find((e) => e.metric === "sleep_score")!;
+  assert.ok(score.diff < -10 && score.clear, JSON.stringify(score));
+  assert.equal(score.nWith, 10);
+  const hrv = alcohol.effects.find((e) => e.metric === "hrv_rmssd")!;
+  assert.equal(hrv.diff, 0);
+  assert.equal(hrv.clear, false);
+  const travel = impacts.find((i) => i.tag === "travel")!;
+  assert.equal(travel.days, 3);
+  assert.equal(travel.effects.length, 2, "3 tagged days are enough; only outcomes with data (sleep score, HRV)");
+  const stats = buildStats(days, today, { sleep_need_min: 480, step_goal: 10000 }, entries);
+  assert.equal(stats.journal.length, 2);
+  const insight = stats.insights.find((i) => i.id === "journal_alcohol_sleep_score")!;
+  assert.match(insight.title, /^After alcohol days: sleep score lower by \d+$/);
+  assert.equal(insight.tone, "negative");
+  assert.equal(lowerFirst("HRV (RMSSD)"), "HRV (RMSSD)");
+  assert.equal(lowerFirst("Sleep score"), "sleep score");
+});
+
+test("sleep plan: need from strain, debt and naps; bedtime from the usual wake time", () => {
+  const today = "2026-10-18"; // a Sunday, so tomorrow is a weekday
+  const nights = (extra: (date: string, i: number) => Record<string, unknown>) =>
+    Array.from({ length: 28 }, (_, i) => {
+      const date = addDays(today, -27 + i);
+      return day(date, { sleep_asleep_min: 480, sleep_efficiency: 0.9, sleep_waketime_min: weekdayIndex(date) >= 5 ? 540 : 400, ...extra(date, i) });
+    });
+  const base = sleepPlan(nights(() => ({})), today, 480);
+  assert.deepEqual([base.needMin, base.strainMin, base.debtMin, base.napMin], [480, 0, 0, 0]);
+  assert.equal(base.inBedMin, 535, "480 ÷ 0.9 = 533 → 535");
+  assert.equal(base.wakeBasis, "weekday");
+  assert.equal(base.wakeMin, 400);
+  assert.equal(base.bedtimeMin, -135, "06:40 − 8h 55m = 21:45 the evening before");
+
+  const hard = sleepPlan(nights((date) => (date === today ? { strain: 85, nap_min: 22 } : date >= addDays(today, -6) ? { sleep_asleep_min: 420 } : {})), today, 480);
+  assert.equal(hard.strainMin, 45);
+  assert.equal(hard.debtMin, 60, "6 nights × 60 min short ÷ 4 = 90, capped at 60");
+  assert.equal(hard.napMin, 20);
+  assert.equal(hard.needMin, 480 + 45 + 60 - 20);
+
+  const few = sleepPlan([day(today, { strain: 10 })], today, 450);
+  assert.equal(few.needMin, 450);
+  assert.equal(few.efficiency, 0.9);
+  assert.equal(few.wakeMin, null);
+  assert.equal(few.bedtimeMin, null);
 });

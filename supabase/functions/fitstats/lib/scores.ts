@@ -30,6 +30,41 @@ export interface StrainResult {
   zoneMinutes: number[]; // 5 HRR zones
 }
 
+interface HrLoad {
+  trimp: number;
+  hrMinutes: number;
+  zoneMinutes: number[];
+  maxBpm: number | null;
+}
+
+/** TRIMP, minutes with data and HRR zone minutes for any stretch of minute heart rate. */
+function hrLoad(hr: (number | null)[], rhr: number, reserve: number, sex: string): HrLoad {
+  const [a, b] = trimpCoefficients(sex);
+  let trimp = 0;
+  let hrMinutes = 0;
+  let maxBpm: number | null = null;
+  const zoneMinutes = [0, 0, 0, 0, 0];
+  for (const bpm of hr) {
+    if (bpm === null || bpm === undefined || bpm <= 0) continue;
+    hrMinutes++;
+    if (maxBpm === null || bpm > maxBpm) maxBpm = bpm;
+    const hrr = clamp((bpm - rhr) / reserve, 0, 1.1);
+    if (hrr >= TRIMP_MIN_HRR) trimp += hrr * a * Math.exp(b * hrr);
+    for (let z = HRR_ZONE_EDGES.length - 1; z >= 0; z--) {
+      if (hrr >= HRR_ZONE_EDGES[z]) {
+        zoneMinutes[z]++;
+        break;
+      }
+    }
+  }
+  return { trimp, hrMinutes, zoneMinutes, maxBpm };
+}
+
+/** 100 × (1 − e^(−TRIMP / 120)) */
+export function strainFromTrimp(trimp: number): number {
+  return round(100 * (1 - Math.exp(-trimp / STRAIN_SCALE)), 1)!;
+}
+
 /**
  * Strain 0–100 from minute heart rate: 100 × (1 − e^(−TRIMP / 120)).
  * TRIMP sums HRR · a · e^(b·HRR) per minute at or above 30 % heart-rate reserve.
@@ -40,30 +75,38 @@ export function computeStrain(
   maxHr: number,
   sex: string,
 ): StrainResult | null {
-  const [a, b] = trimpCoefficients(sex);
   const reserve = maxHr - rhr;
   if (reserve < 20) return null;
-  let trimp = 0;
-  let hrMinutes = 0;
-  const zoneMinutes = [0, 0, 0, 0, 0];
-  for (const bpm of hr) {
-    if (bpm === null || bpm === undefined || bpm <= 0) continue;
-    hrMinutes++;
-    const hrr = clamp((bpm - rhr) / reserve, 0, 1.1);
-    if (hrr >= TRIMP_MIN_HRR) trimp += hrr * a * Math.exp(b * hrr);
-    for (let z = HRR_ZONE_EDGES.length - 1; z >= 0; z--) {
-      if (hrr >= HRR_ZONE_EDGES[z]) {
-        zoneMinutes[z]++;
-        break;
-      }
-    }
-  }
-  if (hrMinutes < 120) return null; // under two hours of wear: not a meaningful day total
+  const load = hrLoad(hr, rhr, reserve, sex);
+  if (load.hrMinutes < 120) return null; // under two hours of wear: not a meaningful day total
   return {
-    strain: round(100 * (1 - Math.exp(-trimp / STRAIN_SCALE)), 1)!,
-    trimp: round(trimp, 1)!,
-    hrMinutes,
-    zoneMinutes,
+    strain: strainFromTrimp(load.trimp),
+    trimp: round(load.trimp, 1)!,
+    hrMinutes: load.hrMinutes,
+    zoneMinutes: load.zoneMinutes,
+  };
+}
+
+export interface WorkoutLoad {
+  trimp: number | null;
+  strain: number | null;
+  hr_max: number | null;
+  hrr_zone_min: number[] | null;
+}
+
+/**
+ * The same load for one workout's minutes. Strain is what the workout alone
+ * would score on the day scale; day strain is not the sum of workout strains.
+ */
+export function computeWorkoutLoad(hr: (number | null)[], rhr: number, maxHr: number, sex: string): WorkoutLoad {
+  const reserve = maxHr - rhr;
+  const load = reserve >= 20 ? hrLoad(hr, rhr, reserve, sex) : null;
+  if (!load || load.hrMinutes < 5) return { trimp: null, strain: null, hr_max: null, hrr_zone_min: null };
+  return {
+    trimp: round(load.trimp, 1),
+    strain: strainFromTrimp(load.trimp),
+    hr_max: load.maxBpm,
+    hrr_zone_min: load.zoneMinutes,
   };
 }
 

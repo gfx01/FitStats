@@ -27,7 +27,7 @@ export const tables: Record<string, Row[]> = {
     id: 1, backfill_oldest: null, backfill_target: null, backfill_done: false, backfill_empty_chunks: 0,
     last_recent_sync_at: null, recent_fingerprint: null, stats_dirty: false, lock_until: null,
   }],
-  fs_days: [], fs_sleep: [], fs_exercise: [], fs_intraday: [], fs_samples: [], fs_cache: [],
+  fs_days: [], fs_sleep: [], fs_exercise: [], fs_intraday: [], fs_samples: [], fs_cache: [], fs_journal: [],
   fs_coach_threads: [], fs_coach_messages: [],
 };
 
@@ -128,7 +128,11 @@ function postgrest(url: URL, init: RequestInit): Response {
 const TZ_OFFSET_S = 7200; // fake data uses fixed CEST wall clock for simplicity
 export const calls: string[] = [];
 /** Knobs to change what the fake API returns between runs. */
-export const fakeData = { extraSteps: 0 };
+/**
+ * Knobs to change what the fake API returns between runs. `nowMs` is fixed when the
+ * module loads, so repeated runs see the same "now" (no data after it exists yet).
+ */
+export const fakeData = { extraSteps: 0, nowMs: Date.now() };
 const ymdParts = (ymd: string) => {
   const [year, month, day] = ymd.split("-").map(Number);
   return { year, month, day };
@@ -166,11 +170,29 @@ function dailyPoint(type: string, date: string): Row | null {
   }
 }
 
+/** Share of the walking day (07:00–22:00) that has passed: 1 for past days, partial for today. */
+function dayShareSoFar(date: string): number {
+  const now = new Date(fakeData.nowMs + TZ_OFFSET_S * 1000);
+  const today = now.toISOString().slice(0, 10);
+  if (date < today) return 1;
+  if (date > today) return 0;
+  const minute = now.getUTCHours() * 60 + now.getUTCMinutes();
+  return Math.min(1, Math.max(0, (minute - 420) / 900));
+}
+
+/** A walking burst every 10 minutes from 07:00 to 22:00, and 160/min during runs. */
+function minuteSteps(ms: number, hr: number): number {
+  if (hr > 140) return 160;
+  const local = new Date(ms + TZ_OFFSET_S * 1000);
+  const h = local.getUTCHours();
+  return h >= 7 && h < 22 && local.getUTCMinutes() % 10 === 0 ? 90 : 0;
+}
+
 function rollupValue(type: string, date: string): Row | null {
   if (date < FIRST_DATA_DAY) return null;
   const k = seed(date);
   switch (type) {
-    case "steps": return { steps: { countSum: String(5000 + k * 7 + fakeData.extraSteps) } };
+    case "steps": return { steps: { countSum: String(Math.round((5000 + k * 7) * dayShareSoFar(date)) + fakeData.extraSteps) } };
     case "distance": return { distance: { millimetersSum: String((5000 + k * 7) * 750) } };
     case "floors": return { floors: { countSum: String(k % 15) } };
     case "active-zone-minutes": return { activeZoneMinutes: { sumInFatBurnHeartZone: "12", sumInCardioHeartZone: String(k % 30) } };
@@ -251,11 +273,15 @@ function dayHeartRate(date: string): { min: number; avg: number; max: number } |
   return { min: Math.min(...vals), avg: Math.round(vals.reduce((a, b) => a + b, 0) / vals.length), max: Math.max(...vals) };
 }
 
+/** The band comes off at 10:00 on this day and stays off: about 10 hours of wear. */
+export const LOW_WEAR_DAY = "2026-09-20";
+
 function minuteHr(ms: number): number | null {
   const local = new Date(ms + TZ_OFFSET_S * 1000);
   const date = local.toISOString().slice(0, 10);
-  if (date < FIRST_DATA_DAY) return null;
+  if (date < FIRST_DATA_DAY || ms > fakeData.nowMs) return null;
   const h = local.getUTCHours();
+  if (date === LOW_WEAR_DAY && h >= 10) return null;
   if (h < 7) return Math.round(52 + 3 * Math.sin((h * 60 + local.getUTCMinutes()) / 37) + (seed(date) % 3));
   if (h === 18 && seed(date) % 3 === 0) return 150 + (local.getUTCMinutes() % 12); // a run every few days
   const m = h * 60 + local.getUTCMinutes();
@@ -355,7 +381,7 @@ function googleFetch(url: URL, init: RequestInit): Response {
       const hr = minuteHr(t);
       if (hr === null) continue;
       if (type === "heart-rate") all.push({ startTime: iso(t), endTime: iso(t + 60000), heartRate: { beatsPerMinuteAvg: hr } });
-      else all.push({ startTime: iso(t), endTime: iso(t + 60000), steps: { countSum: hr > 140 ? "160" : "0" } });
+      else all.push({ startTime: iso(t), endTime: iso(t + 60000), steps: { countSum: String(minuteSteps(t, hr)) } });
     }
     const page = all.slice(offset, offset + body.pageSize);
     return Response.json({ rollupDataPoints: page, ...(offset + body.pageSize < all.length ? { nextPageToken: String(offset + body.pageSize) } : {}) });

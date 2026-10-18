@@ -511,6 +511,44 @@ export interface IntradayDay {
   steps: (number | null)[];
 }
 
+/** Minutes with heart-rate data: how long the band was worn. */
+export function wearMinutes(hr: (number | null)[]): number {
+  return hr.reduce<number>((n, v) => (typeof v === "number" && v > 0 ? n + 1 : n), 0);
+}
+
+/** Cumulative minute steps at the end of each local hour (24 values), or null without step data. */
+export function stepsByHour(steps: (number | null)[]): number[] | null {
+  let any = false;
+  let total = 0;
+  const out: number[] = [];
+  for (let h = 0; h < 24; h++) {
+    for (let m = h * 60; m < h * 60 + 60; m++) {
+      const v = steps[m];
+      if (typeof v === "number") {
+        total += v;
+        any = true;
+      }
+    }
+    out.push(total);
+  }
+  return any ? out : null;
+}
+
+/** Minute heart rate between two instants, read from per-local-day minute slots. */
+export function minutesBetween(
+  startMs: number,
+  endMs: number,
+  clock: LocalClock,
+  hrFor: (date: Ymd) => (number | null)[] | null | undefined,
+): (number | null)[] {
+  const out: (number | null)[] = [];
+  for (let t = Math.floor(startMs / 60000) * 60000; t < endMs; t += 60000) {
+    const { date, minute } = clock.locate(t);
+    out.push(hrFor(date)?.[minute] ?? null);
+  }
+  return out;
+}
+
 export function emptyIntraday(): IntradayDay {
   return { hr: new Array(MINUTES_PER_DAY).fill(null), steps: new Array(MINUTES_PER_DAY).fill(null) };
 }

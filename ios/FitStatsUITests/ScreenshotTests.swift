@@ -118,5 +118,31 @@ final class ScreenshotTests: XCTestCase {
         shot("23-settings-2")
         app.swipeUp()
         shot("24-settings-3")
+
+        // Journal sheet, then the nearest day with a workout and its detail.
+        app.tabBars.buttons["Today"].tap()
+        let edit = app.buttons["journal-edit"]
+        if edit.waitForExistence(timeout: 5) {
+            edit.tap()
+            shot("25-journal")
+            app.buttons["Cancel"].tap()
+        } else {
+            XCTFail("missing journal-edit")
+        }
+        let workout = app.buttons["workout-row"].firstMatch
+        for _ in 0..<6 where !workout.exists {
+            app.buttons["Previous day"].tap()
+            sleep(1)
+        }
+        if workout.exists {
+            for _ in 0..<6 where !workout.isHittable { app.swipeUp() }
+            workout.tap()
+            shot("26-workout")
+            app.swipeUp()
+            shot("27-workout-2")
+            back(app)
+        } else {
+            XCTFail("no workout in the last 7 days of fixtures")
+        }
     }
 }

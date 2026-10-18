@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { calls, dbWrites, fakeData, FIRST_DATA_DAY, type Row, tables } from "./fakes.ts";
+import { calls, dbWrites, fakeData, FIRST_DATA_DAY, LOW_WEAR_DAY, type Row, tables } from "./fakes.ts";
 
 test("full sync: backfill, scores and stats", async () => {
   const { runSync } = await import("../functions/fitstats/lib/sync.ts");
@@ -47,10 +47,32 @@ test("full sync: backfill, scores and stats", async () => {
   assert.ok(nightHr >= 48 && nightHr <= 58, `01:00 heart rate ${nightHr}`);
   assert.ok(tables.fs_samples.some((s) => s.metric === "hrv"));
 
+  // Wear time, the steps shape and the low-wear flag.
+  assert.equal(d.wear_min, 1440);
+  assert.equal(d.low_wear, false);
+  const byHour = d.steps_by_hour as number[];
+  assert.equal(byHour.length, 24);
+  assert.equal(byHour[23], (intra.steps as (number | null)[]).reduce<number>((a, v) => a + (v ?? 0), 0));
+  assert.ok(byHour.every((v, i) => i === 0 || v >= byHour[i - 1]), "cumulative");
+  const lowDay = days.get(LOW_WEAR_DAY)!;
+  assert.equal(lowDay.wear_min, 600, "worn 00:00–10:00");
+  assert.equal(lowDay.low_wear, true);
+
+  // Each workout's own load from its minutes (the fake runs sit at 150–161 bpm).
+  const run = tables.fs_exercise.find((x) => x.date === "2026-10-10") ?? tables.fs_exercise.find((x) => x.date !== LOW_WEAR_DAY)!;
+  assert.equal(typeof run.trimp, "number");
+  assert.ok((run.strain as number) > 0);
+  assert.ok((run.hr_max as number) >= 150);
+  assert.equal((run.hrr_zone_min as number[]).reduce((a, b) => a + b, 0), 60);
+
   const stats = tables.fs_cache.find((c) => c.key === "stats")!.value as Row;
   const metrics = stats.metrics as Record<string, Row>;
   assert.ok(((metrics.steps.ranges as Record<string, Row>)["30"].n as number) >= 25);
   assert.ok(Array.isArray(stats.correlations));
+  assert.deepEqual(stats.journal, []);
+  const today = String(stats.today);
+  const countable = tables.fs_days.filter((r) => typeof r.steps === "number" && String(r.date) < today && r.low_wear !== true).length;
+  assert.equal((metrics.steps.ranges as Record<string, Row>).all.n, countable, "low-wear days are left out of day totals");
 
   // A second run with nothing stale only refreshes recent days.
   calls.length = 0;
