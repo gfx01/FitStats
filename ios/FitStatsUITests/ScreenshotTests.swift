@@ -88,6 +88,19 @@ final class ScreenshotTests: XCTestCase {
         shot("03-today-3")
         for _ in 0..<5 { app.swipeDown() }
 
+        // Live heart rate (fixture mode simulates the band; the simulator has no Bluetooth).
+        let liveButton = app.buttons["open-live-hr"]
+        if liveButton.waitForExistence(timeout: 5) {
+            liveButton.tap()
+            _ = app.descendants(matching: .any).matching(identifier: "live-hr").firstMatch.waitForExistence(timeout: 5)
+            sleep(2)
+            shot("46-live-hr")
+            back(app)
+            _ = app.buttons["ring-recovery"].waitForExistence(timeout: 5)
+        } else {
+            XCTFail("missing open-live-hr")
+        }
+
         open(app, "ring-recovery", ["05-recovery", "06-recovery-2"])
         open(app, "ring-sleep", ["07-sleep", "08-sleep-2", "09-sleep-3"])
         open(app, "ring-strain", ["10-strain", "11-strain-2"])

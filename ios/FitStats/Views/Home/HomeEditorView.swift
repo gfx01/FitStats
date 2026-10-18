@@ -154,7 +154,7 @@ private struct HomeEditorRow: View {
         case .tonight, .lastNight: return Theme.sleep
         case .journal, .vitals, .hrvTrend, .stressDay: return Theme.stress
         case .activity, .workouts, .thisWeek, .trainingLoad: return Theme.strain
-        case .heartRate, .restingHrTrend, .weeklyZoneMinutes: return Theme.heart
+        case .heartRate, .restingHrTrend, .weeklyZoneMinutes, .liveHeartRate: return Theme.heart
         case .streaks, .topInsight: return Theme.recoveryYellow
         case .coachBrief: return Theme.strainEnd
         case .body: return Theme.body

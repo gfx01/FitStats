@@ -27,6 +27,7 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSRequiresIPhoneOS: true
+        NSBluetoothAlwaysUsageDescription: FitStats connects to your Fitbit Air over Bluetooth to show your live heart rate when Share heart rate is on.
         UILaunchScreen:
           UIColorName: LaunchBackground
         UIUserInterfaceStyle: Dark

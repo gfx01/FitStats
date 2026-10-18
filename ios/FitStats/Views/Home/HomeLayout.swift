@@ -24,6 +24,7 @@ enum HomeCard: String, CaseIterable, Identifiable, Codable {
     case coachBrief
     case body
     case trainingLoad
+    case liveHeartRate
 
     var id: String { rawValue }
 
@@ -49,6 +50,7 @@ enum HomeCard: String, CaseIterable, Identifiable, Codable {
         case .coachBrief: return "Coach briefing"
         case .body: return "Body"
         case .trainingLoad: return "Training load"
+        case .liveHeartRate: return "Live heart rate"
         }
     }
 
@@ -74,6 +76,7 @@ enum HomeCard: String, CaseIterable, Identifiable, Codable {
         case .coachBrief: return "Today's briefing from your coach"
         case .body: return "Weight and body fat"
         case .trainingLoad: return "Fitness, fatigue and form from your training"
+        case .liveHeartRate: return "From your Fitbit Air over Bluetooth"
         }
     }
 
@@ -99,11 +102,12 @@ enum HomeCard: String, CaseIterable, Identifiable, Codable {
         case .coachBrief: return "text.bubble.fill"
         case .body: return "scalemass.fill"
         case .trainingLoad: return "speedometer"
+        case .liveHeartRate: return "heart.circle"
         }
     }
 
     /// Shown only while Today is on the current day (past days skip it).
-    var todayOnly: Bool { self == .tonight || self == .coachBrief }
+    var todayOnly: Bool { self == .tonight || self == .coachBrief || self == .liveHeartRate }
 }
 
 /// The ordered list of cards shown on Home, stored for @AppStorage as a comma-separated

@@ -143,6 +143,22 @@ FitStats database).
 
 ---
 
+## 6. Live heart rate (optional)
+
+FitStats can show your heart rate live, straight from the band over Bluetooth, while the app is
+open. Google's servers only get heart rate after the band syncs, so this is the only way to see it
+second by second.
+
+1. In the Google Health app, open your Fitbit Air → **Share heart rate**, and turn on **Always
+   visible** (or keep that screen open while you connect).
+2. In FitStats, tap the heart button at the top of **Today**, and allow Bluetooth when asked.
+3. FitStats finds the band and remembers it. You can also add a **Live heart rate** card to Home.
+
+Live heart rate isn't saved, and it stops when you leave FitStats. If the band also sends
+beat-to-beat intervals, FitStats shows a live HRV estimate too.
+
+---
+
 ## Weekly upkeep (honest version)
 
 - **Apple:** apps installed with a free Apple ID expire after **7 days**.

@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct FitStatsApp: App {
     @StateObject private var model = AppModel()
+    @StateObject private var live = LiveHeartRateMonitor()
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
@@ -10,11 +11,17 @@ struct FitStatsApp: App {
             RootView()
                 .environmentObject(model)
                 .environmentObject(model.coach)
+                .environmentObject(live)
                 .preferredColorScheme(.dark)
                 .tint(Theme.recoveryGreen)
                 .onOpenURL { url in model.handleCallback(url) }
                 .onChange(of: scenePhase) { _, phase in
-                    if phase == .active { Task { await model.refreshAll() } }
+                    if phase == .active {
+                        live.resume()
+                        Task { await model.refreshAll() }
+                    } else if phase == .background {
+                        live.pause()
+                    }
                 }
         }
     }

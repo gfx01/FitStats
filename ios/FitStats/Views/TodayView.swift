@@ -7,6 +7,7 @@ enum DetailRoute: Hashable {
     case stress(String)
     case metric(String)
     case workout(String, String) // date, exercise id
+    case liveHeartRate
 }
 
 struct DetailDestination: View {
@@ -25,6 +26,7 @@ struct DetailDestination: View {
                 EmptyStateView(icon: "questionmark", title: "Unknown metric", message: key)
             }
         case .workout(let date, let id): WorkoutDetailView(date: date, exerciseId: id)
+        case .liveHeartRate: LiveHeartRateView()
         }
     }
 }
@@ -195,6 +197,8 @@ struct TodayView: View {
             BodyCard(date: date)
         case .trainingLoad:
             TrainingLoadHomeCard(date: date)
+        case .liveHeartRate:
+            if date == model.today { LiveHeartRateHomeCard() }
         }
     }
 
@@ -225,6 +229,13 @@ struct TodayView: View {
                 Text(Format.prettyDay(date, today: model.today)).font(.headline)
                 Text(Format.longDay(date)).font(.caption2).foregroundStyle(Theme.secondary)
             }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            NavigationLink(value: DetailRoute.liveHeartRate) {
+                Image(systemName: "heart.text.square").foregroundStyle(Theme.heart)
+            }
+            .accessibilityLabel("Live heart rate")
+            .accessibilityIdentifier("open-live-hr")
         }
         ToolbarItem(placement: .topBarTrailing) {
             Button { shift(1) } label: {
