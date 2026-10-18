@@ -180,23 +180,24 @@ struct SleepDetailView: View {
 private struct StageBreakdown: View {
     let day: DayRecord
 
+    // Stage shares are of time asleep (as in the sleep score), so awake time gets no percentage.
     var body: some View {
         let asleep = max(1, day.double("sleep_asleep_min") ?? 1)
         VStack(spacing: 8) {
-            row("Deep", day.double("sleep_deep_min"), Theme.stageDeep, asleep)
-            row("REM", day.double("sleep_rem_min"), Theme.stageRem, asleep)
-            row("Light", day.double("sleep_light_min"), Theme.stageLight, asleep)
-            row("Awake", day.double("sleep_awake_min"), Theme.stageAwake, asleep)
+            row("Deep", day.double("sleep_deep_min"), Theme.stageDeep, share: asleep)
+            row("REM", day.double("sleep_rem_min"), Theme.stageRem, share: asleep)
+            row("Light", day.double("sleep_light_min"), Theme.stageLight, share: asleep)
+            row("Awake", day.double("sleep_awake_min"), Theme.stageAwake, share: nil)
         }
     }
 
-    private func row(_ name: String, _ minutes: Double?, _ color: Color, _ asleep: Double) -> some View {
+    private func row(_ name: String, _ minutes: Double?, _ color: Color, share asleep: Double?) -> some View {
         HStack {
             Circle().fill(color).frame(width: 8, height: 8)
             Text(name).font(.subheadline)
             Spacer()
             Text(Format.duration(minutes)).font(.subheadline.monospacedDigit())
-            Text(minutes.map { "\(Int(($0 / asleep * 100).rounded()))%" } ?? "")
+            Text(minutes.flatMap { m in asleep.map { "\(Int((m / $0 * 100).rounded()))%" } } ?? "")
                 .font(.caption)
                 .foregroundStyle(Theme.tertiary)
                 .frame(width: 40, alignment: .trailing)
@@ -311,7 +312,7 @@ struct StressDetailView: View {
                     ScoreRing(title: "Stress", value: value, maxValue: 100, color: Theme.stressColor(value),
                               caption: Theme.stressLabel(value), size: 140, lineWidth: 15)
                     VStack(alignment: .leading, spacing: 6) {
-                        KeyValueRow(key: "Minutes measured", value: Format.number(day?.double("stress_minutes")))
+                        KeyValueRow(key: "Minutes", value: Format.number(day?.double("stress_minutes")))
                         Text("Only minutes when you were awake, still and not exercising count.")
                             .font(.caption)
                             .foregroundStyle(Theme.secondary)

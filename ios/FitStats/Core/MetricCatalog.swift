@@ -66,7 +66,8 @@ struct MetricDef: Identifiable, Hashable {
         case .percent: return "\(Format.number(v, decimals: places))%"
         case .number, .signed:
             let s = format == .signed ? Format.signed(v, decimals: places) : Format.number(v, decimals: places)
-            return withUnit && !unit.isEmpty ? "\(s) \(unit)" : s
+            guard withUnit, !unit.isEmpty else { return s }
+            return unit == "%" ? "\(s)%" : "\(s) \(unit)"
         }
     }
 }
