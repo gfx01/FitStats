@@ -57,6 +57,10 @@ struct MetricDef: Identifiable, Hashable {
 
     func value(_ day: DayRecord) -> Double? { extract(day) }
 
+    /// Clock times and the skin temperature deviation sit around an arbitrary zero, so a percent
+    /// change means nothing: they are compared by the absolute change (the server sends no changePct).
+    var comparesAbsolute: Bool { format == .clock || key == "skin_temp_dev" }
+
     func formatted(_ v: Double?, withUnit: Bool = true, decimals override: Int? = nil) -> String {
         guard let v else { return "–" }
         let places = override ?? decimals
@@ -141,7 +145,9 @@ enum MetricCatalog {
         m("sleep_deep_min", "Deep sleep", "", 0, .sleep, total: false, better: .higher, format: .duration, icon: "moon.zzz.fill"),
         m("sleep_rem_min", "REM sleep", "", 0, .sleep, total: false, better: .higher, format: .duration, icon: "sparkles"),
         m("sleep_light_min", "Light sleep", "", 0, .sleep, total: false, better: nil, format: .duration, icon: "cloud.moon"),
-        m("sleep_awake_min", "Awake during sleep", "", 0, .sleep, short: "Awake in bed", total: false, better: .lower, format: .duration, icon: "eye"),
+        // Google's minutesAwake: every awake stage, including the stretch before falling asleep.
+        m("sleep_awake_min", "Awake (incl. falling asleep)", "", 0, .sleep, short: "Awake in bed", total: false, better: .lower, format: .duration, icon: "eye"),
+        m("sleep_waso_min", "Awake after falling asleep", "", 0, .sleep, short: "Awake mid-sleep", total: false, better: .lower, format: .duration, icon: "eye.circle"),
         m("deep_pct", "Deep sleep share", "%", 0, .sleep, total: false, better: .higher, format: .percent, icon: "percent",
           extract: ratio("sleep_deep_min", "sleep_asleep_min")),
         m("rem_pct", "REM sleep share", "%", 0, .sleep, total: false, better: .higher, format: .percent, icon: "percent",

@@ -185,6 +185,28 @@ struct MetricTile: View {
     }
 }
 
+/// Tiles in two equal columns. An odd last tile spans both, so no half row is left empty
+/// (LazyVGrid cannot span columns).
+struct TwoColumnTiles<Item: Hashable, Tile: View>: View {
+    let items: [Item]
+    @ViewBuilder var tile: (Item) -> Tile
+
+    var body: some View {
+        let odd = !items.count.isMultiple(of: 2)
+        let paired = odd ? Array(items.dropLast()) : items
+        VStack(spacing: 10) {
+            if !paired.isEmpty {
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+                    ForEach(paired, id: \.self) { tile($0) }
+                }
+            }
+            if odd, let last = items.last {
+                tile(last)
+            }
+        }
+    }
+}
+
 struct ComponentBar: View {
     let component: ScoreComponentInfo
     let color: Color

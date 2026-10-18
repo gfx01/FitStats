@@ -112,6 +112,12 @@ enum Format {
         return h > 0 ? "\(sign)\(h)h \(m)m" : "\(sign)\(m)m"
     }
 
+    /// Seconds → "16s" under a minute, otherwise like `duration` ("1h 35m").
+    static func duration(seconds: Double?) -> String {
+        guard let seconds, seconds.isFinite else { return "–" }
+        return seconds < 59.5 ? "\(Int(seconds.rounded()))s" : duration(seconds / 60)
+    }
+
     /// Minutes from local midnight (negative = evening before) → "23:30"
     static func clock(_ minutes: Double?) -> String {
         guard let minutes, minutes.isFinite else { return "–" }

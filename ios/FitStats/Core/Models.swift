@@ -80,6 +80,19 @@ struct UserSettings: Codable, Equatable {
 
 struct SettingsResponse: Codable {
     let settings: UserSettings
+    /// The max heart rate strain, stress and zones use. Missing from older servers.
+    let maxHr: MaxHr?
+
+    struct MaxHr: Codable {
+        let value: Double
+        /// "override", "observed" or "age".
+        let source: String
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case settings
+        case maxHr = "max_hr"
+    }
 }
 
 /// One `fs_days` row. Columns are read by name so new server columns need no app update.
@@ -173,8 +186,18 @@ struct Exercise: Codable, Identifiable {
     /// From the minute heart rate during the workout (server lib/scores.ts).
     let trimp: Double?
     let strain: Double?
+    /// Highest minute average after single-minute spikes are smoothed out (not a beat-level maximum).
     let hrMax: Double?
     let hrrZoneMin: [Double?]?
+    /// Minutes with heart rate, and minute steps, in the server's workout window: from the start's
+    /// minute for ceil((end − that minute) / 60 s) minutes. Missing on rows from older servers.
+    let hrMinutes: Double?
+    let stepsMinute: Double?
+    /// Google's DataPoint.dataSource: recordingMethod (MANUAL, PASSIVELY_MEASURED, ACTIVELY_MEASURED,
+    /// DERIVED, UNKNOWN), platform and device name.
+    let recordingMethod: String?
+    let sourcePlatform: String?
+    let sourceDevice: String?
 
     enum CodingKeys: String, CodingKey {
         case id, date, name, calories, steps, azm, trimp, strain
@@ -194,6 +217,11 @@ struct Exercise: Codable, Identifiable {
         case runVo2max = "run_vo2max"
         case hrMax = "hr_max"
         case hrrZoneMin = "hrr_zone_min"
+        case hrMinutes = "hr_minutes"
+        case stepsMinute = "steps_minute"
+        case recordingMethod = "recording_method"
+        case sourcePlatform = "source_platform"
+        case sourceDevice = "source_device"
     }
 }
 
@@ -208,6 +236,20 @@ struct DayDetail: Codable {
     struct Intraday: Codable {
         let hr: [Int?]?
         let steps: [Int?]?
+    }
+
+    /// The session the day's sleep columns came from (fs_days.sleep_main_id). Without that id, the
+    /// server's ranking (lib/transform.ts mainSleepOf): not a nap, then flagged main sleep, then
+    /// longest asleep, then earliest start. Google sometimes flags a nap as main sleep too.
+    func mainSleep(id: String?) -> SleepSession? {
+        if let id, let named = sleeps.first(where: { $0.id == id }) { return named }
+        func rank(_ s: SleepSession) -> Int { (s.isNap == true ? 0 : 2) + (s.isMain == true ? 1 : 0) }
+        return sleeps.sorted { a, b in
+            if rank(a) != rank(b) { return rank(a) > rank(b) }
+            let asleepA = a.minutesAsleep ?? 0, asleepB = b.minutesAsleep ?? 0
+            if asleepA != asleepB { return asleepA > asleepB }
+            return a.startTime < b.startTime
+        }.first
     }
 }
 
@@ -294,6 +336,9 @@ struct RangeStats: Codable {
     let sum: Double?
     let slopePerWeek: Double?
     let prevMean: Double?
+    /// mean − prevMean. Missing in stats cached by older servers.
+    let change: Double?
+    /// Nil for clock times and skin temperature deviation, where a ratio means nothing.
     let changePct: Double?
 }
 

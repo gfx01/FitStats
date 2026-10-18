@@ -5,7 +5,8 @@ import Foundation
 ///
 ///     need    = your sleep need
 ///             + 0–45 min for today's strain (0 at strain 35 or less, 45 at 85 or more)
-///             + a quarter of the last 7 nights' sleep debt (at most 60 min)
+///             + a quarter of the last 7 nights' sleep debt (at most 60 min; naps on the
+///               days before today count as sleep)
 ///             − today's naps (at most 60 min)
 ///     in bed  = need ÷ your typical sleep efficiency (median of the last 14 nights, else 90 %)
 ///     bedtime = your usual wake time for tomorrow's kind of day (weekday or weekend,
@@ -56,10 +57,13 @@ struct SleepPlan: Equatable {
         let strain = todayRow?.double("strain") ?? 0
         let strainMin = to5(45 * min(1, max(0, (strain - 35) / 50)))
 
+        // Today's naps come off only through napMin below, so they are not counted twice.
         var debt = 0.0
         for offset in 0...6 {
-            if let asleep = days[Format.addDays(today, -offset)]?.double("sleep_asleep_min") {
-                debt += max(0, sleepNeedMin - asleep)
+            let row = days[Format.addDays(today, -offset)]
+            if let asleep = row?.double("sleep_asleep_min") {
+                let naps = offset > 0 ? (row?.double("nap_min") ?? 0) : 0
+                debt += max(0, sleepNeedMin - asleep - naps)
             }
         }
         let debtMin = min(60, to5(debt / 4))

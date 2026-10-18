@@ -56,7 +56,8 @@ private struct MetricRow: View {
 
     var body: some View {
         let stats = model.stats?.metrics[def.key]
-        let recent = model.series(def, from: Format.addDays(model.today, -29), through: model.today).map(\.value)
+        // The same 30 days as the average: day totals cover the 30 complete days before today.
+        let recent = model.series(def, from: Format.addDays(model.today, def.isDayTotal ? -30 : -29), through: model.today).map(\.value)
         HStack(spacing: 12) {
             Image(systemName: def.icon)
                 .font(.subheadline)
@@ -76,13 +77,60 @@ private struct MetricRow: View {
             if recent.count >= 3 {
                 SparklineView(values: recent, color: def.category.color).frame(width: 70, height: 26)
             }
-            DeltaBadge(change: stats?.ranges["30"]?.changePct, better: def.better)
+            RangeChangeBadge(def: def, range: stats?.ranges["30"])
                 .frame(minWidth: 44, alignment: .trailing)
             Image(systemName: "chevron.right").font(.caption2).foregroundStyle(Theme.tertiary)
         }
         .padding(.vertical, 8)
         .padding(.horizontal, 8)
         .contentShape(Rectangle())
+    }
+}
+
+/// A range's change against the range before it: a percentage, or for clock times and the skin
+/// temperature deviation the absolute change ("48m", "0.11 °C"), as a percent of an arbitrary zero
+/// means nothing.
+private struct RangeChangeBadge: View {
+    let def: MetricDef
+    let range: RangeStats?
+
+    var body: some View {
+        if def.comparesAbsolute {
+            if let change = absoluteChange, let text = changeText(change) {
+                HStack(spacing: 2) {
+                    Image(systemName: change > 0 ? "arrow.up.right" : "arrow.down.right")
+                    Text(text)
+                }
+                .font(.caption2.weight(.semibold))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(Capsule().fill(Theme.secondary.opacity(0.16)))
+                .foregroundStyle(Theme.secondary)
+            }
+        } else {
+            DeltaBadge(change: range?.changePct, better: def.better)
+        }
+    }
+
+    /// The server's change, or mean − previous mean in stats cached before it sent one.
+    private var absoluteChange: Double? {
+        if let change = range?.change { return change }
+        guard let mean = range?.mean, let prev = range?.prevMean else { return nil }
+        return mean - prev
+    }
+
+    /// Nil when the change rounds to nothing.
+    private func changeText(_ change: Double) -> String? {
+        let size = abs(change)
+        switch def.format {
+        case .clock, .duration:
+            return size.rounded() >= 1 ? Format.duration(size) : nil
+        case .number, .signed, .percent:
+            let scale = pow(10, Double(def.decimals))
+            guard (size * scale).rounded() >= 1 else { return nil }
+            let number = Format.number(size, decimals: def.decimals)
+            return def.unit.isEmpty || def.unit == "%" ? "\(number)\(def.unit)" : "\(number) \(def.unit)"
+        }
     }
 }
 
@@ -106,7 +154,8 @@ struct MetricDetailView: View {
         let stats = model.stats?.metrics[def.key]
         let rs = stats?.ranges[range]
         let from: String = {
-            if let days = Int(range) { return Format.addDays(model.today, -(days - 1)) }
+            // Day totals cover the complete days before today, so their window starts a day earlier.
+            if let days = Int(range) { return Format.addDays(model.today, def.isDayTotal ? -days : -(days - 1)) }
             return model.days.first?.date ?? Format.addDays(model.today, -365)
         }()
         let points = model.series(def, from: from, through: model.today)
@@ -125,7 +174,7 @@ struct MetricDetailView: View {
                         }
                         Spacer()
                         VStack(alignment: .trailing, spacing: 4) {
-                            DeltaBadge(change: rs?.changePct, better: def.better)
+                            RangeChangeBadge(def: def, range: rs)
                             if let prev = rs?.prevMean {
                                 Text("prev. \(def.formatted(prev))").font(.caption2).foregroundStyle(Theme.tertiary)
                             }

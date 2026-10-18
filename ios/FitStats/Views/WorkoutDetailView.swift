@@ -2,8 +2,19 @@ import Charts
 import SwiftUI
 
 extension Exercise {
+    /// Google generates displayName from exercise_type for every type but OTHER, in varying case
+    /// ("Strength Training" and "Strength training"), so the label comes from the type. Only a
+    /// custom OTHER (or untyped) workout keeps Google's name.
     var displayName: String {
-        name ?? (exerciseType ?? "Workout").replacingOccurrences(of: "_", with: " ").capitalized
+        let kind = exerciseType ?? ""
+        if kind.isEmpty || kind == "OTHER" || kind == "EXERCISE_TYPE_UNSPECIFIED" {
+            if let name, !name.isEmpty { return name }
+            return "Workout"
+        }
+        switch kind {
+        case "HIIT", "TRX": return kind
+        default: return kind.replacingOccurrences(of: "_", with: " ").capitalized
+        }
     }
 
     var symbol: String {
@@ -19,21 +30,78 @@ extension Exercise {
         }
     }
 
-    var minutes: Double? { (activeDurationS ?? durationS).map { $0 / 60 } }
+    /// Active time (Google's activeDuration, else the whole session) in seconds.
+    var activeSeconds: Double? { activeDurationS ?? durationS }
 
-    /// Running and walking pace, "5:24" per km.
+    var minutes: Double? { activeSeconds.map { $0 / 60 } }
+
+    /// "16s" for a fragment under a minute, otherwise "1h 35m".
+    var durationText: String { Format.duration(seconds: activeSeconds) }
+
+    /// Running and walking pace, "5:24" per km. Hidden when the implied speed is implausible for
+    /// the type (under 3 km/h for runs, 1.5 km/h for walks), such as a 248 m "run" over 16 minutes.
     var pace: String? {
-        guard ["figure.run", "figure.walk"].contains(symbol), let m = distanceM, m > 100, let mins = minutes, mins > 0 else { return nil }
-        let seconds = Int((mins / (m / 1000) * 60).rounded())
-        return "\(seconds / 60):\(String(format: "%02d", seconds % 60))"
+        let slowest: Double
+        switch symbol {
+        case "figure.run": slowest = 3
+        case "figure.walk": slowest = 1.5
+        default: return nil
+        }
+        guard let m = distanceM, m > 100, let mins = minutes, mins > 0 else { return nil }
+        let km = m / 1000
+        guard km / (mins / 60) >= slowest else { return nil }
+        let perKm = Int((mins / km * 60).rounded())
+        return "\(perKm / 60):\(String(format: "%02d", perKm % 60))"
+    }
+
+    /// Google's workout step count is sometimes far too low (853 steps for a 5.8 km game) while
+    /// its distance comes from the full count. The minute steps summed over the workout window
+    /// replace it when it is missing or 0, or when it implies over 1 m per step and the minute
+    /// steps are higher. They are approximate: the partial first and last minutes count in full.
+    var usesMinuteSteps: Bool {
+        guard let minute = stepsMinute, minute > 0 else { return false }
+        guard let steps, steps > 0 else { return true }
+        guard let m = distanceM else { return false }
+        return m / steps > 1.0 && minute > steps
+    }
+
+    var shownSteps: Double? {
+        if usesMinuteSteps { return stepsMinute }
+        guard let steps, steps > 0 else { return nil }
+        return steps
+    }
+
+    /// How Google says the workout was recorded (DataSource.recordingMethod); nil when it does not say.
+    var originLabel: String? {
+        switch recordingMethod ?? "" {
+        case "PASSIVELY_MEASURED": return "Auto-detected"
+        case "ACTIVELY_MEASURED": return "Tracked"
+        case "MANUAL": return "Logged manually"
+        case "DERIVED": return "Derived"
+        default: return nil
+        }
+    }
+
+    /// The server's workout window (lib/transform.ts minutesBetween): from the start's minute for
+    /// ceil((end − that minute) / 60 s) minutes, so partial first and last minutes count.
+    var windowStart: Date? {
+        guard let start = Format.timestamp(startTime) else { return nil }
+        let ms = (start.timeIntervalSince1970 * 1000).rounded()
+        return Date(timeIntervalSince1970: (ms / 60_000).rounded(.down) * 60)
+    }
+
+    var windowMinutes: Int? {
+        guard let start = windowStart, let end = Format.timestamp(endTime) else { return nil }
+        let ms = (end.timeIntervalSince(start) * 1000).rounded()
+        return max(0, Int((ms / 60_000).rounded(.up)))
     }
 }
 
-private struct StatTile: Identifiable {
+private struct StatTile: Hashable {
     let title: String
     let value: String
     let icon: String
-    var id: String { title }
+    var sub: String? = nil
 }
 
 private struct ZoneTime: Identifiable {
@@ -42,12 +110,19 @@ private struct ZoneTime: Identifiable {
     var id: String { name }
 }
 
+/// How much of the workout window has minute heart rate.
+private struct HRCoverage {
+    let minutes: Int
+    let window: Int
+
+    /// Under 70 %: strain and zones describe only part of the workout.
+    var partial: Bool { window > 0 && Double(minutes) < 0.7 * Double(window) }
+}
+
 struct WorkoutDetailView: View {
     let date: String
     let exerciseId: String
     @EnvironmentObject var model: AppModel
-
-    private let grid = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
 
     var body: some View {
         let detail = model.dayDetails[date]
@@ -55,11 +130,13 @@ struct WorkoutDetailView: View {
         ScrollView {
             VStack(spacing: 14) {
                 if let exercise {
+                    let series = minuteSeries(exercise, hr: detail?.intraday?.hr)
+                    let coverage = hrCoverage(exercise, series: series)
                     header(exercise)
-                    statsGrid(exercise)
-                    heartRateCard(exercise, hr: detail?.intraday?.hr)
-                    zonesCard(exercise)
-                    loadCard(exercise)
+                    statsGrid(exercise, coverage: coverage)
+                    heartRateCard(exercise, series: series, coverage: coverage)
+                    zonesCard(exercise, coverage: coverage)
+                    loadCard(exercise, coverage: coverage)
                 } else if detail == nil {
                     ProgressView().frame(maxWidth: .infinity, minHeight: 200)
                 } else {
@@ -70,13 +147,14 @@ struct WorkoutDetailView: View {
             .padding(.bottom, 32)
         }
         .screenBackground()
-        .navigationTitle(exercise?.displayName ?? "Workout")
+        .navigationTitle(Format.shortDay(date))
         .navigationBarTitleDisplayMode(.inline)
         .task { await model.loadDay(date) }
     }
 
     private func header(_ x: Exercise) -> some View {
-        Card {
+        let range = timeRange(x)
+        return Card {
             HStack(spacing: 14) {
                 Image(systemName: x.symbol)
                     .font(.title2)
@@ -85,9 +163,28 @@ struct WorkoutDetailView: View {
                     .foregroundStyle(Theme.strain)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(x.displayName).font(.title3.weight(.semibold))
-                    Text("\(Format.longDay(date)) · \(timeRange(x))").font(.caption).foregroundStyle(Theme.secondary)
+                    Text(range.isEmpty ? Format.longDay(date) : range).font(.caption).foregroundStyle(Theme.secondary)
+                    if x.originLabel != nil || !(x.sourceDevice ?? "").isEmpty {
+                        origin(x)
+                    }
                 }
                 Spacer(minLength: 0)
+            }
+        }
+    }
+
+    private func origin(_ x: Exercise) -> some View {
+        HStack(spacing: 6) {
+            if let label = x.originLabel {
+                Text(label)
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Theme.strain.opacity(0.16)))
+                    .foregroundStyle(Theme.strain)
+            }
+            if let device = x.sourceDevice, !device.isEmpty {
+                Text(device).font(.caption2).foregroundStyle(Theme.tertiary)
             }
         }
     }
@@ -97,40 +194,79 @@ struct WorkoutDetailView: View {
         return "\(Format.time(start, zone: model.zone))–\(Format.time(end, zone: model.zone))"
     }
 
-    private func statsGrid(_ x: Exercise) -> some View {
-        var tiles = [StatTile(title: "Duration", value: Format.duration(x.minutes), icon: "clock")]
-        if let s = x.strain { tiles.append(StatTile(title: "Strain", value: Format.number(s, decimals: 1), icon: "flame.fill")) }
+    private func statsGrid(_ x: Exercise, coverage: HRCoverage?) -> some View {
+        let partial = coverage?.partial == true
+        var tiles = [StatTile(title: "Duration", value: x.durationText, icon: "clock")]
+        if let s = x.strain {
+            tiles.append(StatTile(title: "Strain", value: Format.number(s, decimals: 1), icon: "flame.fill", sub: partial ? "partial" : nil))
+        }
         if let hr = x.avgHr { tiles.append(StatTile(title: "Average HR", value: "\(Int(hr)) bpm", icon: "heart")) }
-        if let hr = x.hrMax { tiles.append(StatTile(title: "Max HR", value: "\(Int(hr)) bpm", icon: "arrow.up.heart")) }
+        if let hr = x.hrMax { tiles.append(StatTile(title: "Peak minute HR", value: "\(Int(hr)) bpm", icon: "arrow.up.heart")) }
         if let kcal = x.calories { tiles.append(StatTile(title: "Calories", value: "\(Format.number(kcal)) kcal", icon: "flame")) }
         if let m = x.distanceM, m > 0 { tiles.append(StatTile(title: "Distance", value: "\(Format.number(m / 1000, decimals: 2)) km", icon: "map")) }
         if let pace = x.pace { tiles.append(StatTile(title: "Pace", value: "\(pace) /km", icon: "speedometer")) }
-        if let azm = x.azm, azm > 0 { tiles.append(StatTile(title: "Zone Minutes", value: Format.number(azm), icon: "heart.circle")) }
-        if let steps = x.steps, steps > 0 { tiles.append(StatTile(title: "Steps", value: Format.number(steps), icon: "figure.walk")) }
-        return LazyVGrid(columns: grid, spacing: 10) {
-            ForEach(tiles) { t in
-                MetricTile(title: t.title, value: t.value, icon: t.icon, color: Theme.strain)
-            }
+        if let azm = x.azm, azm > 0 {
+            let value = MetricCatalog.def("azm_total")?.formatted(azm) ?? "\(Format.number(azm)) min"
+            tiles.append(StatTile(title: "Zone Minutes", value: value, icon: "heart.circle"))
+        }
+        if let steps = x.shownSteps {
+            let approximate = x.usesMinuteSteps
+            tiles.append(StatTile(title: "Steps", value: (approximate ? "≈ " : "") + Format.number(steps), icon: "figure.walk",
+                                  sub: approximate ? "from minute steps" : nil))
+        }
+        return TwoColumnTiles(items: tiles) { t in
+            MetricTile(title: t.title, value: t.value, sub: t.sub, icon: t.icon, color: Theme.strain)
         }
     }
 
-    /// The workout's minutes from the day's minute heart rate (local minutes in the server's time zone).
-    private func minutes(_ x: Exercise, hr: [Int?]?) -> [MinuteValue] {
-        guard let hr, let start = Format.timestamp(x.startTime), let end = Format.timestamp(x.endTime) else { return [] }
+    /// The workout's minute heart rate over the server's window, from the day's minutes (local
+    /// minutes in the server's time zone). Nil without the day's minutes.
+    private func minuteSeries(_ x: Exercise, hr: [Int?]?) -> [Double?]? {
+        guard let hr, let start = x.windowStart, let count = x.windowMinutes else { return nil }
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = model.zone ?? .current
         let c = cal.dateComponents([.hour, .minute], from: start)
         let first = (c.hour ?? 0) * 60 + (c.minute ?? 0)
-        let count = Int(end.timeIntervalSince(start) / 60)
-        return (0..<max(0, count)).compactMap { i in
+        return (0..<count).map { i -> Double? in
             let m = first + i
             guard m < hr.count, let bpm = hr[m] else { return nil }
-            return MinuteValue(minute: i, value: Double(bpm))
+            return Double(bpm)
         }
     }
 
-    @ViewBuilder private func heartRateCard(_ x: Exercise, hr: [Int?]?) -> some View {
-        let points = minutes(x, hr: hr)
+    /// Minutes with heart rate in the window: the server's count, else counted from the day's minutes.
+    private func hrCoverage(_ x: Exercise, series: [Double?]?) -> HRCoverage? {
+        guard let window = x.windowMinutes, window > 0 else { return nil }
+        if let stored = x.hrMinutes { return HRCoverage(minutes: Int(stored.rounded()), window: window) }
+        guard let series else { return nil }
+        return HRCoverage(minutes: series.compactMap { $0 }.count, window: window)
+    }
+
+    /// A minute more than 30 bpm above both neighbours becomes their mean, as on the server, so a
+    /// one-minute optical spike does not peak above the Peak minute HR tile.
+    private static func smoothedSpikes(_ s: [Double?]) -> [Double?] {
+        guard s.count >= 3 else { return s }
+        var out = s
+        for i in 1..<(s.count - 1) {
+            if let a = s[i - 1], let v = s[i], let b = s[i + 1], v - a > 30, v - b > 30 {
+                out[i] = (a + b) / 2
+            }
+        }
+        return out
+    }
+
+    private func chartPoints(_ series: [Double?]) -> [MinuteValue] {
+        var out: [MinuteValue] = []
+        for (i, v) in Self.smoothedSpikes(series).enumerated() {
+            if let v { out.append(MinuteValue(minute: i, value: v)) }
+        }
+        return out
+    }
+
+    @ViewBuilder private func heartRateCard(_ x: Exercise, series: [Double?]?, coverage: HRCoverage?) -> some View {
+        let points = chartPoints(series ?? [])
+        // The whole workout on the x axis, so minutes without heart rate show as a gap.
+        let window = max(1, x.windowMinutes ?? 1)
         Card {
             SectionHeader(title: "Heart rate", subtitle: "Minute by minute, with your average")
             if points.count >= 2 {
@@ -148,6 +284,7 @@ struct WorkoutDetailView: View {
                         .foregroundStyle(Color.white.opacity(0.4))
                         .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
                 }
+                .chartXScale(domain: 0...window)
                 .chartXAxis {
                     AxisMarks(values: .automatic(desiredCount: 5)) { value in
                         AxisGridLine().foregroundStyle(Theme.track)
@@ -167,38 +304,59 @@ struct WorkoutDetailView: View {
             } else {
                 Text("No minute heart rate for this workout.").font(.footnote).foregroundStyle(Theme.tertiary)
             }
+            if let coverage, coverage.partial, coverage.minutes > 0 {
+                Label("Heart rate recorded for \(coverage.minutes) of \(coverage.window) min, so strain and zones cover only those minutes.",
+                      systemImage: "exclamationmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(Theme.recoveryYellow)
+            }
         }
     }
 
-    @ViewBuilder private func zonesCard(_ x: Exercise) -> some View {
+    @ViewBuilder private func zonesCard(_ x: Exercise, coverage: HRCoverage?) -> some View {
         let hrr = (x.hrrZoneMin ?? []).map { $0 ?? 0 }
         let fitbit = [
             ZoneTime(name: "Light", seconds: x.zoneLightS), ZoneTime(name: "Moderate", seconds: x.zoneModerateS),
             ZoneTime(name: "Vigorous", seconds: x.zoneVigorousS), ZoneTime(name: "Peak", seconds: x.zonePeakS),
         ]
-        if hrr.count == 5 || fitbit.contains(where: { $0.seconds != nil }) {
+        let hasFitbit = fitbit.contains(where: { $0.seconds != nil })
+        if hrr.count == 5 || hasFitbit {
             Card {
                 if hrr.count == 5 {
-                    SectionHeader(title: "Heart-rate reserve zones", subtitle: "Minutes at 50–60, 60–70, 70–80, 80–90 and 90%+ of your reserve")
-                    ZoneBars(minutes: hrr)
+                    SectionHeader(title: "Heart-rate reserve zones", subtitle: "Time in each zone, as % of heart-rate reserve")
+                    // The other heart-rate minutes, so the rows add up to every minute with heart rate.
+                    ZoneBars(minutes: hrr, below: coverage.map { max(0, Double($0.minutes) - hrr.reduce(0, +)) })
                 }
-                if fitbit.contains(where: { $0.seconds != nil }) {
+                if hasFitbit {
                     if hrr.count == 5 { Divider().overlay(Theme.track) }
                     SectionHeader(title: "Fitbit zones")
                     ForEach(fitbit) { zone in
-                        KeyValueRow(key: zone.name, value: Format.duration(zone.seconds.map { $0 / 60 }))
+                        KeyValueRow(key: zone.name, value: Format.duration(seconds: zone.seconds))
                     }
+                }
+                if hrr.count == 5 {
+                    Text(zonesNote(fitbitShown: hasFitbit))
+                        .font(.caption)
+                        .foregroundStyle(Theme.tertiary)
                 }
             }
         }
     }
 
-    @ViewBuilder private func loadCard(_ x: Exercise) -> some View {
+    /// Names the max heart rate the day's scores used (intraday_details.maxHr) when it is saved.
+    private func zonesNote(fitbitShown: Bool) -> String {
+        let maxHr = model.daysByDate[date]?.json("intraday_details")?["maxHr"]?.double
+        let used = maxHr.map { " (\(Int($0.rounded())) bpm)" } ?? ""
+        return "FitStats zones use your max heart rate\(used)" + (fitbitShown ? "; Fitbit zones are Google's own." : ".")
+    }
+
+    @ViewBuilder private func loadCard(_ x: Exercise, coverage: HRCoverage?) -> some View {
         if let strain = x.strain, let trimp = x.trimp {
             let dayTrimp = model.daysByDate[date]?.double("trimp")
+            let partial = coverage?.partial == true
             Card {
                 SectionHeader(title: "Training load")
-                KeyValueRow(key: "Workout strain", value: Format.number(strain, decimals: 1))
+                KeyValueRow(key: "Workout strain", value: Format.number(strain, decimals: 1) + (partial ? " (partial)" : ""))
                 KeyValueRow(key: "TRIMP", value: Format.number(trimp))
                 if let dayTrimp, dayTrimp > 0 {
                     KeyValueRow(key: "Share of the day's load", value: "\(Int((min(1, trimp / dayTrimp) * 100).rounded()))%")

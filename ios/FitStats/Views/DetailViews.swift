@@ -125,7 +125,8 @@ struct SleepDetailView: View {
     var body: some View {
         let day = model.daysByDate[date]
         let detail = model.dayDetails[date]
-        let main = detail?.sleeps.first(where: { $0.isMain == true }) ?? detail?.sleeps.first
+        // The session behind the day's numbers, so the hypnogram and the rows describe the same sleep.
+        let main = detail?.mainSleep(id: day?.string("sleep_main_id"))
         let score = day?.double("sleep_score")
         DetailScaffold(title: "Sleep", date: date) {
             Card {
@@ -149,8 +150,10 @@ struct SleepDetailView: View {
                 SectionHeader(title: "Night details")
                 // Estimated from the awake stretch before the first sleep stage (Fitbit reports 0).
                 KeyValueRow(key: "Time to fall asleep", value: day?.double("sleep_latency_min").map { "≈ \(Format.duration($0))" } ?? "–")
+                // Awake segments after falling asleep and before the final wake-up.
                 KeyValueRow(key: "Awakenings", value: Format.number(day?.double("sleep_awakenings")))
-                KeyValueRow(key: "Awake time", value: Format.duration(day?.double("sleep_awake_min")))
+                KeyValueRow(key: "Awake after falling asleep", value: Format.duration(day?.double("sleep_waso_min")))
+                KeyValueRow(key: "Awake (incl. falling asleep)", value: Format.duration(day?.double("sleep_awake_min")))
                 KeyValueRow(key: "Naps", value: Format.duration(day?.double("nap_min")))
                 KeyValueRow(key: "Breathing rate", value: day?.double("resp_rate").map { String(format: "%.1f /min", $0) } ?? "–")
                 KeyValueRow(key: "SpO₂ average", value: day?.double("spo2_avg").map { String(format: "%.1f%%", $0) } ?? "–")
@@ -190,6 +193,7 @@ struct StrainDetailView: View {
             return lo...hi
         }()
         let intraday = day?.json("intraday_details")
+        let azm = MetricCatalog.def("azm_total")!
         DetailScaffold(title: "Strain", date: date) {
             Card {
                 HStack(spacing: 20) {
@@ -206,17 +210,18 @@ struct StrainDetailView: View {
             }
             if let zones = intraday?["hrrZoneMinutes"]?.array, zones.count == 5 {
                 Card {
-                    SectionHeader(title: "Heart-rate reserve zones", subtitle: "Minutes at 50–60, 60–70, 70–80, 80–90 and 90%+ of your reserve")
+                    SectionHeader(title: "Heart-rate reserve zones", subtitle: "Time in each zone, as % of heart-rate reserve")
                     ZoneBars(minutes: zones.map { $0.double ?? 0 })
                 }
             }
             Card {
                 SectionHeader(title: "Fitbit zones & Active Zone Minutes")
-                KeyValueRow(key: "Light zone", value: Format.duration(day?.double("zone_light_min")))
+                // Google's LIGHT zone starts at 30 bpm, so it holds all worn time below moderate.
+                KeyValueRow(key: "Light zone (incl. rest/sleep)", value: Format.duration(day?.double("zone_light_min")))
                 KeyValueRow(key: "Moderate zone", value: Format.duration(day?.double("zone_moderate_min")))
                 KeyValueRow(key: "Vigorous zone", value: Format.duration(day?.double("zone_vigorous_min")))
                 KeyValueRow(key: "Peak zone", value: Format.duration(day?.double("zone_peak_min")))
-                KeyValueRow(key: "Active Zone Minutes", value: Format.number(day.flatMap { MetricCatalog.def("azm_total")?.value($0) }))
+                KeyValueRow(key: "Active Zone Minutes", value: azm.formatted(day.flatMap { azm.value($0) }))
             }
             if let hr = detail?.intraday?.hr, hr.contains(where: { $0 != nil }) {
                 Card {
@@ -246,26 +251,45 @@ struct StrainDetailView: View {
 
 struct ZoneBars: View {
     let minutes: [Double]
+    /// Minutes with heart rate under 50 % of reserve (below Z1); nil hides the row.
+    var below: Double? = nil
 
     var body: some View {
         let labels = ["Z1", "Z2", "Z3", "Z4", "Z5"]
+        let ranges = ["50–60%", "60–70%", "70–80%", "80–90%", "90%+"]
         let colors: [Color] = [Theme.stress, Theme.recoveryGreen, Theme.recoveryYellow, Theme.body, Theme.recoveryRed]
-        let maxValue = max(1, minutes.max() ?? 1)
+        let maxValue = max(1, minutes.max() ?? 1, below ?? 0)
         VStack(spacing: 8) {
+            if let below {
+                bar("<50%", range: nil, value: below, color: Theme.tertiary, maxValue: maxValue)
+            }
             ForEach(0..<min(5, minutes.count), id: \.self) { i in
-                HStack {
-                    Text(labels[i]).font(.caption.bold()).frame(width: 26, alignment: .leading)
-                    GeometryReader { geo in
-                        Capsule()
-                            .fill(colors[i])
-                            .frame(width: minutes[i] > 0 ? max(6, geo.size.width * CGFloat(minutes[i] / maxValue)) : 0)
-                    }
-                    .frame(height: 8)
-                    Text(Format.duration(minutes[i]))
-                        .font(.caption.monospacedDigit())
-                        .frame(width: 64, alignment: .trailing)
+                bar(labels[i], range: ranges[i], value: minutes[i], color: colors[i], maxValue: maxValue)
+            }
+        }
+    }
+
+    private func bar(_ label: String, range: String?, value: Double, color: Color, maxValue: Double) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(label).font(.caption.bold())
+                if let range {
+                    Text(range).font(.caption2).foregroundStyle(Theme.tertiary)
                 }
             }
+            .frame(width: 52, alignment: .leading)
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Theme.track)
+                    Capsule()
+                        .fill(color)
+                        .frame(width: value > 0 ? max(6, geo.size.width * CGFloat(value / maxValue)) : 0)
+                }
+            }
+            .frame(height: 8)
+            Text(Format.duration(value))
+                .font(.caption.monospacedDigit())
+                .frame(width: 64, alignment: .trailing)
         }
     }
 }

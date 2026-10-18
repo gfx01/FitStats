@@ -44,8 +44,6 @@ struct TodayView: View {
     private var day: DayRecord? { model.daysByDate[date] }
     private var detail: DayDetail? { model.dayDetails[date] }
 
-    private let grid = [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)]
-
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -366,10 +364,8 @@ struct TodayView: View {
         if !keys.isEmpty {
             Card {
                 SectionHeader(title: "Vitals", subtitle: "Measured overnight, compared with your 30-day average")
-                LazyVGrid(columns: grid, spacing: 10) {
-                    ForEach(keys, id: \.self) { key in
-                        tile(key, day)
-                    }
+                TwoColumnTiles(items: keys) { key in
+                    tile(key, day)
                 }
             }
         }
@@ -391,10 +387,8 @@ struct TodayView: View {
                 .tint(Theme.strain)
             stepsComparison(day)
             if !keys.isEmpty {
-                LazyVGrid(columns: grid, spacing: 10) {
-                    ForEach(keys, id: \.self) { key in
-                        tile(key, day)
-                    }
+                TwoColumnTiles(items: keys) { key in
+                    tile(key, day)
                 }
             }
             if day.bool("low_wear") == true, let wear = day.double("wear_min") {
@@ -583,7 +577,7 @@ struct WorkoutRow: View {
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 3) {
-                Text(Format.duration(exercise.minutes))
+                Text(exercise.durationText)
                     .font(Theme.number(15, weight: .semibold))
                 if let strain = exercise.strain {
                     Text("strain \(Format.number(strain, decimals: 1))").font(.caption2).foregroundStyle(Theme.tertiary)
@@ -602,6 +596,8 @@ struct WorkoutRow: View {
         if let kcal = exercise.calories { parts.append("\(Int(kcal)) kcal") }
         if let m = exercise.distanceM, m > 0 { parts.append(String(format: "%.2f km", m / 1000)) }
         if let azm = exercise.azm, azm > 0 { parts.append("\(Int(azm)) AZM") }
+        // Only an unusual origin is named here; a workout started on a device is the norm.
+        if exercise.recordingMethod != "ACTIVELY_MEASURED", let origin = exercise.originLabel { parts.append(origin) }
         return parts.joined(separator: " · ")
     }
 }
