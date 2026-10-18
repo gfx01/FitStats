@@ -140,6 +140,7 @@ private struct HomeEditorRow: View {
                     .font(.caption)
                     .foregroundStyle(Theme.secondary)
                     .lineLimit(2)
+                    .multilineTextAlignment(.leading) // the add rows are buttons, which centre wrapped text
             }
             Spacer(minLength: 0)
         }
