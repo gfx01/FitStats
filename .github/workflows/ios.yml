@@ -10,6 +10,9 @@ concurrency:
   group: ios-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: macos-15
@@ -65,3 +68,17 @@ jobs:
           name: FitStats-ipa
           path: ios/FitStats.ipa
           retention-days: 30
+
+      # Stable download link: Releases → "FitStats (latest build)".
+      - name: Publish release asset
+        if: github.event_name != 'pull_request'
+        working-directory: ios
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete build-latest --cleanup-tag --yes || true
+          gh release create build-latest FitStats.ipa \
+            --title "FitStats (latest build)" \
+            --notes "Unsigned IPA built from ${GITHUB_REF_NAME} @ ${GITHUB_SHA::7}. Install it with Sideloadly; see SETUP.md." \
+            --prerelease \
+            --target "$GITHUB_SHA"

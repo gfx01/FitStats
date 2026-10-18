@@ -21,7 +21,7 @@ import {
 } from "./lib/sync.ts";
 import { addDays } from "./lib/util.ts";
 
-const VERSION = "1.0.0";
+const VERSION = "1.0.1";
 const APP_SCHEME = "fitstats://";
 const DEFAULT_APP_REDIRECT = "fitstats://connected";
 

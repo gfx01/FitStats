@@ -1,0 +1,132 @@
+# FitStats setup
+
+FitStats turns the data from your Fitbit Air into Recovery, Strain, Sleep and
+Stress scores plus statistics for every metric. It has two parts:
+
+- **Server (Supabase project EFBB).** It signs in to Google Health and pulls new
+  data every 15 minutes, even when your phone is off. It computes the scores
+  and statistics and stores everything in your own database.
+- **iPhone app (installed with Sideloadly).** It shows what the server has
+  computed.
+
+You need to do steps 1–3 once. They take about 15 minutes.
+
+---
+
+## 1. Google Cloud (lets the server read your Google Health data)
+
+1. Create a project at <https://console.cloud.google.com/projectcreate>, for
+   example named "FitStats".
+2. Enable the API: open
+   <https://console.cloud.google.com/apis/library/health.googleapis.com> and
+   click **Enable**.
+3. Open **Google Auth Platform** at <https://console.cloud.google.com/auth/overview>
+   and click **Get started**:
+   - App name: `FitStats`, support email: your email.
+   - Audience: **External**.
+   - Contact email: your email. Then finish and click **Create**.
+4. **Audience → Test users → Add users.** Add the Google account your Fitbit
+   Air uses.
+5. **Data Access → Add or remove scopes.** Filter for `googlehealth` and tick
+   these five scopes, then save:
+   - `.../auth/googlehealth.activity_and_fitness.readonly`
+   - `.../auth/googlehealth.health_metrics_and_measurements.readonly`
+   - `.../auth/googlehealth.sleep.readonly`
+   - `.../auth/googlehealth.profile.readonly`
+   - `.../auth/googlehealth.settings.readonly`
+6. **Clients → Create client:**
+   - Application type: **Web application**.
+   - Name: `FitStats server`.
+   - Authorized redirect URIs → **Add URI**, exactly:
+     `https://zkxnbcrayjwkeyxlungk.supabase.co/functions/v1/fitstats`
+   - Click **Create**, then copy the **Client ID** and **Client secret**.
+
+## 2. Supabase (give the server those two values)
+
+Open <https://supabase.com/dashboard/project/zkxnbcrayjwkeyxlungk/functions/secrets>
+(EFBB project → Edge Functions → Secrets) and add two secrets:
+
+| Name | Value |
+| --- | --- |
+| `GOOGLE_CLIENT_ID` | the Client ID from step 1.6 |
+| `GOOGLE_CLIENT_SECRET` | the Client secret from step 1.6 |
+
+Nothing needs to be redeployed.
+
+## 3. Install the app with Sideloadly
+
+1. Download `FitStats.ipa` from this repository's **Releases** page, under
+   "FitStats (latest build)". Alternatively, take it from **Actions** → latest
+   "iOS build" run → Artifacts → `FitStats-ipa`; that file is a zip containing
+   the ipa.
+2. Install Sideloadly from <https://sideloadly.io> and follow its install notes.
+   On Windows it needs iTunes and iCloud.
+3. Connect your iPhone by USB, drag `FitStats.ipa` into Sideloadly, enter your
+   Apple ID and click **Start**.
+4. On the iPhone:
+   - Turn on Developer Mode: **Settings → Privacy & Security → Developer
+     Mode**. The phone restarts.
+   - Trust the app: **Settings → General → VPN & Device Management** → your
+     Apple ID → **Trust**.
+
+## 4. Connect
+
+1. Open FitStats and tap **Connect Google Health**.
+2. Choose your Google account. Google will warn **"Google hasn't verified this
+   app"**. That's expected because it's your own app, so continue.
+3. Allow **all** requested permissions.
+4. You land back in the app. The server starts importing your history in the
+   background.
+   - Each run imports a few months of history, and runs repeat every 15
+     minutes until the import is done. How fast this goes depends on Google's
+     response times, which I couldn't measure without your account.
+   - Settings shows the progress.
+   - Recovery shows "Calibrating" until there are at least 5 nights of
+     history.
+
+---
+
+## Weekly upkeep (honest version)
+
+- **Apple:** apps installed with a free Apple ID expire after **7 days**.
+  Re-sign them in Sideloadly; your data is kept. Sideloadly can refresh
+  automatically over Wi-Fi while your computer is on.
+- **Google:** while the Google app is in **Testing** mode, Google ends the
+  server's access **7 days** after you signed in. FitStats then shows a
+  **Reconnect** button. Tap it and sign in again; nothing is lost. You can try
+  **Google Auth Platform → Audience → Publish app** to avoid this, but I could
+  not confirm that Google allows unverified personal apps with these Health
+  permissions in production.
+- **Supabase:** free projects pause after a period of inactivity. If the app
+  says it can't reach the server, open the Supabase dashboard and restore
+  the project.
+
+## Troubleshooting
+
+| Message | Fix |
+| --- | --- |
+| "The Google client ID and secret are not set in Supabase yet" | Step 2 is missing or misspelled. |
+| `redirect_uri_mismatch` (Google error page) | The redirect URI in step 1.6 must match exactly, without a trailing slash. |
+| "Access blocked" / `access_denied` | Add your Google account as a test user (step 1.4). |
+| "Some Google Health permissions were not granted" | Reconnect and tick every permission box. |
+| "Google access has expired" | Tap Reconnect (see Weekly upkeep). |
+
+## What is stored, and where
+
+- Your health data and the Google refresh token live in the EFBB Supabase
+  project, in tables starting with `fs_`.
+  - Row-level security is on and the public API roles have no access; only
+    the `fitstats` Edge Function can read them.
+  - Your other tables in that project (`efbb.*`, `apex_*`) are untouched.
+- The app proves who it is with a random key created when you sign in. The key
+  is stored in the iPhone Keychain.
+- **Settings → Delete all synced data** removes everything FitStats stored on
+  the server.
+
+## What the scores are
+
+The scores are FitStats' own, transparent formulas, explained in the app under
+**Settings → How the scores work**. They are not Bevel's or Fitbit's scores
+(both are proprietary) and they are not medical advice. Google Health does
+not provide daytime HRV, so Stress is estimated from your heart rate while
+you are still.
