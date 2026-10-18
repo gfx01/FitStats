@@ -1,0 +1,95 @@
+name: UI screenshots (simulator, fixture data)
+
+on:
+  push:
+    branches: ["claude/**"]
+    paths: ["ios/**", "supabase/tests/**", ".github/workflows/ui-screens.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: ui-screens-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  screens:
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Generate fixtures with the real sync engine
+        run: node --experimental-strip-types --no-warnings supabase/tests/make-fixtures.ts "$RUNNER_TEMP/fixtures"
+
+      - name: Install XcodeGen
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Pick simulator
+        id: sim
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          phones = [d for rt, ds in devices.items() if "iOS" in rt for d in ds if d["name"].startswith("iPhone")]
+          pick = next((d for d in phones if d["name"] == "iPhone 16 Pro"), phones[0] if phones else None)
+          print(pick["udid"] if pick else "")
+          ')
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          xcrun simctl list devices available | grep "$UDID"
+
+      - name: Run screenshot UI test
+        working-directory: ios
+        env:
+          TEST_RUNNER_FITSTATS_FIXTURES: ${{ runner.temp }}/fixtures
+          TEST_RUNNER_SCREENSHOT_DIR: ${{ runner.temp }}/shots
+        run: |
+          mkdir -p "$RUNNER_TEMP/shots"
+          set -o pipefail
+          xcodebuild test \
+            -project FitStats.xcodeproj \
+            -scheme FitStats \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
+            -derivedDataPath build \
+            -resultBundlePath "$RUNNER_TEMP/Test.xcresult" \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee test.log | grep -E "error:|Test Case|Executed|BUILD|TEST (SUCCEEDED|FAILED)" || true
+          grep -q "TEST SUCCEEDED" test.log
+
+      - name: Compiler and test errors
+        if: failure()
+        working-directory: ios
+        run: grep -E "error:|failed" test.log | sort -u | head -120 || true
+
+      - name: Collect screenshots
+        if: always()
+        run: |
+          if [ -z "$(ls -A "$RUNNER_TEMP/shots" 2>/dev/null)" ]; then
+            xcrun xcresulttool export attachments --path "$RUNNER_TEMP/Test.xcresult" --output-path "$RUNNER_TEMP/shots" || true
+          fi
+          ls -la "$RUNNER_TEMP/shots" || true
+
+      - name: Push screenshots to the ci-screenshots branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd "$RUNNER_TEMP/shots" 2>/dev/null || exit 0
+          [ -n "$(ls -A .)" ] || exit 0
+          git init -q -b ci-screenshots
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add -A
+          git commit -qm "Screenshots for ${GITHUB_SHA::7}"
+          git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" ci-screenshots

@@ -20,12 +20,41 @@ final class AppModel: ObservableObject {
     let baseURL: URL
     private let authenticator = WebAuthenticator()
     private var lastRefresh: Date?
+    /// API-shaped JSON used instead of the server for CI screenshots (see supabase/tests/make-fixtures.ts).
+    private let fixtureDir: URL?
 
     init() {
         let configured = Bundle.main.object(forInfoDictionaryKey: "FitStatsServerURL") as? String
         baseURL = URL(string: configured ?? "https://zkxnbcrayjwkeyxlungk.supabase.co/functions/v1/fitstats")!
+        let fixtures = ProcessInfo.processInfo.environment["FITSTATS_FIXTURES"] ?? ""
+        fixtureDir = fixtures.isEmpty ? nil : URL(fileURLWithPath: fixtures)
+        if fixtureDir != nil {
+            appKey = "fixture"
+            loadFixtures()
+            return
+        }
         appKey = KeyStore.read()
         if appKey != nil { loadCache() }
+    }
+
+    private func loadFixtures() {
+        guard let dir = fixtureDir else { return }
+        func load<T: Decodable>(_ type: T.Type, _ name: String) -> T? {
+            do {
+                let data = try Data(contentsOf: dir.appendingPathComponent(name))
+                return try JSONDecoder().decode(T.self, from: data)
+            } catch {
+                errorMessage = "Fixture \(name): \(error)"
+                return nil
+            }
+        }
+        status = load(StatusResponse.self, "status.json")
+        days = load(DaysResponse.self, "days.json")?.days ?? []
+        stats = load(StatsPayload.self, "stats.json")
+        for offset in 0..<7 {
+            let date = Format.addDays(today, -offset)
+            if let detail = load(DayDetail.self, "day-\(date).json") { dayDetails[date] = detail }
+        }
     }
 
     private var api: APIClient? { appKey.map { APIClient(baseURL: baseURL, key: $0) } }
@@ -91,6 +120,7 @@ final class AppModel: ObservableObject {
     // MARK: - Loading
 
     func refreshAll(force: Bool = false) async {
+        if fixtureDir != nil { return }
         guard let api else { return }
         if !force, let last = lastRefresh, Date().timeIntervalSince(last) < 20 { return }
         isRefreshing = true
@@ -117,6 +147,7 @@ final class AppModel: ObservableObject {
 
     @discardableResult
     func loadDay(_ date: String, force: Bool = false) async -> DayDetail? {
+        if fixtureDir != nil { return dayDetails[date] }
         if !force, let cached = dayDetails[date], date != today { return cached }
         guard let api else { return nil }
         do {
@@ -131,7 +162,7 @@ final class AppModel: ObservableObject {
 
     /// Asks the server to sync now, then polls until the run finishes (max ~2.5 min).
     func syncNow() async {
-        guard let api, !isSyncing else { return }
+        guard fixtureDir == nil, let api, !isSyncing else { return }
         isSyncing = true
         defer { isSyncing = false }
         do {

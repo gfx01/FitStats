@@ -43,3 +43,29 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ENABLE_PREVIEWS: NO
+  FitStatsUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: FitStatsUITests
+    dependencies:
+      - target: FitStats
+    settings:
+      base:
+        TEST_TARGET_NAME: FitStats
+        PRODUCT_BUNDLE_IDENTIFIER: com.fitstats.air.k29x.uitests
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  FitStats:
+    build:
+      targets:
+        FitStats: all
+        FitStatsUITests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - FitStatsUITests
+    archive:
+      config: Release

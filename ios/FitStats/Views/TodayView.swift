@@ -154,6 +154,7 @@ struct TodayView: View {
                 }
             }
             .buttonStyle(.plain)
+            .accessibilityIdentifier("ring-recovery")
             Divider().overlay(Theme.track)
             HStack(alignment: .top) {
                 smallRing(.strain(date), "Strain", day.double("strain"), Theme.strain, Theme.strainEnd,
@@ -176,6 +177,7 @@ struct TodayView: View {
                       caption: caption, size: 88, lineWidth: 9, target: target)
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("ring-\(title.lowercased())")
     }
 
     private func recoverySummary(_ day: DayRecord) -> some View {

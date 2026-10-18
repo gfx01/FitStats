@@ -22,6 +22,7 @@ struct TrendsView: View {
                                         MetricRow(def: def)
                                     }
                                     .buttonStyle(.plain)
+                                    .accessibilityIdentifier("metric-\(def.key)")
                                 }
                             }
                         }
