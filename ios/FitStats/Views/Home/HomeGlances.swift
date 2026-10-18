@@ -900,11 +900,12 @@ struct WorkoutsGlance: View {
         }
     }
 
-    /// Strain, average and peak heart rate and zone minutes, the ones recorded.
+    /// Strain, average and peak heart rate and zone minutes, the ones recorded. Without a strain
+    /// the row already shows the average heart rate, so it isn't repeated.
     private func effort(_ x: Exercise) -> some View {
         var stats: [(String, String)] = []
         if let v = x.strain { stats.append(("Strain", Format.number(v, decimals: 1))) }
-        if let v = x.avgHr { stats.append(("Avg HR", "\(Int(v.rounded()))")) }
+        if x.strain != nil, let v = x.avgHr { stats.append(("Avg HR", "\(Int(v.rounded()))")) }
         if let v = x.hrMax { stats.append(("Max HR", "\(Int(v.rounded()))")) }
         if let v = x.azm, v > 0 { stats.append(("Zone min", "\(Int(v.rounded()))")) }
         return HStack(alignment: .top, spacing: 0) {
