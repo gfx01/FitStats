@@ -1,9 +1,8 @@
 name: UI screenshots (simulator, fixture data)
 
+# Manual only (Actions → "UI screenshots" → Run workflow): a run takes 5–6 macOS minutes,
+# which count 10× against a private repository's free Actions minutes.
 on:
-  push:
-    branches: ["claude/**"]
-    paths: ["ios/**", "supabase/tests/**", ".github/workflows/ui-screens.yml"]
   workflow_dispatch:
 
 concurrency:

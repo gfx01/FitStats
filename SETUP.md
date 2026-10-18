@@ -73,7 +73,7 @@ Nothing needs to be redeployed.
 
 1. Download `FitStats.ipa` from this repository's **Releases** page, under
    "FitStats (latest build)":
-   <https://github.com/terebesimihaly-maker/FitBit/releases/tag/build-latest>.
+   <https://github.com/gfx01/fitstats/releases/tag/build-latest>.
    Alternatively, take it from **Actions** → latest "iOS build" run →
    Artifacts → `FitStats-ipa`; that file is a zip containing the ipa.
 2. Install Sideloadly from <https://sideloadly.io> and follow its install notes.
