@@ -15,9 +15,12 @@ struct NapsCard: View {
             HStack(alignment: .firstTextBaseline) {
                 SectionHeader(title: naps.count == 1 ? "Nap" : "Naps", subtitle: "Not part of the sleep score")
                 Spacer(minLength: 8)
-                Text("\(Format.duration(Double(totalAsleep))) asleep")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Theme.sleep)
+                // One nap's row already says it.
+                if naps.count > 1 {
+                    Text("\(Format.duration(Double(totalAsleep))) asleep")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Theme.sleep)
+                }
             }
             ForEach(Array(naps.enumerated()), id: \.element.id) { item in
                 if item.offset > 0 { Divider().overlay(Theme.track) }
