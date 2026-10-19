@@ -1862,7 +1862,8 @@ struct MetricSummary {
     /// tiles compare: only a complete value, never clock times or skin temperature.
     let change: Double?
 
-    init(def: MetricDef, model: AppModel, date: String, days: Int) {
+    /// Reads the model, which lives on the main actor (as every view does).
+    @MainActor init(def: MetricDef, model: AppModel, date: String, days: Int) {
         self.def = def
         self.days = days
         let dates = glanceDates(days, endingOn: date)
