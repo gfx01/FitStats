@@ -57,7 +57,8 @@ final class ScreenshotTests: XCTestCase {
         guard distance > 20 else { return }
         let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
         let end = start.withOffset(CGVector(dx: 0, dy: -Swift.min(distance, window.height * 0.6)))
-        start.press(forDuration: 0.1, thenDragTo: end)
+        // Held still before lifting, so the page doesn't fling past the element.
+        start.press(forDuration: 0.1, thenDragTo: end, withVelocity: .default, thenHoldForDuration: 0.4)
     }
 
     /// Scrolls until `element` is on screen: up first, then back down.
@@ -67,17 +68,13 @@ final class ScreenshotTests: XCTestCase {
         if onScreen(app, element) { reveal(app, element) }
     }
 
-    /// Hittable, or (a Home card in edit mode, whose touches a UIKit view behind its content
-    /// takes) its middle is between the navigation bar and the tab bar. A card that is on screen
-    /// but not hittable is noted in the log.
+    /// Its middle is between the navigation bar and the tab bar (isHittable also holds for an
+    /// element mostly under the navigation bar, where a press opens Notification Center).
     private func onScreen(_ app: XCUIApplication, _ element: XCUIElement) -> Bool {
         guard element.exists else { return false }
-        if element.isHittable { return true }
         let window = app.windows.firstMatch.frame
         let f = element.frame
-        let visible = !f.isEmpty && f.midY > window.minY + 120 && f.midY < window.maxY - 120
-        if visible { print("note: \(element.identifier) is on screen but not hittable (failed hit test)") }
-        return visible
+        return !f.isEmpty && f.midY > window.minY + 120 && f.midY < window.maxY - 120
     }
 
     private func middle(_ element: XCUIElement, dy: CGFloat = 0.5) -> XCUICoordinate {
