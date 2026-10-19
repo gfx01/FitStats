@@ -3,6 +3,8 @@ import SwiftUI
 struct Card<Content: View>: View {
     var padding: CGFloat = 16
     @ViewBuilder var content: () -> Content
+    /// Drawn inside a Home card's resize frame, which has the background already.
+    @Environment(\.homeCardBare) private var bare
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -11,10 +13,10 @@ struct Card<Content: View>: View {
         .padding(padding)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 22, style: .continuous).fill(Theme.card)
+            RoundedRectangle(cornerRadius: 22, style: .continuous).fill(bare ? Color.clear : Theme.card)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(Theme.cardBorder, lineWidth: 1)
+            RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(bare ? Color.clear : Theme.cardBorder, lineWidth: 1)
         )
     }
 }

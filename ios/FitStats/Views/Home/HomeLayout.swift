@@ -477,6 +477,21 @@ extension HomeLayout {
     }
 }
 
+/// The last configuration decoded from its stored JSON, kept until that JSON changes. Today
+/// reads it many times per update, and every frame while a card follows the finger.
+final class HomeConfigCache {
+    private var raw: String?
+    private var value: HomeConfig?
+
+    func config(from stored: String) -> HomeConfig {
+        if stored == raw, let value { return value }
+        let decoded = HomeLayout.config(from: stored)
+        raw = stored
+        value = decoded
+        return decoded
+    }
+}
+
 /// The server's copy of the Home configuration (route "home").
 struct HomeLayoutResponse: Decodable {
     let layout: HomeConfig?

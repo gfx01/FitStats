@@ -1,6 +1,5 @@
 import Combine
 import SwiftUI
-import UniformTypeIdentifiers
 
 enum DetailRoute: Hashable {
     case recovery(String)
@@ -54,14 +53,24 @@ struct TodayView: View {
     /// Edit mode, like the iOS Home Screen: the cards wobble and can be moved, resized, removed
     /// and added in place.
     @State private var editing = false
-    /// The card being dragged while editing (its id).
-    @State private var dragging: String?
-    /// Where it hovers, and the card it would stack with if dropped now.
-    @State private var hover: HomeHover?
+    /// The card being moved while editing: lifted by a short hold, it follows the finger.
+    @State private var moving: HomeMove?
+    /// Every card's frame on screen while one is moving (HomeCellFrameKey).
+    @State private var cellFrames: [String: CGRect] = [:]
+    /// Where the moved card rests now; acting on it needs a short rest (zoneToken).
+    @State private var moveZone: HomeZone?
+    @State private var zoneToken = 0
+    /// The card the moved one would stack with if let go now.
     @State private var stackTarget: String?
-    @State private var lastDragActivity = Date.distantPast
-    /// The card whose resize outline is up, drawn above the others.
-    @State private var resizingID: String?
+    /// The scroll view on screen, to scroll while a card is held near its top or bottom.
+    @State private var scrollFrame: CGRect = .zero
+    /// -1 scrolling up, 1 down, 0 still.
+    @State private var autoscroll = 0
+    @State private var moveHaptic = 0
+    /// The card being resized, stretched under the finger above everything.
+    @State private var resizing: HomeResize?
+    /// The decoded configuration, so reading it while a card follows the finger stays cheap.
+    @State private var configCache = HomeConfigCache()
     /// The card whose settings sheet is open.
     @State private var settingsItem: HomeItem?
     @State private var editHaptic = 0
@@ -85,13 +94,18 @@ struct TodayView: View {
                             emptyState
                         }
                         HomeGridLayout(columnSpacing: 12, rowSpacing: 14) {
+                            let right = rightColumn
                             ForEach(gridItems) { item in
-                                cell(item)
-                                    .zIndex(resizingID == item.id ? 1 : 0)
+                                cell(item, inRightColumn: right.contains(item.id))
+                                    .id(item.id)
                                     .layoutValue(key: HomeCardSizeKey.self, value: item.size)
                             }
                         }
-                        .onDrop(of: [UTType.text], delegate: HomeDropEndDelegate(dragging: $dragging, hover: $hover, stackTarget: $stackTarget))
+                        .onPreferenceChange(HomeCellFrameKey.self) { frames in
+                            cellFrames = frames
+                            adoptGrab()
+                            evaluateMove()
+                        }
                         if editing {
                             HomeAddSection(date: date, shown: items, isDefault: items == HomeLayout.defaultItems,
                                            canShow: isVisible, onAdd: add, onReset: reset)
@@ -105,7 +119,19 @@ struct TodayView: View {
                     .padding(.top, editing ? 8 : 0)
                     .padding(.bottom, 32)
                     .sensoryFeedback(.impact(weight: .medium), trigger: editHaptic)
+                    .sensoryFeedback(.selection, trigger: moveHaptic)
                 }
+                .scrollDisabled(moving != nil)
+                .background {
+                    GeometryReader { geo in
+                        Color.clear
+                            .onAppear { scrollFrame = geo.frame(in: .global) }
+                            .onChange(of: geo.frame(in: .global)) { _, frame in scrollFrame = frame }
+                    }
+                }
+                .overlay { movingCard }
+                .overlay { resizingCard }
+                .task(id: autoscroll) { await runAutoscroll(proxy) }
                 .refreshable {
                     await model.pullToRefresh()
                     await model.loadDay(date, force: true)
@@ -125,7 +151,6 @@ struct TodayView: View {
                     HomeTimesSheet(config: configBinding)
                 }
                 .onReceive(Self.minuteTicker) { now = $0 }
-                .task(id: dragging) { await clearCancelledDrag() }
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active { now = Date() }
                 }
@@ -158,7 +183,7 @@ struct TodayView: View {
     /// The hint, and with time-of-day layouts on, which one is being edited.
     private var editHeader: some View {
         VStack(spacing: 10) {
-            Text("Tap a card for its settings. Hold and drag to move it, or drop it on another card's middle to stack them. Drag the corner handle to resize.")
+            Text("Tap a card for its settings. Hold a card, then drag it to move it, or rest it on the middle of a card the same size to stack them. Drag the corner handle to resize.")
                 .font(.caption)
                 .foregroundStyle(Theme.secondary)
                 .multilineTextAlignment(.center)
@@ -206,7 +231,7 @@ struct TodayView: View {
     // MARK: home cards
 
     private var config: HomeConfig {
-        fixtureConfig ?? HomeLayout.config(from: storedConfig)
+        fixtureConfig ?? configCache.config(from: storedConfig)
     }
 
     /// Saves Home, stamped with the time of the edit (the newer copy wins on the server).
@@ -266,6 +291,22 @@ struct TodayView: View {
         )
     }
 
+    /// The right cards of the pairs of small cards, by HomeGridLayout's rule. While editing every
+    /// card draws, so none is skipped.
+    private var rightColumn: Set<String> {
+        var right = Set<String>()
+        var leftOpen = false
+        for item in gridItems {
+            if item.size == .small {
+                if leftOpen { right.insert(item.id) }
+                leftOpen.toggle()
+            } else {
+                leftOpen = false
+            }
+        }
+        return right
+    }
+
     /// The cards Today draws for this day, so a skipped card never leaves an empty cell behind.
     private var visibleItems: [HomeItem] {
         items.filter(isVisible)
@@ -312,33 +353,31 @@ struct TodayView: View {
     /// One cell of the grid. Holding a card for a moment starts editing: the long press is high
     /// priority so it wins over the links inside, but it fails as soon as the finger lifts or
     /// moves, so taps still reach those links and the page still scrolls.
-    @ViewBuilder private func cell(_ item: HomeItem) -> some View {
+    @ViewBuilder private func cell(_ item: HomeItem, inRightColumn: Bool) -> some View {
         if editing {
             HomeEditCell(
                 item: item,
                 seed: item.id.unicodeScalars.reduce(0) { $0 + Int($1.value) },
                 canRemove: items.count > 1,
-                isDragged: dragging == item.id,
+                inRightColumn: inRightColumn,
+                isMoving: moving?.id == item.id && moving?.tracking == true && cellFrames[item.id] != nil,
+                isResizing: resizing?.id == item.id,
                 isStackTarget: stackTarget == item.id,
                 onRemove: { remove(item.id) },
                 onResize: { resize(item.id, to: $0) },
                 onMove: { move(item.id, by: $0) },
                 onEdit: { settingsItem = item },
-                onResizing: { on in resizingID = on ? item.id : nil },
-                onDragStart: {
-                    dragging = item.id
-                    hover = nil
-                    stackTarget = nil
-                    lastDragActivity = Date()
-                    return NSItemProvider(object: item.id as NSString)
-                },
-                makeDrop: { size in
-                    HomeDropDelegate(target: item.id, size: size, items: layout, dragging: $dragging,
-                                     hover: $hover, stackTarget: $stackTarget, lastDragActivity: $lastDragActivity,
-                                     onStack: stack)
-                }
+                onResizing: { resizeChanged(item.id, $0) },
+                onDrag: { event in handleDrag(item.id, event) }
             ) { size in
                 cellContent(item, size: size)
+            }
+            .background {
+                if moving != nil || resizing != nil {
+                    GeometryReader { geo in
+                        Color.clear.preference(key: HomeCellFrameKey.self, value: [item.id: geo.frame(in: .global)])
+                    }
+                }
             }
             .accessibilityIdentifier("home-card-\(item.id)")
         } else {
@@ -352,7 +391,7 @@ struct TodayView: View {
         }
     }
 
-    /// The card at `size`: its own, or the size a resize outline previews.
+    /// The card at `size`.
     @ViewBuilder private func cellContent(_ item: HomeItem, size: CardSize) -> some View {
         if !isVisible(item) {
             HomeCardPlaceholder(card: item.card, title: item.title, size: size, reason: hiddenReason(item.card))
@@ -367,7 +406,7 @@ struct TodayView: View {
 
     private func startEditing() {
         editHaptic += 1
-        dragging = nil
+        moving = nil
         editingPage = config.page(at: now)
         withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
             selected = nil
@@ -378,24 +417,222 @@ struct TodayView: View {
     private func finishEditing() {
         withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
             editing = false
-            dragging = nil
-            hover = nil
+            moving = nil
+            resizing = nil
+            moveZone = nil
             stackTarget = nil
         }
     }
 
-    /// SwiftUI doesn't say when a drag ends without a drop (released over the toolbar, or
-    /// cancelled), which would leave the card faded. While a drag is on, drop targets report in
-    /// as the finger moves; two quiet seconds mean it's over.
-    private func clearCancelledDrag() async {
-        while dragging != nil {
-            try? await Task.sleep(nanoseconds: 500_000_000)
-            if Task.isCancelled { return }
-            if Date().timeIntervalSince(lastDragActivity) > 2 {
-                dragging = nil
-                hover = nil
-                stackTarget = nil
+    // MARK: moving cards
+
+    /// The moved card, drawn above everything at the finger (or gliding into its slot after it
+    /// is let go). Its own cell shows an empty outline meanwhile.
+    @ViewBuilder private var movingCard: some View {
+        if let m = moving, m.tracking, let item = items.first(where: { $0.id == m.id }), let slot = cellFrames[m.id] {
+            GeometryReader { geo in
+                let origin = geo.frame(in: .global).origin
+                let grab = m.grab ?? CGSize(width: slot.width / 2, height: slot.height / 2)
+                let topLeft = m.landing ? slot.origin : CGPoint(x: m.finger.x - grab.width, y: m.finger.y - grab.height)
+                cellContent(item, size: item.size)
+                    .frame(width: slot.width)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .environment(\.homeCardPreview, true)
+                    .scaleEffect(m.landing ? 1 : 1.05)
+                    .shadow(color: .black.opacity(m.landing ? 0 : 0.5), radius: 18, y: 10)
+                    .position(x: topLeft.x - origin.x + slot.width / 2, y: topLeft.y - origin.y + slot.height / 2)
             }
+            .allowsHitTesting(false)
+        }
+    }
+
+    /// The card being resized, stretched under the finger above everything (or gliding into
+    /// its new slot once let go). Its own cell stays empty meanwhile.
+    @ViewBuilder private var resizingCard: some View {
+        if let r = resizing, let item = items.first(where: { $0.id == r.id }) {
+            let rect = r.settling ? (cellFrames[r.id] ?? r.rect) : r.rect
+            GeometryReader { geo in
+                let origin = geo.frame(in: .global).origin
+                HomeStretchedCard(size: rect.size, leftward: r.leftward, settling: r.settling) {
+                    cellContent(item, size: item.size)
+                }
+                .position(x: rect.midX - origin.x, y: rect.midY - origin.y)
+            }
+            .allowsHitTesting(false)
+        }
+    }
+
+    private func resizeChanged(_ id: String, _ stretch: HomeResize?) {
+        if let stretch {
+            resizing = stretch
+            return
+        }
+        guard var r = resizing, r.id == id, !r.settling else { return }
+        r.settling = true
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) { resizing = r }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 330_000_000)
+            if resizing?.id == id, resizing?.settling == true { resizing = nil }
+        }
+    }
+
+    private func handleDrag(_ id: String, _ event: HomeDragEvent) {
+        switch event {
+        case .lifted:
+            beginMove(id)
+        case .moved(let start, let location):
+            beginMove(id)
+            guard var m = moving, m.id == id, !m.landing else { return }
+            if m.start == nil { m.start = start }
+            m.finger = location
+            m.tracking = true
+            if m.grab == nil, let frame = cellFrames[id] {
+                m.grab = CGSize(width: start.x - frame.minX, height: start.y - frame.minY)
+            }
+            moving = m
+            evaluateMove()
+            updateAutoscroll(location)
+        case .ended:
+            endMove(id)
+        }
+    }
+
+    private func beginMove(_ id: String) {
+        guard moving == nil, editing else { return }
+        moving = HomeMove(id: id)
+        moveZone = nil
+        stackTarget = nil
+        editHaptic += 1
+    }
+
+    /// The finger's spot on the card, once the card's frame is known.
+    private func adoptGrab() {
+        guard var m = moving, m.grab == nil, let start = m.start, let frame = cellFrames[m.id] else { return }
+        m.grab = CGSize(width: start.x - frame.minX, height: start.y - frame.minY)
+        moving = m
+    }
+
+    /// Which card the finger is over, and whether over its middle (stack) or which half (move
+    /// before or after it). Beside a lone small card, in the empty half of its row, counts as
+    /// next to it, and below the last card as after it.
+    private func evaluateMove() {
+        guard let m = moving, m.tracking, !m.landing, let moved = items.first(where: { $0.id == m.id }) else { return }
+        let p = m.finger
+        let others = cellFrames.filter { $0.key != m.id }
+        if let hit = others.first(where: { $0.value.contains(p) }) {
+            setZone(zone(p, over: hit.key, hit.value, moving: moved, others: others))
+        } else if let beside = others.filter({ $0.value.minY <= p.y && p.y <= $0.value.maxY })
+                    .min(by: { abs($0.value.midX - p.x) < abs($1.value.midX - p.x) }) {
+            setZone(zone(p, over: beside.key, beside.value, moving: moved, others: others))
+        } else if let last = gridItems.last(where: { $0.id != m.id }), let frame = cellFrames[last.id],
+                  p.y > frame.maxY, p.y < frame.maxY + 160 {
+            setZone(HomeZone(target: last.id, middle: false, after: true))
+        } else {
+            setZone(nil)
+        }
+    }
+
+    /// Before or after the card under the finger by which half it's in (sideways for two small
+    /// cards). A wide card held over a pair of small ones goes before or after the whole pair.
+    private func zone(_ p: CGPoint, over id: String, _ frame: CGRect, moving: HomeItem, others: [String: CGRect]) -> HomeZone {
+        let target = items.first { $0.id == id }
+        let stackable = target.map { canStack(moving, onto: $0) } ?? false
+        let middle = stackable && frame.insetBy(dx: frame.width * 0.25, dy: frame.height * 0.25).contains(p)
+        guard target?.size == .small else {
+            return HomeZone(target: id, middle: middle, after: p.y > frame.midY)
+        }
+        guard moving.size != .small else {
+            return HomeZone(target: id, middle: middle, after: p.x > frame.midX)
+        }
+        let after = p.y > frame.midY
+        let row = others.filter { abs($0.value.midY - frame.midY) < 1 }
+        let end = after ? row.max(by: { $0.value.minX < $1.value.minX }) : row.min(by: { $0.value.minX < $1.value.minX })
+        return HomeZone(target: end?.key ?? id, middle: middle, after: after)
+    }
+
+    /// Like iOS, a card stacks only with one of its own size (and stacks are small or medium), so
+    /// moving a card past others of another size never stops to offer a stack.
+    private func canStack(_ moving: HomeItem, onto target: HomeItem) -> Bool {
+        moving.card != .stack && moving.size == target.size && target.size != .large
+    }
+
+    /// Resting near a card's edge for a moment moves the card there; resting on its middle a
+    /// little longer offers a stack. Passing over cards quickly does neither.
+    private func setZone(_ zone: HomeZone?) {
+        guard zone != moveZone else { return }
+        moveZone = zone
+        zoneToken += 1
+        if let target = stackTarget, zone?.target != target || zone?.middle != true { stackTarget = nil }
+        guard let zone else { return }
+        let token = zoneToken
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: zone.middle ? 450_000_000 : 180_000_000)
+            guard token == zoneToken, let m = moving, !m.landing else { return }
+            if zone.middle {
+                stackTarget = zone.target
+            } else {
+                reorder(m.id, beside: zone)
+            }
+        }
+    }
+
+    private func reorder(_ id: String, beside zone: HomeZone) {
+        var list = items
+        guard let from = list.firstIndex(where: { $0.id == id }) else { return }
+        let item = list.remove(at: from)
+        guard var to = list.firstIndex(where: { $0.id == zone.target }) else { return }
+        if zone.after { to += 1 }
+        list.insert(item, at: min(to, list.count))
+        guard list.map(\.id) != items.map(\.id) else { return }
+        moveHaptic += 1
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { layout.wrappedValue = list }
+    }
+
+    /// Let go: onto a highlighted card it stacks, otherwise it glides into its slot.
+    private func endMove(_ id: String) {
+        guard var m = moving, m.id == id, !m.landing else { return }
+        autoscroll = 0
+        if let target = stackTarget, m.tracking {
+            moving = nil
+            moveZone = nil
+            stackTarget = nil
+            stack(id, onto: target)
+            return
+        }
+        guard m.tracking else {
+            moving = nil
+            return
+        }
+        m.landing = true
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) { moving = m }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            if moving?.id == id { moving = nil }
+            moveZone = nil
+            stackTarget = nil
+        }
+    }
+
+    private func updateAutoscroll(_ p: CGPoint) {
+        let edge: CGFloat = 100
+        let direction = p.y < scrollFrame.minY + edge ? -1 : (p.y > scrollFrame.maxY - edge ? 1 : 0)
+        if direction != autoscroll { autoscroll = direction }
+    }
+
+    /// While a card is held near the top or bottom, the page scrolls a card at a time.
+    private func runAutoscroll(_ proxy: ScrollViewProxy) async {
+        while autoscroll != 0, moving != nil {
+            let ids = gridItems.map(\.id)
+            if autoscroll > 0 {
+                if let next = ids.first(where: { (cellFrames[$0]?.maxY ?? 0) > scrollFrame.maxY + 1 }) {
+                    withAnimation(.easeInOut(duration: 0.3)) { proxy.scrollTo(next, anchor: .bottom) }
+                }
+            } else if let previous = ids.last(where: { (cellFrames[$0]?.minY ?? .infinity) < scrollFrame.minY - 1 }) {
+                withAnimation(.easeInOut(duration: 0.3)) { proxy.scrollTo(previous, anchor: .top) }
+            }
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            if Task.isCancelled { return }
+            evaluateMove()
         }
     }
 

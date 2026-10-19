@@ -236,6 +236,20 @@ final class ScreenshotTests: XCTestCase {
         } else {
             XCTFail("missing home-resize-tonight")
         }
+        // Holding Vitals and dragging it onto the lower part of Activity moves it below Activity.
+        let vitals = element(app, "home-card-vitals")
+        let activity = element(app, "home-card-activity")
+        scrollTo(app, vitals)
+        if vitals.exists, activity.exists, vitals.isHittable, activity.isHittable {
+            let from = vitals.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            let to = activity.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.88))
+            from.press(forDuration: 0.6, thenDragTo: to, withVelocity: .default, thenHoldForDuration: 0.8)
+            sleep(1)
+            shot("70-home-reordered")
+            XCTAssertGreaterThan(vitals.frame.minY, activity.frame.minY, "Vitals did not move below Activity")
+        } else {
+            XCTFail("vitals or activity not reachable for reordering")
+        }
         // Tapping a card while editing opens its settings: the Metric card switches to HRV.
         let metric = element(app, "home-card-metric-fixture")
         scrollTo(app, metric)

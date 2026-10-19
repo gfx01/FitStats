@@ -1,5 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 /// The size each Home grid cell asks for (set with `.layoutValue(key:value:)`).
 struct HomeCardSizeKey: LayoutValueKey {
@@ -12,11 +11,65 @@ private struct HomeCardPreviewKey: EnvironmentKey {
     static let defaultValue = false
 }
 
+/// True while a card is drawn inside the frame that stretches under a resize drag: that frame
+/// draws the card's background, so the card skips its own (two translucent layers would show).
+private struct HomeCardBareKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
 extension EnvironmentValues {
     var homeCardPreview: Bool {
         get { self[HomeCardPreviewKey.self] }
         set { self[HomeCardPreviewKey.self] = newValue }
     }
+
+    var homeCardBare: Bool {
+        get { self[HomeCardBareKey.self] }
+        set { self[HomeCardBareKey.self] = newValue }
+    }
+}
+
+/// Each card's frame on screen, reported while a card is being moved.
+struct HomeCellFrameKey: PreferenceKey {
+    static let defaultValue: [String: CGRect] = [:]
+
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue()) { $1 }
+    }
+}
+
+/// The card being moved in edit mode (TodayView).
+struct HomeMove: Equatable {
+    let id: String
+    /// Where the finger went down and where it is now, on screen.
+    var start: CGPoint?
+    var finger: CGPoint = .zero
+    /// Where the finger holds the card, from its top-left corner.
+    var grab: CGSize?
+    /// The finger has moved since the lift, so `finger` is real.
+    var tracking = false
+    /// Let go: the card glides into its slot.
+    var landing = false
+
+    init(id: String) {
+        self.id = id
+    }
+}
+
+/// The card a moved card rests on, and where: its middle (to stack) or nearer an edge (to go
+/// before or after it).
+struct HomeZone: Equatable {
+    let target: String
+    let middle: Bool
+    let after: Bool
+}
+
+/// A card being moved in edit mode: lifted after a short hold, then following the finger.
+enum HomeDragEvent {
+    case lifted
+    /// Screen coordinates: where the finger went down and where it is now.
+    case moved(start: CGPoint, location: CGPoint)
+    case ended
 }
 
 /// Lays Home cards out like iOS widgets: a small card takes half the width and sits next to the
@@ -109,35 +162,52 @@ struct Jiggle: ViewModifier {
 }
 
 /// A Home card in edit mode: it wobbles, can't be tapped through, has a remove button on its
-/// top-left corner and a resize handle on its bottom-right one. Tapping it opens its settings;
-/// holding it and dragging moves it, and dropping it on the middle of another card stacks the
-/// two (system drag and drop, see HomeDropDelegate).
+/// top-left corner and a resize handle on its bottom corner (the left one for the right card of
+/// a small pair, so it can grow into the row). Tapping it opens its settings. Holding it for a
+/// moment lifts it, and it then follows the finger (TodayView moves the others out of the way,
+/// or stacks it on the card whose middle it rests on).
 ///
-/// Resizing works like iOS widgets: while the handle is dragged an outline follows the finger
-/// (from small up to the large footprint) showing the card at the size it will take, and the
-/// card snaps to that size when the finger lifts.
+/// Resizing works like iOS widgets: the whole card stretches under the finger dragging the
+/// handle, between the small and the large footprint, drawn at the size it will take while the
+/// cards around it make room, and it settles into that size when the finger lifts. TodayView
+/// draws the stretched card (HomeStretchedCard) above everything, so it stays under the finger
+/// when its slot moves to another row.
 struct HomeEditCell<Content: View>: View {
     let item: HomeItem
     let seed: Int
     let canRemove: Bool
-    let isDragged: Bool
-    /// A dragged card hovers over this one's middle: dropping it makes a stack.
+    /// The right card of a pair of small ones.
+    let inRightColumn: Bool
+    /// This card is the one being moved: its slot shows as an empty outline.
+    let isMoving: Bool
+    /// This card is being resized: TodayView draws it stretched, so its slot stays empty.
+    let isResizing: Bool
+    /// A moved card rests on this one's middle: letting go makes a stack.
     let isStackTarget: Bool
     var onRemove: () -> Void
     var onResize: (CardSize) -> Void
     var onMove: (Int) -> Void
     var onEdit: () -> Void
-    /// True while the resize outline is up, so Today can draw this card above its neighbours.
-    var onResizing: (Bool) -> Void
-    var onDragStart: () -> NSItemProvider
-    /// The drop target for this card, given its size (to tell its middle from its edges).
-    var makeDrop: (CGSize) -> HomeDropDelegate
-    /// The card at a size: its own, or the one the resize outline previews.
+    /// The stretched card while the handle is dragged; nil once it's let go.
+    var onResizing: (HomeResize?) -> Void
+    var onDrag: (HomeDragEvent) -> Void
+    /// The card at a size.
     @ViewBuilder var content: (CardSize) -> Content
 
-    /// How far the resize handle has been dragged; nil when it isn't (also after a cancelled drag).
-    @GestureState private var resizeDrag: CGSize? = nil
-    @State private var cellSize: CGSize = .zero
+    /// The card's frame on screen when the resize began, and the bounds it can stretch to.
+    private struct ResizeBase {
+        let start: CGRect
+        let fullWidth: CGFloat
+        let largeHeight: CGFloat
+        let leftward: Bool
+    }
+
+    /// The handle is being dragged; the card's frame on screen comes with the next layout.
+    @State private var resizeStarted = false
+    @State private var resizeBase: ResizeBase?
+    @State private var resizeTranslation: CGSize = .zero
+    @GestureState private var resizeGesture: CGSize? = nil
+    @GestureState private var moveGesture = false
 
     // Computed: a generic type can't have static stored properties. Same as HomeGridLayout.
     private static var columnSpacing: CGFloat { 12 }
@@ -146,41 +216,46 @@ struct HomeEditCell<Content: View>: View {
     var body: some View {
         content(item.size)
             .allowsHitTesting(false)
-            // Catches touches over the whole card: a tap opens its settings, holding anywhere
-            // on it starts a drag.
+            .opacity(isMoving || isResizing ? 0 : 1)
+            .overlay {
+                if isMoving { movingSlot }
+            }
+            // Catches touches over the whole card: a tap opens its settings, a short hold lifts it.
             .overlay {
                 Color.white.opacity(0.001)
-                    .onTapGesture { onEdit() }
-            }
-            .background {
-                GeometryReader { geo in
-                    Color.clear
-                        .onAppear { cellSize = geo.size }
-                        .onChange(of: geo.size) { _, size in cellSize = size }
-                }
+                    .gesture(liftAndMove.exclusively(before: TapGesture().onEnded { onEdit() }))
             }
             .overlay(alignment: .topLeading) {
-                if let resizeDrag { outline(resizeDrag) }
+                if canRemove && !isResizing && !isMoving { removeButton }
             }
-            .overlay(alignment: .topLeading) {
-                if canRemove && resizeDrag == nil { removeButton }
+            // Always in the view tree while resizing: removing it would cancel the drag it carries.
+            .overlay(alignment: handleLeading ? .bottomLeading : .bottomTrailing) {
+                if !isMoving { resizeHandle }
             }
-            // Always in the view tree: removing it would cancel the drag it carries.
-            .overlay(alignment: .bottomTrailing) { resizeHandle }
             .overlay {
                 if isStackTarget { stackHighlight }
             }
-            .opacity(isDragged ? 0.35 : 1)
             .scaleEffect(isStackTarget ? 1.04 : 1)
             .animation(.spring(response: 0.25, dampingFraction: 0.8), value: isStackTarget)
-            .modifier(Jiggle(amplitude: amplitude, seed: seed, active: resizeDrag == nil && !isStackTarget))
-            .onDrag(onDragStart)
-            .onDrop(of: [UTType.text], delegate: makeDrop(cellSize))
-            .sensoryFeedback(.impact(weight: .light), trigger: isStackTarget)
+            .modifier(Jiggle(amplitude: amplitude, seed: seed,
+                             active: !resizeStarted && !isResizing && !isStackTarget && !isMoving))
+            // Outside the wobble, so the frame on screen is the slot's, not a tilted one.
+            .background {
+                GeometryReader { geo in
+                    Color.clear
+                        .onChange(of: resizeStarted) { _, started in
+                            if started { beginResize(at: geo.frame(in: .global)) }
+                        }
+                }
+            }
             .sensoryFeedback(.selection, trigger: item.size)
-            .sensoryFeedback(.selection, trigger: resizeDrag.map(target))
-            .onChange(of: resizeDrag) { old, new in
-                if (old == nil) != (new == nil) { onResizing(new != nil) }
+            .sensoryFeedback(.impact(weight: .light), trigger: isStackTarget)
+            .onChange(of: resizeGesture) { _, now in
+                // A cancelled drag never calls onEnded.
+                if now == nil { endResize() }
+            }
+            .onChange(of: moveGesture) { _, now in
+                if !now { onDrag(.ended) }
             }
             .accessibilityElement(children: .contain)
             .accessibilityLabel(Text("\(item.title), \(item.size.label)"))
@@ -205,66 +280,30 @@ struct HomeEditCell<Content: View>: View {
         }
     }
 
-    // MARK: resize geometry
+    // MARK: moving
 
-    /// The full row width: a small card is half of it.
-    private var fullWidth: CGFloat {
-        item.size == .small ? cellSize.width * 2 + Self.columnSpacing : cellSize.width
+    /// Hold for a moment, then drag. A quick swipe fails the hold, so the page still scrolls.
+    private var liftAndMove: some Gesture {
+        LongPressGesture(minimumDuration: 0.2)
+            .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .global))
+            .updating($moveGesture) { value, state, _ in
+                if case .second(true, _) = value { state = true }
+            }
+            .onChanged { value in
+                guard case .second(true, let drag) = value else { return }
+                if let drag {
+                    onDrag(.moved(start: drag.startLocation, location: drag.location))
+                } else {
+                    onDrag(.lifted)
+                }
+            }
+            .onEnded { _ in onDrag(.ended) }
     }
 
-    private var smallWidth: CGFloat { max(0, (fullWidth - Self.columnSpacing) / 2) }
-
-    /// The tallest the outline goes: two glance rows, or the large card's own height if taller.
-    private var largeHeight: CGFloat {
-        let twoRows = 2 * HomeGlanceMetrics.height + Self.rowSpacing
-        return item.size == .large ? max(twoRows, cellSize.height) : twoRows
-    }
-
-    private func outlineSize(_ t: CGSize) -> CGSize {
-        let w = min(max(cellSize.width + t.width, smallWidth), fullWidth)
-        let maxH = item.card.sizes.contains(.large) ? largeHeight : HomeGlanceMetrics.height
-        let h = min(max(cellSize.height + t.height, min(HomeGlanceMetrics.height, cellSize.height)), maxH)
-        return CGSize(width: w, height: h)
-    }
-
-    /// The size the card takes when the finger lifts: past halfway between two footprints it
-    /// takes the bigger one. A one-column card can't be tall, so narrow means small.
-    private func target(_ t: CGSize) -> CardSize {
-        let o = outlineSize(t)
-        let wide = o.width > (smallWidth + fullWidth) / 2
-        let tall = o.height > (HomeGlanceMetrics.height + largeHeight) / 2
-        let size: CardSize = !wide ? .small : (tall ? .large : .medium)
-        return item.card.sizes.contains(size) ? size : .medium
-    }
-
-    private func footprintWidth(_ size: CardSize) -> CGFloat {
-        size == .small ? smallWidth : fullWidth
-    }
-
-    /// The outline under the finger, with the card drawn at the size it will take.
-    private func outline(_ t: CGSize) -> some View {
-        let o = outlineSize(t)
-        let size = target(t)
-        let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
-        return ZStack(alignment: .topLeading) {
-            shape.fill(Theme.background)
-            content(size)
-                .frame(width: footprintWidth(size), alignment: .topLeading)
-                .fixedSize(horizontal: false, vertical: true)
-                .environment(\.homeCardPreview, true)
-            shape.strokeBorder(Color.white.opacity(0.85), lineWidth: 2)
-            Text(size.label)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.black)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(Capsule().fill(.white))
-                .shadow(color: .black.opacity(0.4), radius: 6)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .frame(width: o.width, height: o.height, alignment: .topLeading)
-        .clipShape(shape)
-        .allowsHitTesting(false)
+    private var movingSlot: some View {
+        RoundedRectangle(cornerRadius: 22, style: .continuous)
+            .strokeBorder(Color.white.opacity(0.28), style: StrokeStyle(lineWidth: 1.5, dash: [6, 5]))
+            .allowsHitTesting(false)
     }
 
     private var stackHighlight: some View {
@@ -272,7 +311,7 @@ struct HomeEditCell<Content: View>: View {
             .strokeBorder(Color.white, lineWidth: 3)
             .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(Color.white.opacity(0.08)))
             .overlay {
-                Label("Drop to stack", systemImage: HomeCard.stack.icon)
+                Label("Release to stack", systemImage: HomeCard.stack.icon)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.black)
                     .padding(.horizontal, 12)
@@ -280,6 +319,69 @@ struct HomeEditCell<Content: View>: View {
                     .background(Capsule().fill(.white))
             }
             .allowsHitTesting(false)
+    }
+
+    // MARK: resizing
+
+    /// The handle's corner, kept while a resize is going even if the card changes column.
+    private var handleLeading: Bool {
+        resizeBase?.leftward ?? (item.size == .small && inRightColumn)
+    }
+
+    private func resizeChanged(_ t: CGSize) {
+        resizeTranslation = t
+        guard let base = resizeBase else {
+            // The frame on screen arrives with the next layout (beginResize).
+            if !resizeStarted { resizeStarted = true }
+            return
+        }
+        report(base)
+    }
+
+    private func beginResize(at frame: CGRect) {
+        guard resizeStarted, resizeBase == nil else { return }
+        let twoRows = 2 * HomeGlanceMetrics.height + Self.rowSpacing
+        let base = ResizeBase(start: frame,
+                              fullWidth: item.size == .small ? frame.width * 2 + Self.columnSpacing : frame.width,
+                              largeHeight: item.size == .large ? max(twoRows, frame.height) : twoRows,
+                              leftward: item.size == .small && inRightColumn)
+        resizeBase = base
+        report(base)
+    }
+
+    private func report(_ base: ResizeBase) {
+        let rect = stretchedRect(base, resizeTranslation)
+        onResizing(HomeResize(id: item.id, rect: rect, leftward: base.leftward))
+        let size = target(base, rect.size)
+        if size != item.size { onResize(size) }
+    }
+
+    /// Lets go: TodayView glides the stretched card into the slot of its new size.
+    private func endResize() {
+        guard resizeStarted else { return }
+        resizeStarted = false
+        let began = resizeBase != nil
+        resizeBase = nil
+        if began { onResizing(nil) }
+    }
+
+    /// The stretched card on screen: its top edge stays, the handle's corner follows the finger.
+    private func stretchedRect(_ base: ResizeBase, _ t: CGSize) -> CGRect {
+        let smallWidth = max(0, (base.fullWidth - Self.columnSpacing) / 2)
+        let w = min(max(base.start.width + (base.leftward ? -t.width : t.width), smallWidth), base.fullWidth)
+        let maxH = item.card.sizes.contains(.large) ? base.largeHeight : HomeGlanceMetrics.height
+        let h = min(max(base.start.height + t.height, min(HomeGlanceMetrics.height, base.start.height)), maxH)
+        return CGRect(x: base.leftward ? base.start.maxX - w : base.start.minX, y: base.start.minY, width: w, height: h)
+    }
+
+    /// Past halfway between two footprints the card takes the bigger one. A one-column card
+    /// can't be tall, so narrow means small.
+    private func target(_ base: ResizeBase, _ live: CGSize) -> CardSize {
+        let smallWidth = max(0, (base.fullWidth - Self.columnSpacing) / 2)
+        let wide = live.width > (smallWidth + base.fullWidth) / 2
+        let tall = live.height > (HomeGlanceMetrics.height + base.largeHeight) / 2
+        let size: CardSize = !wide ? .small : (tall ? .large : .medium)
+        return item.card.sizes.contains(size) ? size : .medium
     }
 
     // MARK: corner controls
@@ -301,37 +403,25 @@ struct HomeEditCell<Content: View>: View {
         .accessibilityIdentifier("home-remove-\(item.id)")
     }
 
+    /// While resizing, the stretched card shows the handle under the finger; this one only
+    /// carries the drag.
     private var resizeHandle: some View {
-        Image(systemName: "arrow.up.left.and.arrow.down.right")
-            .font(.system(size: 11, weight: .bold))
-            .foregroundStyle(.black)
-            .frame(width: 26, height: 26)
-            .background(Circle().fill(.white))
-            .shadow(color: .black.opacity(0.35), radius: 3)
-            .frame(width: 44, height: 44)
+        HomeResizeDot(leftward: handleLeading)
+            .opacity(isResizing ? 0 : 1)
             .contentShape(Rectangle())
-            .offset(handleOffset)
+            .offset(x: handleLeading ? -10 : 10, y: 10)
             .highPriorityGesture(
-                // Global space, so the wobble's rotation doesn't shake the outline.
+                // Global space, so the wobble's rotation doesn't shake the card.
                 DragGesture(minimumDistance: 2, coordinateSpace: .global)
-                    .updating($resizeDrag) { value, state, _ in state = value.translation }
-                    .onEnded { value in
-                        let size = target(value.translation)
-                        if size != item.size { onResize(size) }
-                    }
+                    .updating($resizeGesture) { value, state, _ in state = value.translation }
+                    .onChanged { value in resizeChanged(value.translation) }
+                    .onEnded { _ in endResize() }
             )
             .onTapGesture { onResize(nextSize) }
             .accessibilityLabel(Text("Resize \(item.title)"))
             .accessibilityValue(Text(item.size.label))
             .accessibilityHint(Text("Drag to resize, or tap for the next size"))
             .accessibilityIdentifier("home-resize-\(item.id)")
-    }
-
-    /// On the card's corner, or on the outline's corner while resizing, so it stays under the finger.
-    private var handleOffset: CGSize {
-        guard let resizeDrag else { return CGSize(width: 10, height: 10) }
-        let o = outlineSize(resizeDrag)
-        return CGSize(width: 10 + o.width - cellSize.width, height: 10 + o.height - cellSize.height)
     }
 
     private var nextSize: CardSize {
@@ -341,116 +431,59 @@ struct HomeEditCell<Content: View>: View {
     }
 }
 
-/// Where a dragged card hovers: over the middle of a card (to stack them) or near its edge (to
-/// move there), and since when.
-struct HomeHover: Equatable {
-    let target: String
-    let middle: Bool
-    let since: Date
+/// A card being resized in edit mode (TodayView): the stretched card's frame on screen.
+struct HomeResize: Equatable {
+    let id: String
+    var rect: CGRect
+    /// The right card of a small pair grows to the left, from its bottom-left corner.
+    let leftward: Bool
+    /// Let go: the card glides into its new slot.
+    var settling = false
 }
 
-/// Drag and drop on a Home card, like the iOS Home Screen. Pausing near a card's edge moves the
-/// dragged card there (the others make room); pausing over its middle highlights it, and
-/// dropping there stacks the two (a card dropped on a Smart Stack joins it). Moving needs a
-/// longer pause than stacking, so heading for a card's middle (through its edge) never moves
-/// it out from under the finger first, and passing over cards on the way doesn't shuffle them.
-struct HomeDropDelegate: DropDelegate {
-    let target: String
-    /// The target card's size, to tell its middle from its edges.
+/// The round resize handle on an edited card's bottom corner.
+struct HomeResizeDot: View {
+    var leftward = false
+
+    var body: some View {
+        Image(systemName: leftward ? "arrow.up.right.and.arrow.down.left" : "arrow.up.left.and.arrow.down.right")
+            .font(.system(size: 11, weight: .bold))
+            .foregroundStyle(.black)
+            .frame(width: 26, height: 26)
+            .background(Circle().fill(.white))
+            .shadow(color: .black.opacity(0.35), radius: 3)
+            .frame(width: 44, height: 44)
+    }
+}
+
+/// A card stretched by a resize drag, like an iOS widget: the whole card follows the finger,
+/// its content laid out at the size it will take (cut off or with room below while the stretch
+/// is between sizes).
+struct HomeStretchedCard<Content: View>: View {
     let size: CGSize
-    @Binding var items: [HomeItem]
-    @Binding var dragging: String?
-    @Binding var hover: HomeHover?
-    @Binding var stackTarget: String?
-    /// Last time a drop target heard from the drag (see TodayView's drag watchdog).
-    @Binding var lastDragActivity: Date
-    /// Stack the dragged card (first id) onto the target (second id).
-    var onStack: (String, String) -> Void
+    let leftward: Bool
+    let settling: Bool
+    @ViewBuilder var content: () -> Content
 
-    private static let movePause: TimeInterval = 0.55
-    private static let stackPause: TimeInterval = 0.25
-
-    func dropEntered(info: DropInfo) {
-        track(info)
-    }
-
-    func dropUpdated(info: DropInfo) -> DropProposal? {
-        track(info)
-        return DropProposal(operation: .move)
-    }
-
-    func dropExited(info: DropInfo) {
-        if hover?.target == target { hover = nil }
-        if stackTarget == target { stackTarget = nil }
-    }
-
-    func performDrop(info: DropInfo) -> Bool {
-        let dragged = dragging
-        dragging = nil
-        hover = nil
-        stackTarget = nil
-        if let dragged, dragged != target, canStack(dragged), isMiddle(info) {
-            onStack(dragged, target)
-        }
-        return true
-    }
-
-    private func isMiddle(_ info: DropInfo) -> Bool {
-        guard size.width > 0, size.height > 0 else { return false }
-        let x = info.location.x / size.width
-        let y = info.location.y / size.height
-        return x > 0.18 && x < 0.82 && y > 0.18 && y < 0.82
-    }
-
-    /// Stacks don't nest: a Smart Stack can be moved, not stacked.
-    private func canStack(_ dragged: String) -> Bool {
-        items.first { $0.id == dragged }?.card != .stack
-    }
-
-    private func track(_ info: DropInfo) {
-        lastDragActivity = Date()
-        guard let dragged = dragging, dragged != target else { return }
-        let middle = canStack(dragged) && isMiddle(info)
-        let now = Date()
-        guard let current = hover, current.target == target, current.middle == middle else {
-            hover = HomeHover(target: target, middle: middle, since: now)
-            if !middle && stackTarget == target { stackTarget = nil }
-            return
-        }
-        guard now.timeIntervalSince(current.since) >= (middle ? Self.stackPause : Self.movePause) else { return }
-        if middle {
-            if stackTarget != target { stackTarget = target }
-        } else {
-            move(dragged)
-            // Once per pause: the next move needs the finger to leave this spot.
-            hover = HomeHover(target: target, middle: false, since: .distantFuture)
-        }
-    }
-
-    private func move(_ dragged: String) {
-        guard let from = items.firstIndex(where: { $0.id == dragged }),
-              let to = items.firstIndex(where: { $0.id == target }), from != to else { return }
-        var next = items
-        next.move(fromOffsets: IndexSet(integer: from), toOffset: to > from ? to + 1 : to)
-        withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) { items = next }
-    }
-}
-
-/// Catches a drop between cards, so the dragged card never stays faded.
-struct HomeDropEndDelegate: DropDelegate {
-    @Binding var dragging: String?
-    @Binding var hover: HomeHover?
-    @Binding var stackTarget: String?
-
-    func dropUpdated(info: DropInfo) -> DropProposal? {
-        DropProposal(operation: .move)
-    }
-
-    func performDrop(info: DropInfo) -> Bool {
-        dragging = nil
-        hover = nil
-        stackTarget = nil
-        return true
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
+        content()
+            .frame(width: size.width, alignment: .topLeading)
+            .fixedSize(horizontal: false, vertical: true)
+            .environment(\.homeCardBare, true)
+            .environment(\.homeCardPreview, true)
+            .frame(width: size.width, height: size.height, alignment: .topLeading)
+            .background(shape.fill(Theme.card))
+            .clipShape(shape)
+            .overlay(shape.stroke(Theme.cardBorder, lineWidth: 1))
+            .overlay(alignment: leftward ? .bottomLeading : .bottomTrailing) {
+                HomeResizeDot(leftward: leftward)
+                    .offset(x: leftward ? -10 : 10, y: 10)
+                    .opacity(settling ? 0 : 1)
+            }
+            .scaleEffect(settling ? 1 : 1.02)
+            .shadow(color: .black.opacity(settling ? 0 : 0.45), radius: 14, y: 6)
+            .allowsHitTesting(false)
     }
 }
 

@@ -53,6 +53,8 @@ struct HomeGlance: View {
 struct GlanceFrame<Content: View>: View {
     var spacing: CGFloat = 8
     @ViewBuilder var content: () -> Content
+    /// Drawn inside a Home card's resize frame, which has the background already.
+    @Environment(\.homeCardBare) private var bare
 
     var body: some View {
         VStack(alignment: .leading, spacing: spacing) {
@@ -62,8 +64,8 @@ struct GlanceFrame<Content: View>: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .frame(height: HomeGlanceMetrics.height)
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(Theme.card))
-        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(Theme.cardBorder, lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(bare ? Color.clear : Theme.card))
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(bare ? Color.clear : Theme.cardBorder, lineWidth: 1))
         .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
 }
