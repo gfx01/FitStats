@@ -81,17 +81,34 @@ final class ScreenshotTests: XCTestCase {
         "\(element.identifier): exists \(element.exists), frame \(element.frame)"
     }
 
-    /// Scrolls until `element` is on screen: up first, then back down.
+    /// Scrolls until the middle of `element` is near the middle of the screen.
     private func scrollTo(_ app: XCUIApplication, _ element: XCUIElement) {
         let window = app.windows.firstMatch.frame
         for _ in 0..<40 where !onScreen(app, element) {
             if element.exists, !element.frame.isEmpty {
-                scrollPage(app, by: element.frame.midY - (window.minY + window.height * 0.45))
+                let before = element.frame.midY
+                let dy = before - (window.minY + window.height * 0.45)
+                scrollPage(app, by: dy)
+                trace("scroll \(element.identifier) by \(Int(dy)): midY \(Int(before)) -> \(Int(element.frame.midY))")
             } else {
                 scrollPage(app, by: window.height * 0.4)
             }
         }
-        if onScreen(app, element) { reveal(app, element) }
+        trace("scrolled to \(describe(element)), on screen \(onScreen(app, element))")
+    }
+
+    /// Scroll diagnostics, saved next to the screenshots (scroll-log.txt).
+    private func trace(_ line: String) {
+        guard let outDir else { return }
+        let url = outDir.appendingPathComponent("scroll-log.txt")
+        let data = Data((line + "\n").utf8)
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            handle.write(data)
+            try? handle.close()
+        } else {
+            try? data.write(to: url)
+        }
     }
 
     /// Its middle is between the navigation bar and the tab bar (isHittable also holds for an
