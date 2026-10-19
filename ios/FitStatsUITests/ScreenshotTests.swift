@@ -465,6 +465,8 @@ final class ScreenshotTests: XCTestCase {
         XCTAssertFalse(fixtures.isEmpty, "FITSTATS_FIXTURES is not set")
         let app = XCUIApplication()
         app.launchEnvironment["FITSTATS_FIXTURES"] = fixtures
+        // The app's gesture notes, saved next to the screenshots (the simulator can write there).
+        if let outDir { app.launchEnvironment["FITSTATS_DEBUG_LOG"] = outDir.appendingPathComponent("app-log.txt").path }
         app.launch()
         let ring = app.buttons["ring-recovery"]
         XCTAssertTrue(ring.waitForExistence(timeout: 15), "Today screen did not load")
@@ -478,6 +480,15 @@ final class ScreenshotTests: XCTestCase {
         sleep(1)
         shot("73-swiped-back")
         XCTAssertTrue(ring.isHittable, "a swipe from the middle of Recovery did not go back to Today")
+        if !ring.isHittable {
+            // Back to Today for the rest: the system's own edge swipe, else the back button.
+            let edge = app.coordinate(withNormalizedOffset: CGVector(dx: 0.005, dy: 0.55))
+            edge.press(forDuration: 0.05, thenDragTo: edge.withOffset(CGVector(dx: 250, dy: 0)),
+                       withVelocity: .fast, thenHoldForDuration: 0)
+            sleep(1)
+            if !ring.isHittable { back(app) }
+            sleep(1)
+        }
 
         // Today's nap (the fixtures add one, 13:20–14:05) has its own section on the Sleep screen.
         let sleepRing = app.buttons["ring-sleep"]

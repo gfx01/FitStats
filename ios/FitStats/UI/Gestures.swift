@@ -22,7 +22,11 @@ private struct SwipeBackInstaller: UIViewControllerRepresentable {
             super.viewDidAppear(animated)
             let viaResponders = sequence(first: view as UIResponder, next: { $0.next })
                 .first { $0 is UINavigationController } as? UINavigationController
-            if let nav = navigationController ?? viaResponders { FullSwipeBack.install(on: nav) }
+            if let nav = navigationController ?? viaResponders {
+                FullSwipeBack.install(on: nav)
+            } else {
+                DebugLog.note("swipe back: no navigation controller")
+            }
         }
     }
 }
@@ -31,31 +35,41 @@ private struct SwipeBackInstaller: UIViewControllerRepresentable {
 /// transition, so it follows the finger and can be cancelled halfway like the edge swipe. It
 /// starts only for a swipe to the right, mostly sideways, on a pushed screen, and leaves alone
 /// horizontal scrollers that can still scroll back and controls such as switches and steppers.
-/// The edge swipe keeps working as before.
+/// The edge swipe keeps working as before: a swipe that starts at the very edge is left to it.
 @MainActor
 enum FullSwipeBack {
     static func install(on nav: UINavigationController) {
-        guard !(nav.view.gestureRecognizers ?? []).contains(where: { $0 is FullSwipeBackPan }),
-              let edge = nav.interactivePopGestureRecognizer else { return }
+        guard !(nav.view.gestureRecognizers ?? []).contains(where: { $0 is FullSwipeBackPan }) else { return }
+        guard let edge = nav.interactivePopGestureRecognizer else {
+            DebugLog.note("swipe back: no edge swipe")
+            return
+        }
         // iOS 26 swipes back from anywhere by itself.
         if nav.responds(to: NSSelectorFromString("interactiveContentPopGestureRecognizer")),
            let content = nav.value(forKey: "interactiveContentPopGestureRecognizer") as? UIGestureRecognizer,
            content.isEnabled {
+            DebugLog.note("swipe back: the system's own content swipe is on")
             return
         }
         // The edge swipe's own handler (UIKit has no public way to reach it).
         guard let targets = edge.value(forKey: "targets") as? [NSObject],
-              let handler = targets.first?.value(forKey: "target") as? NSObject else { return }
+              let handler = targets.first?.value(forKey: "target") as? NSObject else {
+            DebugLog.note("swipe back: the edge swipe's handler not found")
+            return
+        }
         let action = NSSelectorFromString("handleNavigationTransition:")
-        guard handler.responds(to: action) else { return }
+        guard handler.responds(to: action) else {
+            DebugLog.note("swipe back: \(type(of: handler)) has no handleNavigationTransition:")
+            return
+        }
         let pan = FullSwipeBackPan(target: handler, action: action)
         let rules = FullSwipeBackRules(nav: nav)
         pan.rules = rules
         pan.delegate = rules
         pan.maximumNumberOfTouches = 1
-        // Near the left edge the system's swipe goes first, so only one of them drives the transition.
-        pan.require(toFail: edge)
+        pan.addTarget(rules, action: #selector(FullSwipeBackRules.panned(_:)))
         nav.view.addGestureRecognizer(pan)
+        DebugLog.note("swipe back: installed on \(type(of: nav)), handler \(type(of: handler))")
     }
 }
 
@@ -76,8 +90,17 @@ private final class FullSwipeBackRules: NSObject, UIGestureRecognizerDelegate {
         guard let nav, nav.viewControllers.count > 1, nav.transitionCoordinator == nil,
               let pan = gesture as? UIPanGestureRecognizer else { return false }
         let v = pan.velocity(in: pan.view)
-        guard v.x > 0, v.x > abs(v.y) * 1.2 else { return false }
-        return !inScrollerThatCanScrollBack(pan)
+        let t = pan.translation(in: pan.view)
+        let startX = pan.location(in: pan.view).x - t.x
+        // At the very edge the system's own swipe takes it.
+        let begin = startX > 24 && v.x > 0 && v.x > abs(v.y) * 1.2 && !inScrollerThatCanScrollBack(pan)
+        DebugLog.note("swipe back: start x \(Int(startX)), velocity \(Int(v.x)),\(Int(v.y)) -> \(begin ? "begins" : "no")")
+        return begin
+    }
+
+    @objc func panned(_ pan: UIPanGestureRecognizer) {
+        guard pan.state == .began || pan.state == .ended || pan.state == .cancelled else { return }
+        DebugLog.note("swipe back: \(pan.state == .began ? "began" : pan.state == .ended ? "ended" : "cancelled") at \(Int(pan.translation(in: pan.view).x))")
     }
 
     func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
@@ -172,6 +195,26 @@ private struct TapOutside: UIViewRepresentable {
         func gestureRecognizer(_ gesture: UIGestureRecognizer,
                                shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
             true
+        }
+    }
+}
+
+// MARK: - CI notes
+
+/// CI only (FITSTATS_DEBUG_LOG, a file path the UI tests collect): how a gesture went, for the
+/// cases a screenshot can't explain. Does nothing otherwise.
+enum DebugLog {
+    private static let path = ProcessInfo.processInfo.environment["FITSTATS_DEBUG_LOG"] ?? ""
+
+    static func note(_ line: String) {
+        guard !path.isEmpty else { return }
+        let data = Data((line + "\n").utf8)
+        if let handle = FileHandle(forWritingAtPath: path) {
+            handle.seekToEndOfFile()
+            handle.write(data)
+            try? handle.close()
+        } else {
+            FileManager.default.createFile(atPath: path, contents: data)
         }
     }
 }
