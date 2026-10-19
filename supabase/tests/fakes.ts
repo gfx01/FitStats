@@ -28,7 +28,7 @@ export const tables: Record<string, Row[]> = {
     last_recent_sync_at: null, recent_fingerprint: null, stats_dirty: false, lock_until: null,
   }],
   fs_days: [], fs_sleep: [], fs_exercise: [], fs_intraday: [], fs_samples: [], fs_cache: [], fs_journal: [],
-  fs_coach_threads: [], fs_coach_messages: [],
+  fs_coach_threads: [], fs_coach_messages: [], fs_routines: [], fs_workout_logs: [],
 };
 
 function matches(row: Row, key: string, expr: string): boolean {
@@ -490,6 +490,17 @@ function message(model: string, usage: Row, blocks: Row[], stop: string, output:
 const avg = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : NaN);
 const hm = (min: number) => `${Math.floor(min / 60)}h ${Math.round(min % 60)}m`;
 
+/** The routine the fake coach saves for "Make me a routine…". */
+export const FAKE_ROUTINE = {
+  name: "Upper body A",
+  notes: "Twice a week, at least two days apart. Add 2.5 kg when every set reaches the top of the range.",
+  exercises: [
+    { name: "Bench press", kind: "strength", sets: 3, reps: "8-10", weight_kg: 60, rest_s: 120 },
+    { name: "Bent-over row", kind: "strength", sets: 3, reps: "8-10", weight_kg: 50, rest_s: 120 },
+    { name: "Easy bike", kind: "cardio", duration_min: 10, notes: "Cool-down" },
+  ],
+};
+
 /**
  * Chat: one tool round (thinking + a short text + get_daily_metrics), then an answer
  * computed from the tool result, so tests see real data flow through. Briefing: a
@@ -525,6 +536,23 @@ function claudeFetch(init: RequestInit): Response {
   }
 
   const results = Array.isArray(last.content) ? (last.content as Row[]).filter((c) => c.type === "tool_result") : [];
+  // "Make me a routine…": the coach saves one with save_routine, then says so.
+  if (!results.length && typeof last.content === "string" && last.content.startsWith("Make me a routine")) {
+    const input = JSON.stringify(FAKE_ROUTINE);
+    return sseResponse(message(model, usage1, [
+      { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } },
+      { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "sig-round-1" } },
+      { type: "content_block_stop", index: 0 },
+      ...textEvents(1, "Here is a plan for you."),
+      { type: "content_block_start", index: 2, content_block: { type: "tool_use", id: "toolu_1", name: "save_routine", input: {} } },
+      { type: "content_block_delta", index: 2, delta: { type: "input_json_delta", partial_json: input } },
+      { type: "content_block_stop", index: 2 },
+    ], "tool_use", 300));
+  }
+  if (results.length && ((messages[messages.length - 2].content as Row[])[2] as Row).name === "save_routine") {
+    const saved = JSON.parse(String(results[0].content)) as Row;
+    return sseResponse(message(model, usage1, textEvents(0, `I saved **${(saved.routine as Row).name}** to your Training tab.`), "end_turn", 40));
+  }
   if (!results.length) {
     const today = /^Now: \w+ (\d{4}-\d{2}-\d{2})/m.exec(summary)![1];
     const from = new Date(Date.parse(`${today}T00:00:00Z`) - 6 * 86_400_000).toISOString().slice(0, 10);

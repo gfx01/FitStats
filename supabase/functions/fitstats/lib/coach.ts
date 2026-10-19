@@ -9,6 +9,16 @@ import { sleepPlan } from "./planner.ts";
 import type { DayRow } from "./scores.ts";
 import { fmtValue, lowerFirst, METRIC_BY_KEY, METRICS, type MetricDef } from "./stats.ts";
 import { type Account, clockFor, loadAccount, loadSettings, maxHrInUse, type UserSettings } from "./sync.ts";
+import {
+  EXERCISE_KINDS,
+  exerciseProgress,
+  loadLogs,
+  loadRoutines,
+  logText,
+  routineText,
+  saveRoutine,
+  TrainingInputError,
+} from "./training.ts";
 import { awakeAfterOnset, fallAsleepMinutes, type Json, mainSleepOf } from "./transform.ts";
 import { addDays, daysBetween, round, type Ymd } from "./util.ts";
 
@@ -252,11 +262,13 @@ const SUMMARY_KEYS = [
 export async function buildContext(ctx: Ctx, stats: Json | null): Promise<string> {
   const from = addDays(ctx.today, -13);
   // 28 days for the sleep plan's usual wake time; 14 are listed.
-  const [days, workouts, state, journal] = await Promise.all([
+  const [days, workouts, state, journal, routines, logs] = await Promise.all([
     db.select<Row>("fs_days", `select=*&date=gte.${addDays(ctx.today, -27)}&date=lte.${ctx.today}&order=date.asc`),
     db.select<Row>("fs_exercise", `select=*&date=gte.${from}&date=lte.${ctx.today}&order=start_time.asc`),
     db.selectOne<Row>("fs_sync_state", "select=*&id=eq.1"),
     journalEntries(from, ctx.today),
+    loadRoutines(),
+    loadLogs(addDays(ctx.today, -27), ctx.today),
   ]);
   const lines: string[] = [];
   let now = "";
@@ -412,6 +424,13 @@ export async function buildContext(ctx: Ctx, stats: Json | null): Promise<string
   if (streaks.length) {
     lines.push("", `Streaks: ${streaks.map((s) => `${s.label} ${dayCount(s.current)} now (best ${dayCount(s.longest)})`).join("; ")}.`);
   }
+
+  lines.push("", "Training tab (routines they keep and workouts they logged in the app; get_training has more):");
+  if (!routines.length && !logs.length) lines.push("- No routines or logged workouts yet.");
+  for (const r of routines.slice(0, 12)) lines.push(`- Routine (id ${r.id}) ${routineText(r)}`);
+  if (routines.length > 12) lines.push(`- …and ${routines.length - 12} more routines.`);
+  for (const l of logs.slice(0, 10)) lines.push(`- Logged ${logText(l)}`);
+  if (routines.length && !logs.length) lines.push("- No workouts logged in the app in the last 4 weeks.");
   return lines.join("\n");
 }
 
@@ -475,7 +494,70 @@ export const TOOLS: Json[] = [
       required: ["from", "to"],
     },
   },
+  {
+    name: "get_training",
+    description: "Their Training tab: every routine (id, name, exercises with target sets, reps, kg, minutes, km, rest, notes, and whether you made it), " +
+      "the workouts they logged in the app between two dates (default the last 90 days; set by set: reps, kg, minutes, km, done; effort 1–10; notes), " +
+      "and per exercise over the last year: sessions logged, the best set with its date, and the last session with its volume (reps × kg). " +
+      "The band's own workouts (heart rate, strain) are in get_workouts.",
+    input_schema: {
+      type: "object",
+      properties: {
+        from: { type: "string", description: "First day of logged workouts, YYYY-MM-DD (optional)" },
+        to: { type: "string", description: "Last day (inclusive), YYYY-MM-DD (optional)" },
+      },
+    },
+  },
+  {
+    name: "save_routine",
+    description: "Saves a routine to their Training tab, where they can start it and log it set by set. Use it only when they ask you to make or change a routine " +
+      "(or agree to one you suggested). To change one of their routines, pass its id and the whole routine as it should be; leave id out to make a new one. " +
+      "Weights in kg, distance in km, durations in minutes, rest in seconds. Reps is text so it can be a range (\"8-12\") or \"AMRAP\".",
+    input_schema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "An existing routine's id, to change it" },
+        name: { type: "string", description: "Short name, e.g. \"Upper body A\"" },
+        notes: { type: "string", description: "How and when to do it: warm-up, progression, which days" },
+        exercises: {
+          type: "array",
+          maxItems: 40,
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              kind: { type: "string", enum: [...EXERCISE_KINDS] },
+              sets: { type: "integer", minimum: 1, maximum: 30 },
+              reps: { type: "string" },
+              weight_kg: { type: "number" },
+              duration_min: { type: "number" },
+              distance_km: { type: "number" },
+              rest_s: { type: "integer" },
+              notes: { type: "string" },
+            },
+            required: ["name", "kind"],
+          },
+        },
+      },
+      required: ["name", "exercises"],
+    },
+  },
+  {
+    name: "get_journal",
+    description: "Their journal entries between two dates (at most 400 days): the tags they logged for each day and their notes.",
+    input_schema: {
+      type: "object",
+      properties: {
+        from: { type: "string", description: "First day, YYYY-MM-DD" },
+        to: { type: "string", description: "Last day (inclusive), YYYY-MM-DD" },
+      },
+      required: ["from", "to"],
+    },
+  },
 ];
+
+/** Tools that change what the app shows: the app reloads its training data after them. */
+export const TRAINING_WRITES = new Set(["save_routine"]);
 
 class ToolError extends Error {}
 
@@ -575,6 +657,29 @@ export async function runTool(name: string, input: Json, ctx: Ctx, stats: Json |
       const rows = await db.select<Row>("fs_exercise", `select=*&date=gte.${from}&date=lte.${to}&order=start_time.asc`);
       return { from, to, workouts: rows.map((w) => workoutSummary(w, ctx.tz)) };
     }
+    case "get_training": {
+      const [from, to] = input.from || input.to ? rangeArgs(input) : [addDays(ctx.today, -89), ctx.today];
+      const [routines, logs, year] = await Promise.all([loadRoutines(), loadLogs(from, to), loadLogs(addDays(ctx.today, -364), ctx.today)]);
+      return {
+        routines: routines.map((r) => ({ id: r.id, name: r.name, made_by: r.created_by === "coach" ? "you (the coach)" : "them", notes: r.notes, exercises: r.exercises })),
+        logged_workouts: { from, to, workouts: logs.map((l) => ({ ...l, created_at: undefined, updated_at: undefined })) },
+        exercise_progress_last_year: exerciseProgress(year),
+      };
+    }
+    case "save_routine": {
+      try {
+        const routine = await saveRoutine(input as Row, "coach");
+        return { saved: true, note: "It is in their Training tab now.", routine: { id: routine.id, name: routine.name, exercises: routine.exercises.length } };
+      } catch (e) {
+        if (e instanceof TrainingInputError) throw new ToolError(e.message);
+        throw e;
+      }
+    }
+    case "get_journal": {
+      const [from, to] = rangeArgs(input);
+      const entries = await journalEntries(from, to);
+      return { from, to, entries: entries.map((e) => ({ date: e.date, tags: e.tags.map(tagLabel), note: e.note })) };
+    }
     default:
       throw new ToolError(`unknown tool ${name}`);
   }
@@ -594,6 +699,12 @@ function toolStatus(name: unknown, input: Json): string {
       return `Opening ${shortDate(input.date)}`;
     case "get_workouts":
       return `Looking at your workouts${range}`;
+    case "get_training":
+      return "Looking at your routines and logged workouts";
+    case "save_routine":
+      return `Saving “${String(input.name ?? "your routine").slice(0, 40)}” to Training`;
+    case "get_journal":
+      return `Reading your journal${range}`;
     default:
       return "Looking at your data";
   }
@@ -608,6 +719,13 @@ What you know
 - Their journal: tags they log for a day (alcohol, late meal, …) and short notes. Tag effects compare the night and morning after tagged days with those after other logged days; with few days they are hints, not findings.
 - Days they wore the band for under 60% of their usual time are "low wear": their day totals are incomplete and left out of averages.
 - Recovery, strain, sleep score and stress are FitStats' own formulas, defined below. They are not Bevel's, Whoop's or Fitbit's scores.
+- Everything the app shows is yours to read: the Today cards, sleep (with naps), recovery, strain, stress, trends, insights, the journal, and the Training tab. When their message starts with "About …", they asked from that screen of the app.
+
+Training
+- The Training tab holds their routines (plans of exercises with target sets, reps, kg, minutes or km) and the workouts they log there set by set (reps, kg, minutes, km, effort 1–10). The band records workouts too (heart rate, strain, heart-rate recovery; get_workouts and get_day). A logged gym session and a band workout on the same day at about the same time are usually the same session: read both.
+- Use get_training to see routines, logged workouts and each exercise's progress before you judge or change their training.
+- To make or change a routine, design it for them: their goal if they said one, how often they train, what they have logged, recovery and training load. Then save it with save_routine and say it's in the Training tab. To change one of theirs, pass its id. Don't save a routine they didn't ask for; suggest it first.
+- When reviewing workouts, be concrete: compare with their earlier sessions of the same exercise (more reps or kg at the same effort is progress), weekly volume, effort, and how recovery and strain looked the days after. Suggest the next session's numbers.
 
 How to answer
 - Lead with the answer, then the two or three numbers from their data that support it, with dates. Be specific to them; skip generic advice.
@@ -874,7 +992,8 @@ export async function coachBrief(): Promise<Row> {
 /**
  * POST {message, thread_id?} for chat, or {kind: "brief"} for today's briefing.
  * Streams `data: {...}` events: status (a tool is running), text (reply text as it
- * arrives), done (saved; includes thread_id or brief, and usage) or error.
+ * arrives), changed (a tool saved something the app shows: what = "training"), done (saved;
+ * includes thread_id or brief, and usage) or error.
  */
 export async function handleCoach(req: Request): Promise<Response> {
   const body = (await req.json().catch(() => ({}))) as Row;
@@ -998,6 +1117,7 @@ async function converse(o: {
       try {
         const out = await runTool(String(b.name), (b.input ?? {}) as Json, o.ctx, stats);
         results.push({ type: "tool_result", tool_use_id: b.id, content: JSON.stringify(out) });
+        if (TRAINING_WRITES.has(String(b.name))) o.send({ type: "changed", what: "training" });
       } catch (e) {
         results.push({ type: "tool_result", tool_use_id: b.id, content: String((e as Error).message ?? e), is_error: true });
       }

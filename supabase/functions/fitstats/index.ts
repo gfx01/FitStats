@@ -5,7 +5,7 @@
 //   (code/state)       Google OAuth callback — this function's URL is the redirect URI
 //   cron               pg_cron trigger, authenticated with x-cron-secret
 //   health             unauthenticated setup check
-//   status | days | day | stats | sync | settings | journal | home | disconnect
+//   status | days | day | stats | sync | settings | journal | home | training | disconnect
 //                      app routes, authenticated with x-app-key
 //   coach | coach_status | coach_threads | coach_thread | coach_delete | coach_brief
 //                      Claude coach (lib/coach.ts), also x-app-key
@@ -25,6 +25,15 @@ import {
   runSync,
 } from "./lib/sync.ts";
 import { mainSleepOf } from "./lib/transform.ts";
+import {
+  deleteLog,
+  deleteRoutine,
+  reorderRoutines,
+  saveLog,
+  saveRoutine,
+  trainingData,
+  TrainingInputError,
+} from "./lib/training.ts";
 import { addDays } from "./lib/util.ts";
 import { VERSION } from "./lib/version.ts";
 
@@ -397,6 +406,39 @@ async function homeLayout(req: Request): Promise<Response> {
   return json({ saved: true, edited_at: edited });
 }
 
+/**
+ * GET: routines, the workouts logged in the last year and the band's workouts of the last 120
+ * days. POST {action, ...}: save_routine {routine}, delete_routine {id}, reorder_routines
+ * {ids}, save_log {log}, delete_log {id}.
+ */
+async function training(req: Request): Promise<Response> {
+  const today = clockFor(await loadAccount()).today();
+  if (req.method !== "POST") return json(await trainingData(today));
+  const body = (await req.json().catch(() => ({}))) as Row;
+  try {
+    switch (body.action) {
+      case "save_routine":
+        return json({ routine: await saveRoutine((body.routine ?? {}) as Row, "user") });
+      case "delete_routine":
+        await deleteRoutine(String(body.id ?? ""));
+        return json({ deleted: true });
+      case "reorder_routines":
+        await reorderRoutines(body.ids);
+        return json({ saved: true });
+      case "save_log":
+        return json({ log: await saveLog((body.log ?? {}) as Row, today) });
+      case "delete_log":
+        await deleteLog(String(body.id ?? ""));
+        return json({ deleted: true });
+      default:
+        return json({ error: "unknown action" }, 400);
+    }
+  } catch (e) {
+    if (e instanceof TrainingInputError) return json({ error: "invalid training data", detail: e.message }, 400);
+    throw e;
+  }
+}
+
 async function disconnect(params: URLSearchParams): Promise<Response> {
   await db.update("fs_account", "id=eq.1", {
     refresh_token: null,
@@ -406,7 +448,7 @@ async function disconnect(params: URLSearchParams): Promise<Response> {
     updated_at: new Date().toISOString(),
   });
   if (params.get("wipe") === "true") {
-    const tables = ["fs_days", "fs_sleep", "fs_exercise", "fs_intraday", "fs_samples", "fs_cache", "fs_journal", "fs_coach_messages", "fs_coach_threads", "fs_home_layout"];
+    const tables = ["fs_days", "fs_sleep", "fs_exercise", "fs_intraday", "fs_samples", "fs_cache", "fs_journal", "fs_coach_messages", "fs_coach_threads", "fs_home_layout", "fs_workout_logs", "fs_routines"];
     const keyColumn: Record<string, string> = { fs_samples: "metric", fs_cache: "key", fs_days: "date", fs_intraday: "date", fs_journal: "date" };
     for (const t of tables) await db.remove(t, `${keyColumn[t] ?? "id"}=not.is.null`);
     await db.update("fs_account", "id=eq.1", { google_sub: null, google_email: null, profile: null, google_settings: null, devices: null });
@@ -466,6 +508,8 @@ Deno.serve(async (req: Request) => {
         return await journal(req, params);
       case "home":
         return await homeLayout(req);
+      case "training":
+        return await training(req);
       case "disconnect":
         if (req.method !== "POST") return json({ error: "use POST" }, 405);
         return await disconnect(params);

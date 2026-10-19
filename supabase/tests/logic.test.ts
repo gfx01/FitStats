@@ -869,3 +869,44 @@ test("stats: training load, bedtime and heart-rate recovery in the payload", () 
   assert.deepEqual(json.load, s.load);
   assert.deepEqual(json.bedtime, s.bedtime);
 });
+
+test("training: routines and logged workouts are validated", async () => {
+  const { normalizeRoutine, normalizeLog, TrainingInputError, exerciseProgress, logText, routineText } = await import("../functions/fitstats/lib/training.ts");
+  const now = "2026-10-19T10:00:00.000Z";
+  const r = normalizeRoutine({
+    name: "  Push   day ",
+    exercises: [
+      { name: "Bench press", kind: "strength", sets: "3", reps: 8, weight_kg: "62,5", rest_s: 90 },
+      { name: "", kind: "strength" },
+      { name: "Plank", kind: "nope", duration_min: 1.25, sets: 99 },
+    ],
+  }, null, "coach", now);
+  assert.equal(r.name, "Push day");
+  assert.equal(r.created_by, "coach");
+  assert.match(r.id, /^[0-9a-f-]{36}$/);
+  assert.deepEqual(r.exercises.map((e) => [e.name, e.kind, e.sets, e.reps, e.weight_kg]), [
+    ["Bench press", "strength", 3, "8", 62.5],
+    ["Plank", "strength", null, null, null],
+  ], "unnamed exercises are dropped, unknown kinds become strength, out-of-range numbers are left out");
+  assert.equal(r.exercises[1].duration_min, 1.3);
+  const edited = normalizeRoutine({ name: "Push day", exercises: [] }, r, "user", now);
+  assert.deepEqual([edited.id, edited.created_by], [r.id, "coach"], "an edit keeps the id and who made it");
+  assert.throws(() => normalizeRoutine({ name: " ", exercises: [] }, null, "user", now), TrainingInputError);
+  assert.throws(() => normalizeRoutine({ name: "x", exercises: "nope" }, null, "user", now), TrainingInputError);
+  assert.match(routineText(r), /^Push day \[made by you, the coach\]: Bench press \(strength: 3 sets of 8 @ 62.5 kg rest 90 s\)/);
+
+  const log = normalizeLog({
+    date: "2026-10-19", name: "Push day", effort: 7, started_at: "2026-10-19T16:00:00Z", ended_at: "2026-10-19T17:05:00Z",
+    exercises: [{ name: "Bench press", sets: [{ reps: 8, weight_kg: 60 }, { reps: 8, weight_kg: 62.5 }, { reps: 6, weight_kg: 62.5, done: false }] }],
+  }, null, "2026-10-19", now);
+  assert.equal(log.exercises[0].sets.filter((s) => s.done).length, 2);
+  assert.equal(logText(log), "2026-10-19 Push day (65 min, effort 7/10): Bench press: 8 reps × 60 kg, 8 reps × 62.5 kg");
+  assert.throws(() => normalizeLog({ date: "2026-10-20", exercises: [{ name: "x" }] }, null, "2026-10-19", now), /not in the future/);
+  assert.throws(() => normalizeLog({ date: "2026-10-19", exercises: [] }, null, "2026-10-19", now), /at least one exercise/);
+
+  const later = normalizeLog({ date: "2026-10-22", exercises: [{ name: "bench press", sets: [{ reps: 10, weight_kg: 62.5 }] }] }, null, "2026-10-22", now);
+  const progress = exerciseProgress([later, log]);
+  assert.deepEqual([progress[0].sessions, progress[0].best, (progress[0].last as Row).date], [
+    2, { date: "2026-10-22", reps: 10, weight_kg: 62.5, duration_min: null, distance_km: null }, "2026-10-22",
+  ], "same exercise across case; heaviest then most reps is the best set");
+});

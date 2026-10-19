@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { before, test } from "node:test";
 
-import { claudeFailures, claudeRequests, env, NAP_MAIN_DAY, type Row, tables } from "./fakes.ts";
+import { claudeFailures, claudeRequests, env, FAKE_ROUTINE, NAP_MAIN_DAY, type Row, tables } from "./fakes.ts";
 
 const coach = await import("../functions/fitstats/lib/coach.ts");
 
@@ -38,7 +38,7 @@ test("chat: tool round trip, streamed reply, saved thread and usage", async () =
   const first = claudeRequests[0];
   assert.equal(first.model, "claude-sonnet-5-5");
   assert.equal((first.output_config as Row).effort, "medium");
-  assert.equal((first.tools as Row[]).length, 4);
+  assert.deepEqual((first.tools as Row[]).map((t) => t.name), ["get_daily_metrics", "get_metric_stats", "get_day", "get_workouts", "get_training", "save_routine", "get_journal"]);
   const system = first.system as Row[];
   assert.deepEqual(system[1].cache_control, { type: "ephemeral" });
   assert.match(String(system[1].text), /Last 14 days/);
@@ -156,4 +156,43 @@ test("context: journal entries, tag effects and tonight's sleep plan", async () 
   const instructions = String((claudeRequests[before].system as Row[])[0].text);
   assert.match(instructions, /- Training load \(shown in the app\): fitness is the 42-day/);
   assert.match(instructions, /- Heart-rate recovery \(per workout\)/);
+});
+
+test("training: the app saves routines and workouts, the coach reads them and saves a routine", async () => {
+  const training = await import("../functions/fitstats/lib/training.ts");
+  const ctx = { acc: tables.fs_account[0] as never, settings: tables.fs_user_settings[0] as never, today: "2026-10-18", tz: "Europe/Budapest" };
+  const mine = await training.saveRoutine({ name: "Legs", exercises: [{ name: "Squat", kind: "strength", sets: 5, reps: "5", weight_kg: 80 }] }, "user");
+  await training.saveLog({
+    date: "2026-10-17", name: "Legs", routine_id: mine.id, effort: 8,
+    exercises: [{ name: "Squat", kind: "strength", sets: [{ reps: 5, weight_kg: 80 }, { reps: 5, weight_kg: 85 }] }],
+  }, "2026-10-18");
+  await assert.rejects(training.saveLog({ date: "2026-10-19", exercises: [{ name: "Squat" }] }, "2026-10-18"), training.TrainingInputError);
+
+  const data = await training.trainingData("2026-10-18");
+  assert.deepEqual([(data.routines as Row[]).length, (data.logs as Row[]).length], [1, 1]);
+  assert.ok((data.band_workouts as Row[]).length > 0, "the band's workouts of the last 120 days");
+
+  const read = await coach.runTool("get_training", {}, ctx, null) as Row;
+  const progress = read.exercise_progress_last_year as Row[];
+  assert.deepEqual([progress[0].name, (progress[0].best as Row).weight_kg], ["Squat", 85]);
+  const context = await coach.buildContext(ctx, null);
+  assert.match(context, /Routine \(id [0-9a-f-]{36}\) Legs: Squat \(strength: 5 sets of 5 @ 80 kg\)/);
+  assert.match(context, /Logged 2026-10-17 Legs \(effort 8\/10\): Squat: 5 reps × 80 kg, 5 reps × 85 kg/);
+  await assert.rejects(coach.runTool("save_routine", { id: crypto.randomUUID(), name: "X", exercises: [] }, ctx, null), /no routine with id/);
+
+  // The coach makes one; the app hears that training changed and reloads it.
+  const evs = await events(await coach.handleCoach(post({ message: "Make me a routine for my upper body" })));
+  assert.deepEqual(evs.filter((e) => e.type === "changed"), [{ type: "changed", what: "training" }]);
+  assert.ok(evs.some((e) => e.type === "status" && /Saving “Upper body A” to Training/.test(String(e.text))));
+  const saved = tables.fs_routines.find((r) => r.name === FAKE_ROUTINE.name)!;
+  assert.equal(saved.created_by, "coach");
+  assert.deepEqual((saved.exercises as Row[]).map((e) => e.name), ["Bench press", "Bent-over row", "Easy bike"]);
+  assert.equal(saved.position, 1, "after the user's routine");
+  const reply = evs.filter((e) => e.type === "text").map((e) => e.text).join("");
+  assert.match(reply, /I saved \*\*Upper body A\*\* to your Training tab\./);
+
+  await training.reorderRoutines([String(saved.id), mine.id]);
+  assert.deepEqual((await training.loadRoutines()).map((r) => r.name), ["Upper body A", "Legs"]);
+  await training.deleteRoutine(mine.id);
+  assert.deepEqual((await training.loadRoutines()).map((r) => r.name), ["Upper body A"]);
 });

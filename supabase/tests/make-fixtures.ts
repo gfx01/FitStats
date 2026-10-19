@@ -13,6 +13,7 @@ const { runSync, clockFor, loadSettings, rebuildStats, recomputeScores } = await
 const { addDays } = await import("../functions/fitstats/lib/util.ts");
 const { mainSleepOf, sleepDayPatch, sleepPointToRow } = await import("../functions/fitstats/lib/transform.ts");
 const { JOURNAL_TAGS, journalEntries, saveJournalEntry } = await import("../functions/fitstats/lib/journal.ts");
+const training = await import("../functions/fitstats/lib/training.ts");
 const log = await runSync("fixtures", true, 95_000);
 if (log.status !== "ok") throw new Error(`sync failed: ${JSON.stringify(log)}`);
 
@@ -80,6 +81,55 @@ await saveJournalEntry({ date: today, tags: ["late_caffeine", "stressful_day"], 
   tables.fs_sleep.push(row as unknown as Row);
   Object.assign(day, sleepDayPatch(today, tables.fs_sleep.filter((s) => s.date === today) as never, clock));
 }
+// Training: a routine the coach made, two of the user's, and three weeks of logged sessions
+// with the weights going up.
+const upper = await training.saveRoutine({
+  name: "Upper body A",
+  notes: "Twice a week, two days apart. Add 2.5 kg once every set reaches the top of the range.",
+  exercises: [
+    { name: "Bench press", kind: "strength", sets: 3, reps: "8-10", weight_kg: 60, rest_s: 120 },
+    { name: "Bent-over row", kind: "strength", sets: 3, reps: "8-10", weight_kg: 50, rest_s: 120 },
+    { name: "Overhead press", kind: "strength", sets: 3, reps: "8", weight_kg: 35, rest_s: 90 },
+    { name: "Pull-up", kind: "strength", sets: 3, reps: "AMRAP", rest_s: 90 },
+    { name: "Plank", kind: "mobility", sets: 3, duration_min: 1 },
+  ],
+}, "coach");
+const legs = await training.saveRoutine({
+  name: "Legs",
+  exercises: [
+    { name: "Squat", kind: "strength", sets: 5, reps: "5", weight_kg: 80, rest_s: 180 },
+    { name: "Romanian deadlift", kind: "strength", sets: 3, reps: "8", weight_kg: 70, rest_s: 120 },
+    { name: "Walking lunge", kind: "strength", sets: 3, reps: "12", weight_kg: 16 },
+    { name: "Calf raise", kind: "strength", sets: 3, reps: "15", weight_kg: 40 },
+  ],
+}, "user");
+await training.saveRoutine({ name: "Easy run", exercises: [{ name: "Run", kind: "cardio", duration_min: 30, distance_km: 5 }] }, "user");
+const at = (date: string, hh: number, mm: number) => new Date(Date.parse(`${date}T${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}:00Z`) - 2 * 3600_000).toISOString();
+for (const [i, ago] of [15, 8, 1].entries()) {
+  const date = addDays(today, -ago);
+  const kg = 75 + i * 2.5;
+  await training.saveLog({
+    date, name: "Legs", routine_id: legs.id, effort: 7 + (i === 2 ? 1 : 0), started_at: at(date, 17, 30), ended_at: at(date, 18, 32),
+    exercises: [
+      { name: "Squat", kind: "strength", sets: Array.from({ length: 5 }, () => ({ reps: 5, weight_kg: kg })) },
+      { name: "Romanian deadlift", kind: "strength", sets: Array.from({ length: 3 }, () => ({ reps: 8, weight_kg: 65 + i * 2.5 })) },
+      { name: "Walking lunge", kind: "strength", sets: Array.from({ length: 3 }, () => ({ reps: 12, weight_kg: 16 })) },
+    ],
+  }, today);
+}
+for (const [i, ago] of [10, 3].entries()) {
+  const date = addDays(today, -ago);
+  await training.saveLog({
+    date, name: "Upper body A", routine_id: upper.id, effort: 6, started_at: at(date, 18, 0), ended_at: at(date, 18, 55),
+    notes: i === 1 ? "Last bench set felt heavy." : null,
+    exercises: [
+      { name: "Bench press", kind: "strength", sets: [{ reps: 10, weight_kg: 57.5 + i * 2.5 }, { reps: 9, weight_kg: 57.5 + i * 2.5 }, { reps: 8, weight_kg: 57.5 + i * 2.5 }] },
+      { name: "Bent-over row", kind: "strength", sets: Array.from({ length: 3 }, () => ({ reps: 10, weight_kg: 50 })) },
+      { name: "Pull-up", kind: "strength", sets: [{ reps: 8 }, { reps: 7 }, { reps: 6 }] },
+    ],
+  }, today);
+}
+
 await rebuildStats(today, await loadSettings());
 const byDate = (a: Row, b: Row) => String(a.date).localeCompare(String(b.date));
 const days = [...tables.fs_days].sort(byDate);
@@ -110,6 +160,7 @@ write("status.json", {
 write("days.json", { from: days[0]?.date ?? today, to: today, today, days });
 write("stats.json", tables.fs_cache.find((c) => c.key === "stats")!.value);
 write("journal.json", { tags: JOURNAL_TAGS, entries: await journalEntries(addDays(today, -400)) });
+write("training.json", await training.trainingData(today));
 
 for (let i = 0; i < 7; i++) {
   const date = addDays(today, -i);
