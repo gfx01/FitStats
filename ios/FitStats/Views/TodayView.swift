@@ -59,6 +59,7 @@ struct TodayView: View {
     /// Where it hovers, and the card it would stack with if dropped now.
     @State private var hover: HomeHover?
     @State private var stackTarget: String?
+    @State private var lastDragActivity = Date.distantPast
     /// The card whose resize outline is up, drawn above the others.
     @State private var resizingID: String?
     /// The card whose settings sheet is open.
@@ -124,6 +125,7 @@ struct TodayView: View {
                     HomeTimesSheet(config: configBinding)
                 }
                 .onReceive(Self.minuteTicker) { now = $0 }
+                .task(id: dragging) { await clearCancelledDrag() }
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active { now = Date() }
                 }
@@ -327,18 +329,13 @@ struct TodayView: View {
                     dragging = item.id
                     hover = nil
                     stackTarget = nil
-                    let provider = HomeDragItemProvider(object: item.id as NSString)
-                    provider.didEnd = {
-                        guard dragging == item.id else { return }
-                        dragging = nil
-                        hover = nil
-                        stackTarget = nil
-                    }
-                    return provider
+                    lastDragActivity = Date()
+                    return NSItemProvider(object: item.id as NSString)
                 },
                 makeDrop: { size in
                     HomeDropDelegate(target: item.id, size: size, items: layout, dragging: $dragging,
-                                     hover: $hover, stackTarget: $stackTarget, onStack: stack)
+                                     hover: $hover, stackTarget: $stackTarget, lastDragActivity: $lastDragActivity,
+                                     onStack: stack)
                 }
             ) { size in
                 cellContent(item, size: size)
@@ -384,6 +381,21 @@ struct TodayView: View {
             dragging = nil
             hover = nil
             stackTarget = nil
+        }
+    }
+
+    /// SwiftUI doesn't say when a drag ends without a drop (released over the toolbar, or
+    /// cancelled), which would leave the card faded. While a drag is on, drop targets report in
+    /// as the finger moves; two quiet seconds mean it's over.
+    private func clearCancelledDrag() async {
+        while dragging != nil {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            if Task.isCancelled { return }
+            if Date().timeIntervalSince(lastDragActivity) > 2 {
+                dragging = nil
+                hover = nil
+                stackTarget = nil
+            }
         }
     }
 

@@ -362,6 +362,8 @@ struct HomeDropDelegate: DropDelegate {
     @Binding var dragging: String?
     @Binding var hover: HomeHover?
     @Binding var stackTarget: String?
+    /// Last time a drop target heard from the drag (see TodayView's drag watchdog).
+    @Binding var lastDragActivity: Date
     /// Stack the dragged card (first id) onto the target (second id).
     var onStack: (String, String) -> Void
 
@@ -406,6 +408,7 @@ struct HomeDropDelegate: DropDelegate {
     }
 
     private func track(_ info: DropInfo) {
+        lastDragActivity = Date()
         guard let dragged = dragging, dragged != target else { return }
         let middle = canStack(dragged) && isMiddle(info)
         let now = Date()
@@ -430,18 +433,6 @@ struct HomeDropDelegate: DropDelegate {
         var next = items
         next.move(fromOffsets: IndexSet(integer: from), toOffset: to > from ? to + 1 : to)
         withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) { items = next }
-    }
-}
-
-/// The drag's item: the system lets go of it when the drag ends, dropped or cancelled, so
-/// `didEnd` clears the drag state even when no card took the drop (SwiftUI has no drag-end
-/// callback for the card being dragged).
-final class HomeDragItemProvider: NSItemProvider {
-    var didEnd: (() -> Void)?
-
-    deinit {
-        let end = didEnd
-        DispatchQueue.main.async { end?() }
     }
 }
 
