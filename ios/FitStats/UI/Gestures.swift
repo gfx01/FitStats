@@ -31,19 +31,18 @@ private struct SwipeBackInstaller: UIViewControllerRepresentable {
     }
 }
 
-/// A pan over the whole screen that drives the navigation controller's own back-swipe
-/// transition, so it follows the finger and can be cancelled halfway like the edge swipe. It
-/// starts only for a swipe to the right, mostly sideways, on a pushed screen, and leaves alone
-/// horizontal scrollers that can still scroll back and controls such as switches and steppers.
-/// The edge swipe keeps working as before: a swipe that starts at the very edge is left to it.
+/// A pan over the whole screen that goes back once it has moved about 70 points to the right
+/// (or on a quick flick), with the usual back animation. It starts only for a swipe to the
+/// right, mostly sideways, on a pushed screen, and leaves alone horizontal scrollers that can
+/// still scroll back and controls such as switches and steppers. A swipe from the very left
+/// edge is left to the system's own back swipe, which follows the finger.
+///
+/// (Handing this pan to that swipe's own handler, as UIKit apps have done, starts nothing in a
+/// SwiftUI navigation stack, so it only uses public calls.)
 @MainActor
 enum FullSwipeBack {
     static func install(on nav: UINavigationController) {
         guard !(nav.view.gestureRecognizers ?? []).contains(where: { $0 is FullSwipeBackPan }) else { return }
-        guard let edge = nav.interactivePopGestureRecognizer else {
-            DebugLog.note("swipe back: no edge swipe")
-            return
-        }
         // iOS 26 swipes back from anywhere by itself.
         if nav.responds(to: NSSelectorFromString("interactiveContentPopGestureRecognizer")),
            let content = nav.value(forKey: "interactiveContentPopGestureRecognizer") as? UIGestureRecognizer,
@@ -51,25 +50,13 @@ enum FullSwipeBack {
             DebugLog.note("swipe back: the system's own content swipe is on")
             return
         }
-        // The edge swipe's own handler (UIKit has no public way to reach it).
-        guard let targets = edge.value(forKey: "targets") as? [NSObject],
-              let handler = targets.first?.value(forKey: "target") as? NSObject else {
-            DebugLog.note("swipe back: the edge swipe's handler not found")
-            return
-        }
-        let action = NSSelectorFromString("handleNavigationTransition:")
-        guard handler.responds(to: action) else {
-            DebugLog.note("swipe back: \(type(of: handler)) has no handleNavigationTransition:")
-            return
-        }
-        let pan = FullSwipeBackPan(target: handler, action: action)
         let rules = FullSwipeBackRules(nav: nav)
+        let pan = FullSwipeBackPan(target: rules, action: #selector(FullSwipeBackRules.panned(_:)))
         pan.rules = rules
         pan.delegate = rules
         pan.maximumNumberOfTouches = 1
-        pan.addTarget(rules, action: #selector(FullSwipeBackRules.panned(_:)))
         nav.view.addGestureRecognizer(pan)
-        DebugLog.note("swipe back: installed on \(type(of: nav)), handler \(type(of: handler))")
+        DebugLog.note("swipe back: installed on \(type(of: nav))")
     }
 }
 
@@ -81,6 +68,8 @@ private final class FullSwipeBackPan: UIPanGestureRecognizer {
 @MainActor
 private final class FullSwipeBackRules: NSObject, UIGestureRecognizerDelegate {
     weak var nav: UINavigationController?
+    /// This swipe has gone back already.
+    private var popped = false
 
     init(nav: UINavigationController) {
         self.nav = nav
@@ -99,8 +88,24 @@ private final class FullSwipeBackRules: NSObject, UIGestureRecognizerDelegate {
     }
 
     @objc func panned(_ pan: UIPanGestureRecognizer) {
-        guard pan.state == .began || pan.state == .ended || pan.state == .cancelled else { return }
-        DebugLog.note("swipe back: \(pan.state == .began ? "began" : pan.state == .ended ? "ended" : "cancelled") at \(Int(pan.translation(in: pan.view).x))")
+        let t = pan.translation(in: pan.view)
+        switch pan.state {
+        case .began:
+            popped = false
+        case .changed:
+            if t.x > 70, t.x > abs(t.y) * 1.5 { goBack(t) }
+        case .ended:
+            if t.x > 24, pan.velocity(in: pan.view).x > 450 { goBack(t) }
+        default:
+            break
+        }
+    }
+
+    private func goBack(_ t: CGPoint) {
+        guard !popped, let nav, nav.viewControllers.count > 1, nav.transitionCoordinator == nil else { return }
+        popped = true
+        DebugLog.note("swipe back: back at \(Int(t.x))")
+        nav.popViewController(animated: true)
     }
 
     func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {

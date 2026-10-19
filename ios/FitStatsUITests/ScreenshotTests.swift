@@ -495,8 +495,7 @@ final class ScreenshotTests: XCTestCase {
         if sleepRing.waitForExistence(timeout: 5) {
             sleepRing.tap()
             let naps = element(app, "sleep-naps")
-            scrollTo(app, naps)
-            reveal(app, naps)
+            scrollTo(app, naps, near: 0.4)
             shot("76-sleep-naps")
             XCTAssertTrue(onScreen(app, naps), "no Naps section on the Sleep screen: \(describe(naps))")
         } else {
