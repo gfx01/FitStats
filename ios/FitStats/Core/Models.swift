@@ -477,10 +477,49 @@ struct ScoreComponentInfo: Identifiable {
     var id: String { key }
 }
 
+/// What moved a score most, in one line (ScoreBreakdown.why).
+struct ScoreWhy: Equatable {
+    let text: String
+    /// True when it names the part that lifted the score, false for the part that held it back.
+    let lifted: Bool
+}
+
 struct ScoreBreakdown {
     let score: Double?
     let status: String
     let components: [ScoreComponentInfo]
+
+    /// Recovery's parts are scored against your own baseline (50 is your usual). On a day under 67
+    /// it names the part furthest below that, weighted ("Held back most by HRV: 39 ms vs 43 ms
+    /// baseline"); from 67 up the part furthest above it ("Lifted most by HRV: 67 ms vs 43 ms
+    /// baseline"). Nil without a score or when no part stands out that way.
+    var recoveryWhy: ScoreWhy? {
+        guard status == "ok", let score, !components.isEmpty else { return nil }
+        let pull = { (c: ScoreComponentInfo) in c.weight * (c.value - 50) }
+        if score < 67 {
+            guard let down = components.min(by: { pull($0) < pull($1) }), pull(down) <= -1 else { return nil }
+            return ScoreWhy(text: "Held back most by \(Self.inSentence(down.label)): \(down.detail)", lifted: false)
+        }
+        guard let up = components.max(by: { pull($0) < pull($1) }), pull(up) >= 1 else { return nil }
+        return ScoreWhy(text: "Lifted most by \(Self.inSentence(up.label)): \(up.detail)", lifted: true)
+    }
+
+    /// Sleep's parts are scored against a target (100 is met), and the score is their weighted
+    /// average, so it names the part that cost the most points, weight × (100 − value):
+    /// "Held back most by duration: 4h 1m of 8h 0m needed". Nil when none cost 3 points.
+    var sleepWhy: ScoreWhy? {
+        guard status == "ok", score != nil, !components.isEmpty else { return nil }
+        let cost = { (c: ScoreComponentInfo) in c.weight * (100 - c.value) }
+        guard let worst = components.max(by: { cost($0) < cost($1) }), cost(worst) >= 3 else { return nil }
+        return ScoreWhy(text: "Held back most by \(Self.inSentence(worst.label)): \(worst.detail)", lifted: false)
+    }
+
+    /// "Consistency" → "consistency" mid-sentence; "HRV" stays.
+    private static func inSentence(_ label: String) -> String {
+        let chars = Array(label)
+        guard chars.count > 1, !chars[1].isUppercase else { return label }
+        return label.prefix(1).lowercased() + label.dropFirst()
+    }
 
     init(_ json: JSONValue?) {
         score = json?["score"]?.double

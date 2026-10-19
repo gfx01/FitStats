@@ -72,6 +72,7 @@ struct LastNightCard: View {
             LastNightStageBar(parts: stages)
             legend(stages)
         }
+        if let why = ScoreBreakdown(day.json("score_details")?["sleep"]).sleepWhy { ScoreWhyLine(why: why) }
         HStack(alignment: .top) {
             stat("Efficiency", efficiencyText(day))
             Spacer(minLength: 8)

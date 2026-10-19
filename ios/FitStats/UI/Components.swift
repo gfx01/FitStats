@@ -21,6 +21,26 @@ struct Card<Content: View>: View {
     }
 }
 
+/// The line under a score saying what moved it most (ScoreBreakdown.recoveryWhy, .sleepWhy).
+struct ScoreWhyLine: View {
+    let why: ScoreWhy
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: why.lifted ? "arrow.up.right" : "arrow.down.right")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(why.lifted ? Theme.recoveryGreen : Theme.recoveryYellow)
+            Text(why.text)
+                .font(.footnote)
+                .foregroundStyle(Theme.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("score-why")
+    }
+}
+
 struct SectionHeader: View {
     let title: String
     var subtitle: String? = nil

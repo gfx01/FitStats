@@ -92,6 +92,7 @@ struct RecoveryDetailView: View {
                         Text(advice(value)).font(.footnote).foregroundStyle(Theme.secondary)
                     }
                 }
+                if let why = breakdown.recoveryWhy { ScoreWhyLine(why: why) }
             }
             BreakdownCard(breakdown: breakdown, color: Theme.recoveryColor(value),
                           emptyText: "Recovery needs at least 5 nights of HRV or resting heart rate to build your personal baseline.")
@@ -142,6 +143,7 @@ struct SleepDetailView: View {
                         KeyValueRow(key: "Efficiency", value: day?.double("sleep_efficiency").map { "\(Int(($0 * 100).rounded()))%" } ?? "–")
                     }
                 }
+                if let why = ScoreBreakdown(day?.json("score_details")?["sleep"]).sleepWhy { ScoreWhyLine(why: why) }
             }
             if let stages = main?.stages, !stages.isEmpty {
                 SleepStagesCard(date: date, layout: HypnogramLayout(stages: stages), day: day)

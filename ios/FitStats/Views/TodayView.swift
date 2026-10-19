@@ -946,11 +946,14 @@ struct HomeLargeCard: View {
             : (breakdown.status == "calibrating" ? "Calibrating" : "No data")
         return Card {
             NavigationLink(value: DetailRoute.recovery(date)) {
-                HStack(spacing: 18) {
-                    ScoreRing(title: "Recovery", value: recovery, maxValue: 100,
-                              color: Theme.recoveryColor(recovery), caption: caption,
-                              size: 128, lineWidth: 14, suffix: "%")
-                    recoverySummary(day)
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 18) {
+                        ScoreRing(title: "Recovery", value: recovery, maxValue: 100,
+                                  color: Theme.recoveryColor(recovery), caption: caption,
+                                  size: 128, lineWidth: 14, suffix: "%")
+                        recoverySummary(day)
+                    }
+                    if let why = breakdown.recoveryWhy { ScoreWhyLine(why: why) }
                 }
             }
             .buttonStyle(.plain)
