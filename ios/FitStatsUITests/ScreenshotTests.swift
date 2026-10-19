@@ -285,7 +285,8 @@ final class ScreenshotTests: XCTestCase {
         let destination = element(app, "home-card-hrvTrend")
         reveal(app, source)
         if source.exists, destination.exists, source.isHittable, destination.isHittable {
-            source.press(forDuration: 1.2, thenDragTo: destination)
+            // Slow, and held over the middle: a quick flick ends before the drop lands.
+            source.press(forDuration: 1.2, thenDragTo: destination, withVelocity: .slow, thenHoldForDuration: 1.0)
             sleep(2)
             shot("67-home-stacked")
         } else {

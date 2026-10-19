@@ -327,7 +327,14 @@ struct TodayView: View {
                     dragging = item.id
                     hover = nil
                     stackTarget = nil
-                    return NSItemProvider(object: item.id as NSString)
+                    let provider = HomeDragItemProvider(object: item.id as NSString)
+                    provider.didEnd = {
+                        guard dragging == item.id else { return }
+                        dragging = nil
+                        hover = nil
+                        stackTarget = nil
+                    }
+                    return provider
                 },
                 makeDrop: { size in
                     HomeDropDelegate(target: item.id, size: size, items: layout, dragging: $dragging,

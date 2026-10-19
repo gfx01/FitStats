@@ -431,6 +431,18 @@ struct HomeDropDelegate: DropDelegate {
     }
 }
 
+/// The drag's item: the system lets go of it when the drag ends, dropped or cancelled, so
+/// `didEnd` clears the drag state even when no card took the drop (SwiftUI has no drag-end
+/// callback for the card being dragged).
+final class HomeDragItemProvider: NSItemProvider {
+    var didEnd: (() -> Void)?
+
+    deinit {
+        let end = didEnd
+        DispatchQueue.main.async { end?() }
+    }
+}
+
 /// Catches a drop between cards, so the dragged card never stays faded.
 struct HomeDropEndDelegate: DropDelegate {
     @Binding var dragging: String?
