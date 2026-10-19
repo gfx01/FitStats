@@ -28,6 +28,7 @@ struct InsightsView: View {
             .refreshable { await model.pullToRefresh() }
             .screenBackground()
             .navigationTitle("Insights")
+            .swipeBackFromAnywhere()
             .navigationDestination(for: Correlation.ID.self) { id in
                 if let c = model.stats?.correlations.first(where: { $0.id == id }) {
                     CorrelationDetailView(correlation: c)

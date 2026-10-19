@@ -139,6 +139,7 @@ struct TodayView: View {
                 .screenBackground()
                 .task(id: date) { await model.loadDay(date) }
                 .navigationDestination(for: DetailRoute.self) { DetailDestination(route: $0) }
+                .swipeBackFromAnywhere()
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { header(proxy) }
                 .sheet(item: $settingsItem) { item in

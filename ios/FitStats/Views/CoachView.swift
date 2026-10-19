@@ -13,6 +13,8 @@ struct CoachView: View {
     @State var input = ""
     @State var showHistory = false
     @FocusState var inputFocused: Bool
+    /// The text field and send button on screen: tapping anywhere else hides the keyboard.
+    @State private var composerFrame: CGRect = .zero
 
     private let bottomID = "coach-bottom"
 
@@ -48,8 +50,10 @@ struct CoachView: View {
                 }
             }
             .safeAreaInset(edge: .bottom) { composer }
+            .onTapOutside(of: composerFrame, active: inputFocused) { inputFocused = false }
             .screenBackground()
             .navigationTitle("Coach")
+            .swipeBackFromAnywhere()
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -203,6 +207,13 @@ struct CoachView: View {
         .padding(.top, 8)
         .padding(.bottom, 8)
         .background(.bar)
+        .background {
+            GeometryReader { geo in
+                Color.clear
+                    .onAppear { composerFrame = geo.frame(in: .global) }
+                    .onChange(of: geo.frame(in: .global)) { _, frame in composerFrame = frame }
+            }
+        }
     }
 }
 

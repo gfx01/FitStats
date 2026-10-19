@@ -458,6 +458,50 @@ final class ScreenshotTests: XCTestCase {
         }
     }
 
+    /// A swipe to the right from the middle of a pushed screen goes back, and a tap outside the
+    /// Coach's text field hides the keyboard.
+    func test05Gestures() {
+        let fixtures = ProcessInfo.processInfo.environment["FITSTATS_FIXTURES"] ?? ""
+        XCTAssertFalse(fixtures.isEmpty, "FITSTATS_FIXTURES is not set")
+        let app = XCUIApplication()
+        app.launchEnvironment["FITSTATS_FIXTURES"] = fixtures
+        app.launch()
+        let ring = app.buttons["ring-recovery"]
+        XCTAssertTrue(ring.waitForExistence(timeout: 15), "Today screen did not load")
+
+        ring.tap()
+        sleep(1)
+        XCTAssertFalse(ring.isHittable, "Recovery did not open")
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: 0.55))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 250, dy: 0)),
+                    withVelocity: .fast, thenHoldForDuration: 0)
+        sleep(1)
+        shot("73-swiped-back")
+        XCTAssertTrue(ring.isHittable, "a swipe from the middle of Recovery did not go back to Today")
+
+        app.tabBars.buttons["Coach"].tap()
+        let input = element(app, "coach-input")
+        guard input.waitForExistence(timeout: 5) else {
+            XCTFail("missing coach-input")
+            return
+        }
+        input.tap()
+        let keyboard = app.keyboards.firstMatch
+        guard keyboard.waitForExistence(timeout: 5) else {
+            // A simulator with a hardware keyboard attached never shows one.
+            XCTFail("no keyboard appeared after tapping the Coach's text field")
+            return
+        }
+        app.typeText("Hi")
+        shot("74-coach-keyboard")
+        // The "Your coach" heading: not a button.
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.22)).tap()
+        sleep(1)
+        shot("75-coach-keyboard-hidden")
+        XCTAssertFalse(keyboard.exists, "tapping outside the text field did not hide the keyboard")
+        app.terminate()
+    }
+
     /// Training load and best bedtime on Insights, the calendar and compare periods from Trends,
     /// and a workout's heart-rate recovery.
     func test04InsightsPack() {

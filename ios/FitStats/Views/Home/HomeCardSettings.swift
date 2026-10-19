@@ -37,6 +37,7 @@ struct HomeCardSettingsView: View {
                 }
             }
             .navigationTitle(draft.title)
+            .swipeBackFromAnywhere()
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {

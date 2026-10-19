@@ -29,6 +29,7 @@ struct SettingsView: View {
             }
             .screenBackground()
             .navigationTitle("Settings")
+            .swipeBackFromAnywhere()
             .onAppear(perform: loadDraft)
             .onChange(of: model.status?.settings) { _, _ in loadDraft() }
             .task { if coach.status == nil { await coach.refresh() } }

@@ -47,6 +47,7 @@ struct TrendsView: View {
             .refreshable { await model.pullToRefresh() }
             .screenBackground()
             .navigationTitle("Trends")
+            .swipeBackFromAnywhere()
             .navigationDestination(for: DetailRoute.self) { DetailDestination(route: $0) }
             .navigationDestination(for: TrendsRoute.self) { route in
                 switch route {
