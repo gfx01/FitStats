@@ -286,6 +286,10 @@ enum HomeLayout {
 
     /// Every card in declaration order in fixture mode (ids fixed so tests can find them),
     /// otherwise nil (use the stored layout).
+    /// CI only (FITSTATS_HOLD_RESIZE=1): a resize stays stretched after the finger lifts, so a
+    /// screenshot can show the card mid-resize.
+    static let holdsResize = ProcessInfo.processInfo.environment["FITSTATS_HOLD_RESIZE"] == "1"
+
     static var fixtureItems: [HomeItem]? {
         guard showsAllCards else { return nil }
         let forced = ProcessInfo.processInfo.environment["FITSTATS_HOME_SIZE"].flatMap(CardSize.init(rawValue:))

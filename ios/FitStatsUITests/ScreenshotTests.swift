@@ -357,6 +357,30 @@ final class ScreenshotTests: XCTestCase {
         shot("50-home-after-edit")
         app.terminate()
 
+        // Mid-resize (FITSTATS_HOLD_RESIZE keeps the stretch after the finger lifts): Journal, the
+        // right card of a small pair, grows to the left, and Tonight stretches past its footprint.
+        app.launchEnvironment["FITSTATS_HOLD_RESIZE"] = "1"
+        app.launch()
+        let scores = element(app, "home-card-scores")
+        if scores.waitForExistence(timeout: 15) {
+            scores.press(forDuration: 0.8)
+            for (id, offset, name) in [("journal", CGVector(dx: -110, dy: 40), "71-home-resize-held-left"),
+                                       ("tonight", CGVector(dx: 60, dy: 70), "72-home-resize-held")] {
+                let handle = element(app, "home-resize-\(id)")
+                if handle.waitForExistence(timeout: 5) {
+                    let start = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+                    start.press(forDuration: 0.05, thenDragTo: start.withOffset(offset))
+                    shot(name)
+                } else {
+                    XCTFail("missing home-resize-\(id)")
+                }
+            }
+        } else {
+            XCTFail("Today (held resize) did not load")
+        }
+        app.terminate()
+        app.launchEnvironment["FITSTATS_HOLD_RESIZE"] = nil
+
         for (size, first, count) in [("small", 51, 3), ("medium", 55, 5)] {
             app.launchEnvironment["FITSTATS_HOME_SIZE"] = size
             app.launch()

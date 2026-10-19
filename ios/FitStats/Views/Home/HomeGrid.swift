@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// The size each Home grid cell asks for (set with `.layoutValue(key:value:)`).
 struct HomeCardSizeKey: LayoutValueKey {
@@ -207,7 +208,6 @@ struct HomeEditCell<Content: View>: View {
     @State private var resizeBase: ResizeBase?
     @State private var resizeTranslation: CGSize = .zero
     @GestureState private var resizeGesture: CGSize? = nil
-    @GestureState private var moveGesture = false
 
     // Computed: a generic type can't have static stored properties. Same as HomeGridLayout.
     private static var columnSpacing: CGFloat { 12 }
@@ -222,8 +222,7 @@ struct HomeEditCell<Content: View>: View {
             }
             // Catches touches over the whole card: a tap opens its settings, a short hold lifts it.
             .overlay {
-                Color.white.opacity(0.001)
-                    .gesture(liftAndMove.exclusively(before: TapGesture().onEnded { onEdit() }))
+                HomeCardTouches(onTap: onEdit, onDrag: onDrag)
             }
             .overlay(alignment: .topLeading) {
                 if canRemove && !isResizing && !isMoving { removeButton }
@@ -254,9 +253,6 @@ struct HomeEditCell<Content: View>: View {
                 // A cancelled drag never calls onEnded.
                 if now == nil { endResize() }
             }
-            .onChange(of: moveGesture) { _, now in
-                if !now { onDrag(.ended) }
-            }
             .accessibilityElement(children: .contain)
             .accessibilityLabel(Text("\(item.title), \(item.size.label)"))
             .accessibilityHint(Text(item.card.hasSettings ? "Tap for its settings" : ""))
@@ -281,24 +277,6 @@ struct HomeEditCell<Content: View>: View {
     }
 
     // MARK: moving
-
-    /// Hold for a moment, then drag. A quick swipe fails the hold, so the page still scrolls.
-    private var liftAndMove: some Gesture {
-        LongPressGesture(minimumDuration: 0.2)
-            .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .global))
-            .updating($moveGesture) { value, state, _ in
-                if case .second(true, _) = value { state = true }
-            }
-            .onChanged { value in
-                guard case .second(true, let drag) = value else { return }
-                if let drag {
-                    onDrag(.moved(start: drag.startLocation, location: drag.location))
-                } else {
-                    onDrag(.lifted)
-                }
-            }
-            .onEnded { _ in onDrag(.ended) }
-    }
 
     private var movingSlot: some View {
         RoundedRectangle(cornerRadius: 22, style: .continuous)
@@ -358,7 +336,7 @@ struct HomeEditCell<Content: View>: View {
 
     /// Lets go: TodayView glides the stretched card into the slot of its new size.
     private func endResize() {
-        guard resizeStarted else { return }
+        guard resizeStarted, !HomeLayout.holdsResize else { return }
         resizeStarted = false
         let began = resizeBase != nil
         resizeBase = nil
@@ -428,6 +406,63 @@ struct HomeEditCell<Content: View>: View {
         let sizes = item.card.sizes
         guard let i = sizes.firstIndex(of: item.size) else { return item.card.defaultSize }
         return sizes[(i + 1) % sizes.count]
+    }
+}
+
+/// The touches over a card in edit mode, in UIKit so the page still scrolls under them (a
+/// SwiftUI hold-then-drag gesture over every card kept the page from scrolling): a tap opens the
+/// card's settings, and holding still for a moment lifts the card, which then follows the
+/// finger. A swipe that starts moving before that scrolls the page as usual.
+struct HomeCardTouches: UIViewRepresentable {
+    var onTap: () -> Void
+    var onDrag: (HomeDragEvent) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.backgroundColor = .clear
+        let hold = UILongPressGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.hold(_:)))
+        hold.minimumPressDuration = 0.2
+        hold.allowableMovement = 10
+        view.addGestureRecognizer(hold)
+        view.addGestureRecognizer(UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.tap(_:))))
+        return view
+    }
+
+    func updateUIView(_ view: UIView, context: Context) {
+        context.coordinator.parent = self
+    }
+
+    final class Coordinator: NSObject {
+        var parent: HomeCardTouches
+        /// Where the hold began, in window coordinates (SwiftUI's global space).
+        private var start: CGPoint = .zero
+
+        init(_ parent: HomeCardTouches) {
+            self.parent = parent
+        }
+
+        @objc func tap(_ gesture: UITapGestureRecognizer) {
+            if gesture.state == .ended { parent.onTap() }
+        }
+
+        @objc func hold(_ gesture: UILongPressGestureRecognizer) {
+            let p = gesture.location(in: nil)
+            switch gesture.state {
+            case .began:
+                start = p
+                parent.onDrag(.lifted)
+                // Lifted at once, under the finger, before it moves.
+                parent.onDrag(.moved(start: p, location: p))
+            case .changed:
+                parent.onDrag(.moved(start: start, location: p))
+            case .ended, .cancelled, .failed:
+                parent.onDrag(.ended)
+            default:
+                break
+            }
+        }
     }
 }
 
