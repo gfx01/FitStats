@@ -438,6 +438,8 @@ struct TodayView: View {
                     .frame(width: slot.width)
                     .fixedSize(horizontal: false, vertical: true)
                     .environment(\.homeCardPreview, true)
+                    // Opaque, so the cards it passes over don't show through its own translucent card.
+                    .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(Theme.background))
                     .scaleEffect(m.landing ? 1 : 1.05)
                     .shadow(color: .black.opacity(m.landing ? 0 : 0.5), radius: 18, y: 10)
                     .position(x: topLeft.x - origin.x + slot.width / 2, y: topLeft.y - origin.y + slot.height / 2)

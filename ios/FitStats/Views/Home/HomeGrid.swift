@@ -217,12 +217,13 @@ struct HomeEditCell<Content: View>: View {
         content(item.size)
             .allowsHitTesting(false)
             .opacity(isMoving || isResizing ? 0 : 1)
+            // Takes the touches the card lets through: a tap opens its settings, a short hold
+            // lifts it. Behind the card, so VoiceOver still finds the card's own content.
+            .background {
+                HomeCardTouches(onTap: onEdit, onDrag: onDrag)
+            }
             .overlay {
                 if isMoving { movingSlot }
-            }
-            // Catches touches over the whole card: a tap opens its settings, a short hold lifts it.
-            .overlay {
-                HomeCardTouches(onTap: onEdit, onDrag: onDrag)
             }
             .overlay(alignment: .topLeading) {
                 if canRemove && !isResizing && !isMoving { removeButton }
@@ -422,6 +423,7 @@ struct HomeCardTouches: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
         let view = UIView()
         view.backgroundColor = .clear
+        view.accessibilityElementsHidden = true
         let hold = UILongPressGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.hold(_:)))
         hold.minimumPressDuration = 0.2
         hold.allowableMovement = 10
@@ -508,7 +510,8 @@ struct HomeStretchedCard<Content: View>: View {
             .environment(\.homeCardBare, true)
             .environment(\.homeCardPreview, true)
             .frame(width: size.width, height: size.height, alignment: .topLeading)
-            .background(shape.fill(Theme.card))
+            // Opaque, so the cards it passes over don't show through.
+            .background(shape.fill(Theme.card).background(shape.fill(Theme.background)))
             .clipShape(shape)
             .overlay(shape.stroke(Theme.cardBorder, lineWidth: 1))
             .overlay(alignment: leftward ? .bottomLeading : .bottomTrailing) {

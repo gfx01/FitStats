@@ -49,8 +49,8 @@ final class ScreenshotTests: XCTestCase {
     /// Swipes up until the element is on screen, then drags its top up under the navigation bar
     /// so the whole card is in the shot.
     private func reveal(_ app: XCUIApplication, _ element: XCUIElement) {
-        for _ in 0..<10 where !element.isHittable { app.swipeUp() }
-        guard element.isHittable else { return }
+        for _ in 0..<10 where !onScreen(app, element) { app.swipeUp() }
+        guard onScreen(app, element) else { return }
         let window = app.windows.firstMatch.frame
         let target = window.minY + window.height * 0.14
         let distance = element.frame.minY - target
@@ -62,9 +62,26 @@ final class ScreenshotTests: XCTestCase {
 
     /// Scrolls until `element` is on screen: up first, then back down.
     private func scrollTo(_ app: XCUIApplication, _ element: XCUIElement) {
-        for _ in 0..<20 where !(element.exists && element.isHittable) { app.swipeUp() }
-        for _ in 0..<24 where !(element.exists && element.isHittable) { app.swipeDown() }
-        if element.exists, element.isHittable { reveal(app, element) }
+        for _ in 0..<20 where !onScreen(app, element) { app.swipeUp() }
+        for _ in 0..<24 where !onScreen(app, element) { app.swipeDown() }
+        if onScreen(app, element) { reveal(app, element) }
+    }
+
+    /// Hittable, or (a Home card in edit mode, whose touches a UIKit view behind its content
+    /// takes) its middle is between the navigation bar and the tab bar. A card that is on screen
+    /// but not hittable is noted in the log.
+    private func onScreen(_ app: XCUIApplication, _ element: XCUIElement) -> Bool {
+        guard element.exists else { return false }
+        if element.isHittable { return true }
+        let window = app.windows.firstMatch.frame
+        let f = element.frame
+        let visible = !f.isEmpty && f.midY > window.minY + 120 && f.midY < window.maxY - 120
+        if visible { print("note: \(element.identifier) is on screen but not hittable (failed hit test)") }
+        return visible
+    }
+
+    private func middle(_ element: XCUIElement, dy: CGFloat = 0.5) -> XCUICoordinate {
+        element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: dy))
     }
 
     private func element(_ app: XCUIApplication, _ id: String) -> XCUIElement {
@@ -240,10 +257,9 @@ final class ScreenshotTests: XCTestCase {
         let vitals = element(app, "home-card-vitals")
         let activity = element(app, "home-card-activity")
         scrollTo(app, vitals)
-        if vitals.exists, activity.exists, vitals.isHittable, activity.isHittable {
-            let from = vitals.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-            let to = activity.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.88))
-            from.press(forDuration: 0.6, thenDragTo: to, withVelocity: .default, thenHoldForDuration: 0.8)
+        if onScreen(app, vitals), onScreen(app, activity) {
+            middle(vitals).press(forDuration: 0.6, thenDragTo: middle(activity, dy: 0.88),
+                                 withVelocity: .default, thenHoldForDuration: 0.8)
             sleep(1)
             shot("70-home-reordered")
             XCTAssertGreaterThan(vitals.frame.minY, activity.frame.minY, "Vitals did not move below Activity")
@@ -253,8 +269,8 @@ final class ScreenshotTests: XCTestCase {
         // Tapping a card while editing opens its settings: the Metric card switches to HRV.
         let metric = element(app, "home-card-metric-fixture")
         scrollTo(app, metric)
-        if metric.exists, metric.isHittable {
-            metric.tap()
+        if onScreen(app, metric) {
+            middle(metric).tap()
             let settingsDone = app.buttons["card-settings-done"]
             if settingsDone.waitForExistence(timeout: 5) {
                 shot("61-card-settings-metric")
@@ -287,8 +303,8 @@ final class ScreenshotTests: XCTestCase {
         }
         let stackCell = element(app, "home-card-stack-fixture")
         scrollTo(app, stackCell)
-        if stackCell.exists, stackCell.isHittable {
-            stackCell.tap()
+        if onScreen(app, stackCell) {
+            middle(stackCell).tap()
             let settingsDone = app.buttons["card-settings-done"]
             if settingsDone.waitForExistence(timeout: 5) {
                 shot("64-stack-settings")
@@ -305,11 +321,13 @@ final class ScreenshotTests: XCTestCase {
         let source = element(app, "home-card-recoveryTrend")
         let destination = element(app, "home-card-hrvTrend")
         scrollTo(app, source)
-        if source.exists, destination.exists, source.isHittable, destination.isHittable {
-            // Straight to the middle, then held there: a drop released at once never lands.
-            source.press(forDuration: 1.2, thenDragTo: destination, withVelocity: .default, thenHoldForDuration: 1.0)
+        if onScreen(app, source), onScreen(app, destination) {
+            // Straight to the middle, then held there until it offers the stack.
+            middle(source).press(forDuration: 1.2, thenDragTo: middle(destination),
+                                 withVelocity: .default, thenHoldForDuration: 1.0)
             sleep(2)
             shot("67-home-stacked")
+            XCTAssertFalse(source.exists || destination.exists, "recoveryTrend and hrvTrend did not become a stack")
         } else {
             XCTFail("recoveryTrend or hrvTrend not reachable for stacking")
         }
