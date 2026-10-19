@@ -138,7 +138,8 @@ async function oauthCallback(params: URLSearchParams): Promise<Response> {
   const claims = decodeIdToken(tokens.id_token);
   const acc = await loadAccount();
   if (acc?.google_sub && claims.sub && acc.google_sub !== claims.sub) {
-    return fail("wrong_account", `This server belongs to ${acc.google_email ?? "another Google account"}. Sign in with that account.`);
+    // No email here: anyone can open the sign-in link, so this must not say whose server it is.
+    return fail("wrong_account", "This server is already set up with a different Google account. Sign in with the account you set it up with.");
   }
   const refreshToken = tokens.refresh_token ?? acc?.refresh_token ?? null;
   if (!refreshToken) return fail("no_refresh_token", "Google did not return offline access. Remove FitStats from your Google account permissions and try again.");
