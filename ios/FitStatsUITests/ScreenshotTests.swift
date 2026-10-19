@@ -60,6 +60,13 @@ final class ScreenshotTests: XCTestCase {
         start.press(forDuration: 0.1, thenDragTo: end)
     }
 
+    /// Scrolls until `element` is on screen: up first, then back down.
+    private func scrollTo(_ app: XCUIApplication, _ element: XCUIElement) {
+        for _ in 0..<20 where !(element.exists && element.isHittable) { app.swipeUp() }
+        for _ in 0..<24 where !(element.exists && element.isHittable) { app.swipeDown() }
+        if element.exists, element.isHittable { reveal(app, element) }
+    }
+
     private func element(_ app: XCUIApplication, _ id: String) -> XCUIElement {
         app.descendants(matching: .any).matching(identifier: id).firstMatch
     }
@@ -231,7 +238,7 @@ final class ScreenshotTests: XCTestCase {
         }
         // Tapping a card while editing opens its settings: the Metric card switches to HRV.
         let metric = element(app, "home-card-metric-fixture")
-        reveal(app, metric)
+        scrollTo(app, metric)
         if metric.exists, metric.isHittable {
             metric.tap()
             let settingsDone = app.buttons["card-settings-done"]
@@ -265,7 +272,7 @@ final class ScreenshotTests: XCTestCase {
             XCTFail("missing home-card-metric-fixture")
         }
         let stackCell = element(app, "home-card-stack-fixture")
-        reveal(app, stackCell)
+        scrollTo(app, stackCell)
         if stackCell.exists, stackCell.isHittable {
             stackCell.tap()
             let settingsDone = app.buttons["card-settings-done"]
@@ -283,10 +290,10 @@ final class ScreenshotTests: XCTestCase {
         for _ in 0..<16 { app.swipeDown() }
         let source = element(app, "home-card-recoveryTrend")
         let destination = element(app, "home-card-hrvTrend")
-        reveal(app, source)
+        scrollTo(app, source)
         if source.exists, destination.exists, source.isHittable, destination.isHittable {
-            // Slow, and held over the middle: a quick flick ends before the drop lands.
-            source.press(forDuration: 1.2, thenDragTo: destination, withVelocity: .slow, thenHoldForDuration: 1.0)
+            // Straight to the middle, then held there: a drop released at once never lands.
+            source.press(forDuration: 1.2, thenDragTo: destination, withVelocity: .default, thenHoldForDuration: 1.0)
             sleep(2)
             shot("67-home-stacked")
         } else {

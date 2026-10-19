@@ -351,8 +351,9 @@ struct HomeHover: Equatable {
 
 /// Drag and drop on a Home card, like the iOS Home Screen. Pausing near a card's edge moves the
 /// dragged card there (the others make room); pausing over its middle highlights it, and
-/// dropping there stacks the two (a card dropped on a Smart Stack joins it). A short pause is
-/// needed for both, so passing over cards on the way doesn't shuffle them.
+/// dropping there stacks the two (a card dropped on a Smart Stack joins it). Moving needs a
+/// longer pause than stacking, so heading for a card's middle (through its edge) never moves
+/// it out from under the finger first, and passing over cards on the way doesn't shuffle them.
 struct HomeDropDelegate: DropDelegate {
     let target: String
     /// The target card's size, to tell its middle from its edges.
@@ -364,7 +365,8 @@ struct HomeDropDelegate: DropDelegate {
     /// Stack the dragged card (first id) onto the target (second id).
     var onStack: (String, String) -> Void
 
-    private static let pause: TimeInterval = 0.3
+    private static let movePause: TimeInterval = 0.55
+    private static let stackPause: TimeInterval = 0.25
 
     func dropEntered(info: DropInfo) {
         track(info)
@@ -395,7 +397,7 @@ struct HomeDropDelegate: DropDelegate {
         guard size.width > 0, size.height > 0 else { return false }
         let x = info.location.x / size.width
         let y = info.location.y / size.height
-        return x > 0.22 && x < 0.78 && y > 0.22 && y < 0.78
+        return x > 0.18 && x < 0.82 && y > 0.18 && y < 0.82
     }
 
     /// Stacks don't nest: a Smart Stack can be moved, not stacked.
@@ -412,7 +414,7 @@ struct HomeDropDelegate: DropDelegate {
             if !middle && stackTarget == target { stackTarget = nil }
             return
         }
-        guard now.timeIntervalSince(current.since) >= Self.pause else { return }
+        guard now.timeIntervalSince(current.since) >= (middle ? Self.stackPause : Self.movePause) else { return }
         if middle {
             if stackTarget != target { stackTarget = target }
         } else {
