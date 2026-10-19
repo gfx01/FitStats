@@ -21,6 +21,7 @@ struct SettingsView: View {
                 syncSection
                 deviceSection
                 liveSection
+                remindersSection
                 preferencesSection
                 coachSection
                 dataSection
@@ -174,6 +175,42 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    @AppStorage(Reminders.bedtimeKey) private var bedtimeReminder = false
+    @AppStorage(Reminders.bedtimeLeadKey) private var bedtimeLead = Reminders.defaultLead
+    @AppStorage(Reminders.journalKey) private var journalReminder = false
+    @AppStorage(Reminders.journalTimeKey) private var journalTime = Reminders.defaultJournalTime
+
+    private var remindersSection: some View {
+        Section {
+            ReminderToggle("Bedtime reminder", key: Reminders.bedtimeKey)
+            if bedtimeReminder {
+                Picker("Remind me", selection: $bedtimeLead) {
+                    ForEach(Reminders.leadChoices, id: \.self) { Text("\($0) min before").tag($0) }
+                }
+                .onChange(of: bedtimeLead) { _, _ in Task { await Reminders.update(model) } }
+            }
+            ReminderToggle("Journal reminder", key: Reminders.journalKey)
+            if journalReminder {
+                DatePicker("At", selection: journalTimeBinding, displayedComponents: .hourAndMinute)
+                    .onChange(of: journalTime) { _, _ in Task { await Reminders.update(model) } }
+            }
+        } header: {
+            Text("Reminders")
+        } footer: {
+            Text("The bedtime reminder comes before tonight's In bed by time from the Tonight plan. It is set again each time FitStats refreshes; for nights after that it uses an estimate until you open the app. The journal reminder skips days you've already logged.")
+        }
+    }
+
+    private var journalTimeBinding: Binding<Date> {
+        Binding(
+            get: { Calendar.current.date(bySettingHour: journalTime / 60, minute: journalTime % 60, second: 0, of: Date()) ?? Date() },
+            set: { date in
+                let c = Calendar.current.dateComponents([.hour, .minute], from: date)
+                journalTime = (c.hour ?? 21) * 60 + (c.minute ?? 30)
+            }
+        )
     }
 
     private var liveSection: some View {

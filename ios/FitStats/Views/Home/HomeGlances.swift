@@ -6,8 +6,23 @@ import SwiftUI
 // card when it has none.
 
 enum HomeGlanceMetrics {
-    /// Height of a small or medium card; a large one is as tall as its content.
+    /// Height of a small or medium card at the default text size; a large one is as tall as its
+    /// content.
     static let height: CGFloat = 170
+
+    /// Small and medium cards grow with the iPhone's text size, so bigger text isn't cut off.
+    /// Home caps text at `largestTextSize`, where a card is about 1.6 times as tall.
+    static func height(for size: DynamicTypeSize) -> CGFloat {
+        switch size {
+        case .xSmall, .small, .medium, .large: return height
+        case .xLarge: return 186
+        case .xxLarge: return 202
+        case .xxxLarge: return 222
+        default: return 270
+        }
+    }
+
+    static let largestTextSize = DynamicTypeSize.accessibility1
 }
 
 /// Picks the small or medium version of a card.
@@ -55,6 +70,7 @@ struct GlanceFrame<Content: View>: View {
     @ViewBuilder var content: () -> Content
     /// Drawn inside a Home card's resize frame, which has the background already.
     @Environment(\.homeCardBare) private var bare
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         VStack(alignment: .leading, spacing: spacing) {
@@ -62,7 +78,7 @@ struct GlanceFrame<Content: View>: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .frame(height: HomeGlanceMetrics.height)
+        .frame(height: HomeGlanceMetrics.height(for: typeSize))
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(bare ? Color.clear : Theme.card))
         .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(bare ? Color.clear : Theme.cardBorder, lineWidth: 1))
@@ -1977,6 +1993,7 @@ struct SmartStackView: View {
     let date: String
     var rotate = true
     @State private var current: String?
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     /// No stack inside a stack.
     private var cards: [StackEntry] { entries.filter { $0.card != .stack } }
@@ -2002,7 +2019,7 @@ struct SmartStackView: View {
             .scrollTargetBehavior(.paging)
             .scrollIndicators(.hidden)
             .scrollPosition(id: $current)
-            .frame(height: HomeGlanceMetrics.height)
+            .frame(height: HomeGlanceMetrics.height(for: typeSize))
             .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
             .overlay(alignment: .bottom) { dots }
             .onAppear {

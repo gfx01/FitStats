@@ -119,17 +119,117 @@ private final class FullSwipeBackRules: NSObject, UIGestureRecognizerDelegate {
 
     /// A horizontal scroller under the finger that isn't at its start yet scrolls instead.
     private func inScrollerThatCanScrollBack(_ pan: UIPanGestureRecognizer) -> Bool {
-        guard let root = pan.view else { return false }
-        var view = root.hitTest(pan.location(in: root), with: nil)
-        while let v = view, v !== root {
-            if let scroll = v as? UIScrollView,
-               scroll.contentSize.width > scroll.bounds.width + 1,
-               scroll.contentOffset.x > -scroll.adjustedContentInset.left + 1 {
-                return true
-            }
+        horizontalScroller(under: pan, canScrollForward: false)
+    }
+}
+
+/// True when a horizontal scroller under where `pan` started can still scroll that way (forward:
+/// toward its end, as a swipe to the left does), so the swipe belongs to it.
+@MainActor
+private func horizontalScroller(under pan: UIPanGestureRecognizer, canScrollForward forward: Bool) -> Bool {
+    guard let root = pan.view else { return false }
+    let start = pan.location(in: root) - pan.translation(in: root)
+    var view = root.hitTest(start, with: nil)
+    while let v = view, v !== root {
+        if let scroll = v as? UIScrollView, scroll.contentSize.width > scroll.bounds.width + 1 {
+            let x = scroll.contentOffset.x
+            let end = scroll.contentSize.width - scroll.bounds.width + scroll.adjustedContentInset.right
+            if forward ? x < end - 1 : x > -scroll.adjustedContentInset.left + 1 { return true }
+        }
+        view = v.superview
+    }
+    return false
+}
+
+private func - (a: CGPoint, b: CGPoint) -> CGPoint {
+    CGPoint(x: a.x - b.x, y: a.y - b.y)
+}
+
+// MARK: - Swipe between days
+
+extension View {
+    /// On a NavigationStack's root screen: a sideways swipe calls `action` with 1 (a swipe to the
+    /// left: the next day) or -1 (to the right: the day before) while `enabled`. Horizontal
+    /// scrollers that can still scroll that way, such as a Smart Stack, keep their swipe.
+    func onDaySwipe(enabled: Bool, perform action: @escaping (Int) -> Void) -> some View {
+        background(DaySwipeInstaller(enabled: enabled, action: action).frame(width: 0, height: 0))
+    }
+}
+
+private struct DaySwipeInstaller: UIViewControllerRepresentable {
+    var enabled: Bool
+    var action: (Int) -> Void
+
+    func makeCoordinator() -> DaySwipeRules { DaySwipeRules() }
+
+    func makeUIViewController(context: Context) -> Controller { Controller(rules: context.coordinator) }
+
+    func updateUIViewController(_ controller: Controller, context: Context) {
+        context.coordinator.enabled = enabled
+        context.coordinator.action = action
+    }
+
+    final class Controller: UIViewController {
+        let rules: DaySwipeRules
+
+        init(rules: DaySwipeRules) {
+            self.rules = rules
+            super.init(nibName: nil, bundle: nil)
+        }
+
+        required init?(coder: NSCoder) { nil }
+
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            let viaResponders = sequence(first: view as UIResponder, next: { $0.next })
+                .first { $0 is UINavigationController } as? UINavigationController
+            guard let nav = navigationController ?? viaResponders,
+                  !(nav.view.gestureRecognizers ?? []).contains(where: { $0 is DaySwipePan }) else { return }
+            rules.nav = nav
+            let pan = DaySwipePan(target: rules, action: #selector(DaySwipeRules.panned(_:)))
+            pan.rules = rules
+            pan.delegate = rules
+            pan.maximumNumberOfTouches = 1
+            nav.view.addGestureRecognizer(pan)
+        }
+    }
+}
+
+private final class DaySwipePan: UIPanGestureRecognizer {
+    /// The delegate, kept alive by the pan (a recognizer holds its delegate weakly).
+    var rules: DaySwipeRules?
+}
+
+@MainActor
+final class DaySwipeRules: NSObject, UIGestureRecognizerDelegate {
+    weak var nav: UINavigationController?
+    var enabled = true
+    var action: (Int) -> Void = { _ in }
+
+    func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
+        guard enabled, let nav, nav.viewControllers.count == 1, nav.transitionCoordinator == nil,
+              let pan = gesture as? UIPanGestureRecognizer else { return false }
+        let v = pan.velocity(in: pan.view)
+        guard abs(v.x) > abs(v.y) * 1.5 else { return false }
+        return !horizontalScroller(under: pan, canScrollForward: v.x < 0)
+    }
+
+    func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        var view = touch.view
+        while let v = view {
+            if v is UIControl { return false }
             view = v.superview
         }
-        return false
+        return true
+    }
+
+    @objc func panned(_ pan: UIPanGestureRecognizer) {
+        guard pan.state == .ended else { return }
+        let t = pan.translation(in: pan.view)
+        let v = pan.velocity(in: pan.view)
+        guard abs(t.x) > abs(t.y), abs(t.x) > 60 || (abs(t.x) > 24 && abs(v.x) > 500) else { return }
+        DebugLog.note("day swipe: \(t.x < 0 ? "next" : "previous") day at \(Int(t.x))")
+        action(t.x < 0 ? 1 : -1)
     }
 }
 

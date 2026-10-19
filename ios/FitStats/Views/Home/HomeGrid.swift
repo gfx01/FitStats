@@ -208,6 +208,10 @@ struct HomeEditCell<Content: View>: View {
     @State private var resizeBase: ResizeBase?
     @State private var resizeTranslation: CGSize = .zero
     @GestureState private var resizeGesture: CGSize? = nil
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    /// A small or medium card's height at the current text size.
+    private var glanceHeight: CGFloat { HomeGlanceMetrics.height(for: typeSize) }
 
     // Computed: a generic type can't have static stored properties. Same as HomeGridLayout.
     private static var columnSpacing: CGFloat { 12 }
@@ -319,7 +323,7 @@ struct HomeEditCell<Content: View>: View {
 
     private func beginResize(at frame: CGRect) {
         guard resizeStarted, resizeBase == nil else { return }
-        let twoRows = 2 * HomeGlanceMetrics.height + Self.rowSpacing
+        let twoRows = 2 * glanceHeight + Self.rowSpacing
         let base = ResizeBase(start: frame,
                               fullWidth: item.size == .small ? frame.width * 2 + Self.columnSpacing : frame.width,
                               largeHeight: item.size == .large ? max(twoRows, frame.height) : twoRows,
@@ -348,8 +352,8 @@ struct HomeEditCell<Content: View>: View {
     private func stretchedRect(_ base: ResizeBase, _ t: CGSize) -> CGRect {
         let smallWidth = max(0, (base.fullWidth - Self.columnSpacing) / 2)
         let w = min(max(base.start.width + (base.leftward ? -t.width : t.width), smallWidth), base.fullWidth)
-        let maxH = item.card.sizes.contains(.large) ? base.largeHeight : HomeGlanceMetrics.height
-        let h = min(max(base.start.height + t.height, min(HomeGlanceMetrics.height, base.start.height)), maxH)
+        let maxH = item.card.sizes.contains(.large) ? base.largeHeight : glanceHeight
+        let h = min(max(base.start.height + t.height, min(glanceHeight, base.start.height)), maxH)
         return CGRect(x: base.leftward ? base.start.maxX - w : base.start.minX, y: base.start.minY, width: w, height: h)
     }
 
@@ -358,7 +362,7 @@ struct HomeEditCell<Content: View>: View {
     private func target(_ base: ResizeBase, _ live: CGSize) -> CardSize {
         let smallWidth = max(0, (base.fullWidth - Self.columnSpacing) / 2)
         let wide = live.width > (smallWidth + base.fullWidth) / 2
-        let tall = live.height > (HomeGlanceMetrics.height + base.largeHeight) / 2
+        let tall = live.height > (glanceHeight + base.largeHeight) / 2
         let size: CardSize = !wide ? .small : (tall ? .large : .medium)
         return item.card.sizes.contains(size) ? size : .medium
     }
@@ -533,6 +537,7 @@ struct HomeCardPlaceholder: View {
     let title: String
     let size: CardSize
     let reason: String
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -551,7 +556,7 @@ struct HomeCardPlaceholder: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .frame(height: size == .large ? 2 * HomeGlanceMetrics.height + 14 : HomeGlanceMetrics.height)
+        .frame(height: size == .large ? 2 * HomeGlanceMetrics.height(for: typeSize) + 14 : HomeGlanceMetrics.height(for: typeSize))
         .background(
             RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .strokeBorder(Theme.cardBorder, style: StrokeStyle(lineWidth: 1.5, dash: [6, 5]))

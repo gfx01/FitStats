@@ -3,13 +3,16 @@ import SwiftUI
 /// Today: tonight's sleep need and the bedtime that fits your usual wake time (Core/SleepPlanner.swift).
 struct SleepPlanCard: View {
     let plan: SleepPlan
+    @EnvironmentObject private var model: AppModel
+    @AppStorage(Reminders.bedtimeKey) private var reminderOn = false
+    @State private var denied = false
 
     var body: some View {
         Card {
             HStack(alignment: .firstTextBaseline) {
                 SectionHeader(title: "Tonight")
                 Spacer()
-                Image(systemName: "moon.stars.fill").foregroundStyle(Theme.sleep)
+                reminderButton
             }
             HStack(alignment: .top) {
                 stat("Need tonight", Format.duration(plan.needMin))
@@ -27,9 +30,37 @@ struct SleepPlanCard: View {
             Text(explanation)
                 .font(.caption)
                 .foregroundStyle(Theme.tertiary)
+            if denied {
+                Button("Notifications are off for FitStats. Open Settings") { Reminders.openSystemSettings() }
+                    .font(.caption.weight(.semibold))
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("sleep-plan")
+    }
+
+    /// Turns the bedtime reminder on or off (Settings has its lead time).
+    private var reminderButton: some View {
+        Button {
+            let on = !reminderOn
+            Task {
+                if on, !(await Reminders.requestPermission()) {
+                    denied = true
+                    return
+                }
+                denied = false
+                reminderOn = on
+                await Reminders.update(model)
+            }
+        } label: {
+            Label(reminderOn ? "Reminder on" : "Remind me",
+                  systemImage: reminderOn ? "bell.fill" : (denied ? "bell.slash" : "bell"))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(reminderOn ? Theme.sleep : Theme.secondary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint(Text(denied ? "Notifications are off for FitStats in iOS Settings" : "A notification before bedtime"))
+        .accessibilityIdentifier("tonight-reminder")
     }
 
     private var explanation: String {

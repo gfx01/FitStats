@@ -74,6 +74,8 @@ struct TodayView: View {
     /// The card whose settings sheet is open.
     @State private var settingsItem: HomeItem?
     @State private var editHaptic = 0
+    /// A day swipe past today or the first synced day.
+    @State private var dayEndBump = 0
 
     private static let addSectionID = "home-add-section"
     private static let minuteTicker = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
@@ -120,6 +122,8 @@ struct TodayView: View {
                     .padding(.bottom, 32)
                     .sensoryFeedback(.impact(weight: .medium), trigger: editHaptic)
                     .sensoryFeedback(.selection, trigger: moveHaptic)
+                    .sensoryFeedback(.selection, trigger: date)
+                    .sensoryFeedback(.impact(weight: .light), trigger: dayEndBump)
                 }
                 .scrollDisabled(moving != nil)
                 .background {
@@ -131,6 +135,8 @@ struct TodayView: View {
                 }
                 .overlay { movingCard }
                 .overlay { resizingCard }
+                // Cards grow with the text size up to here (HomeGlanceMetrics.height(for:)).
+                .dynamicTypeSize(...HomeGlanceMetrics.largestTextSize)
                 .task(id: autoscroll) { await runAutoscroll(proxy) }
                 .refreshable {
                     await model.pullToRefresh()
@@ -140,6 +146,7 @@ struct TodayView: View {
                 .task(id: date) { await model.loadDay(date) }
                 .navigationDestination(for: DetailRoute.self) { DetailDestination(route: $0) }
                 .swipeBackFromAnywhere()
+                .onDaySwipe(enabled: !editing) { daySwipe($0) }
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { header(proxy) }
                 .sheet(item: $settingsItem) { item in
@@ -150,6 +157,10 @@ struct TodayView: View {
                 }
                 .sheet(isPresented: $editingTimes) {
                     HomeTimesSheet(config: configBinding)
+                }
+                .sheet(item: Binding(get: { model.journalRequest.map(JournalDay.init) },
+                                     set: { model.journalRequest = $0?.date })) { day in
+                    JournalSheet(date: day.date).environmentObject(model)
                 }
                 .onReceive(Self.minuteTicker) { now = $0 }
                 .onChange(of: scenePhase) { _, phase in
@@ -785,6 +796,18 @@ struct TodayView: View {
         }
     }
 
+    /// A sideways swipe on Today: the next or previous day, within the synced days (a bump at
+    /// either end).
+    private func daySwipe(_ n: Int) {
+        let next = Format.addDays(date, n)
+        let first = model.days.first?.date ?? model.today
+        guard next <= model.today, next >= first else {
+            dayEndBump += 1
+            return
+        }
+        withAnimation(.easeInOut(duration: 0.2)) { shift(n) }
+    }
+
     private func shift(_ n: Int) {
         let next = Format.addDays(date, n)
         selected = next >= model.today ? nil : next
@@ -1189,6 +1212,12 @@ struct HomeCardDetailView: View {
 }
 
 /// Last seven days with a small recovery ring each; tapping one selects it.
+/// A day whose journal sheet is open (sheet(item:) needs an Identifiable).
+private struct JournalDay: Identifiable {
+    let date: String
+    var id: String { date }
+}
+
 struct WeekStrip: View {
     let today: String
     @Binding var selected: String?

@@ -33,6 +33,10 @@ final class AppModel: ObservableObject {
     private var lastSyncRequest: Date?
     /// API-shaped JSON used instead of the server for CI screenshots (see supabase/tests/make-fixtures.ts).
     private let fixtureDir: URL?
+    /// CI screenshots with fixture data: nothing is fetched or scheduled.
+    var isFixture: Bool { fixtureDir != nil }
+    /// A tapped journal reminder: Today opens this day's journal.
+    @Published var journalRequest: String?
 
     init() {
         let configured = Bundle.main.object(forInfoDictionaryKey: "FitStatsServerURL") as? String
@@ -197,6 +201,7 @@ final class AppModel: ObservableObject {
             }
             lastRefresh = Date()
             errorMessage = nil
+            await Reminders.update(self)
         } catch {
             handle(error)
             return

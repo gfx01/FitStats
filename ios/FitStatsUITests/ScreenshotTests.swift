@@ -526,6 +526,63 @@ final class ScreenshotTests: XCTestCase {
         app.terminate()
     }
 
+    /// A sideways swipe on Today changes the day, the bedtime reminder turns on once iOS asks,
+    /// and Home at extra-large text, where the cards grow rather than cut text off.
+    func test06DaysRemindersLargeText() {
+        let fixtures = ProcessInfo.processInfo.environment["FITSTATS_FIXTURES"] ?? ""
+        XCTAssertFalse(fixtures.isEmpty, "FITSTATS_FIXTURES is not set")
+        let app = XCUIApplication()
+        app.launchEnvironment["FITSTATS_FIXTURES"] = fixtures
+        if let outDir { app.launchEnvironment["FITSTATS_DEBUG_LOG"] = outDir.appendingPathComponent("app-log.txt").path }
+        app.launch()
+        XCTAssertTrue(app.buttons["ring-recovery"].waitForExistence(timeout: 15), "Today screen did not load")
+
+        // To the right: the day before. To the left: back to today.
+        let left = app.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.6))
+        left.press(forDuration: 0.05, thenDragTo: left.withOffset(CGVector(dx: 230, dy: 0)),
+                   withVelocity: .fast, thenHoldForDuration: 0)
+        sleep(1)
+        shot("77-day-swiped")
+        XCTAssertTrue(app.staticTexts["Yesterday"].waitForExistence(timeout: 3), "a swipe to the right did not open yesterday")
+        let right = app.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.6))
+        right.press(forDuration: 0.05, thenDragTo: right.withOffset(CGVector(dx: -230, dy: 0)),
+                    withVelocity: .fast, thenHoldForDuration: 0)
+        sleep(1)
+        XCTAssertFalse(app.staticTexts["Yesterday"].exists, "a swipe to the left did not come back to today")
+
+        // The bedtime reminder: iOS asks first.
+        app.tabBars.buttons["Settings"].tap()
+        let toggle = app.switches["toggle-reminders.bedtime"]
+        for _ in 0..<8 where !(toggle.exists && toggle.isHittable) { app.swipeUp() }
+        if toggle.exists, toggle.isHittable {
+            toggle.tap()
+            let allow = XCUIApplication(bundleIdentifier: "com.apple.springboard").buttons["Allow"]
+            if allow.waitForExistence(timeout: 5) { allow.tap() }
+            sleep(2)
+            shot("78-reminders-on")
+            XCTAssertEqual(toggle.value as? String, "1", "the bedtime reminder did not stay on")
+        } else {
+            XCTFail("missing the bedtime reminder switch")
+        }
+        app.terminate()
+
+        // Extra-large text (Settings → Display & Brightness → Text Size, the largest without
+        // Larger Accessibility Sizes): the default Home, then every card.
+        app.launchArguments = ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryXXXL"]
+        for (cards, first) in [("", 79), ("all", 83)] {
+            app.launchEnvironment["FITSTATS_HOME_CARDS"] = cards.isEmpty ? nil : cards
+            app.launch()
+            XCTAssertTrue(app.buttons["ring-recovery"].waitForExistence(timeout: 15), "Today (XXXL) did not load")
+            sleep(1)
+            shot("\(first)-home-xxxl")
+            for index in 1...3 {
+                app.swipeUp()
+                shot("\(first + index)-home-xxxl-\(index + 1)")
+            }
+            app.terminate()
+        }
+    }
+
     /// Training load and best bedtime on Insights, the calendar and compare periods from Trends,
     /// and a workout's heart-rate recovery.
     func test04InsightsPack() {
