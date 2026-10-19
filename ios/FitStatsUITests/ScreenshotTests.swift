@@ -52,19 +52,45 @@ final class ScreenshotTests: XCTestCase {
         for _ in 0..<10 where !onScreen(app, element) { app.swipeUp() }
         guard onScreen(app, element) else { return }
         let window = app.windows.firstMatch.frame
-        let target = window.minY + window.height * 0.14
-        let distance = element.frame.minY - target
+        let distance = element.frame.minY - (window.minY + window.height * 0.14)
         guard distance > 20 else { return }
-        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
-        let end = start.withOffset(CGVector(dx: 0, dy: -Swift.min(distance, window.height * 0.6)))
-        // Held still before lifting, so the page doesn't fling past the element.
-        start.press(forDuration: 0.1, thenDragTo: end, withVelocity: .default, thenHoldForDuration: 0.4)
+        scrollPage(app, by: distance)
+    }
+
+    /// Drags the page by about `dy` points (positive goes further down the page) and holds
+    /// still before lifting, so it doesn't fling. It starts left of the middle, clear of edit
+    /// mode's remove buttons and resize handles, which a swipe from the middle can catch.
+    private func scrollPage(_ app: XCUIApplication, by dy: CGFloat) {
+        let window = app.windows.firstMatch.frame
+        let d = Swift.max(-window.height * 0.45, Swift.min(window.height * 0.45, dy))
+        let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.3, dy: d > 0 ? 0.75 : 0.3))
+        start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 0, dy: -d)),
+                    withVelocity: .default, thenHoldForDuration: 0.3)
+    }
+
+    /// Back to the top of Home in edit mode, where the time-of-day switch is.
+    private func editTop(_ app: XCUIApplication) {
+        let toggle = app.switches["home-time-of-day"]
+        let window = app.windows.firstMatch.frame
+        for _ in 0..<25 where !(toggle.exists && toggle.frame.minY > window.minY + 100) {
+            scrollPage(app, by: -window.height)
+        }
+    }
+
+    private func describe(_ element: XCUIElement) -> String {
+        "\(element.identifier): exists \(element.exists), frame \(element.frame)"
     }
 
     /// Scrolls until `element` is on screen: up first, then back down.
     private func scrollTo(_ app: XCUIApplication, _ element: XCUIElement) {
-        for _ in 0..<20 where !onScreen(app, element) { app.swipeUp() }
-        for _ in 0..<24 where !onScreen(app, element) { app.swipeDown() }
+        let window = app.windows.firstMatch.frame
+        for _ in 0..<40 where !onScreen(app, element) {
+            if element.exists, !element.frame.isEmpty {
+                scrollPage(app, by: element.frame.midY - (window.minY + window.height * 0.45))
+            } else {
+                scrollPage(app, by: window.height * 0.4)
+            }
+        }
         if onScreen(app, element) { reveal(app, element) }
     }
 
@@ -261,7 +287,7 @@ final class ScreenshotTests: XCTestCase {
             shot("70-home-reordered")
             XCTAssertGreaterThan(vitals.frame.minY, activity.frame.minY, "Vitals did not move below Activity")
         } else {
-            XCTFail("vitals or activity not reachable for reordering")
+            XCTFail("vitals or activity not reachable for reordering: \(describe(vitals)); \(describe(activity))")
         }
         // Tapping a card while editing opens its settings: the Metric card switches to HRV.
         let metric = element(app, "home-card-metric-fixture")
@@ -296,7 +322,7 @@ final class ScreenshotTests: XCTestCase {
                 XCTFail("Metric card settings did not open")
             }
         } else {
-            XCTFail("missing home-card-metric-fixture")
+            XCTFail("missing home-card-metric-fixture: \(describe(metric))")
         }
         let stackCell = element(app, "home-card-stack-fixture")
         scrollTo(app, stackCell)
@@ -311,10 +337,10 @@ final class ScreenshotTests: XCTestCase {
                 XCTFail("Smart Stack settings did not open")
             }
         } else {
-            XCTFail("missing home-card-stack-fixture in edit mode")
+            XCTFail("missing home-card-stack-fixture in edit mode: \(describe(stackCell))")
         }
         // Dropping a card on the middle of another makes a Smart Stack of the two.
-        for _ in 0..<16 { app.swipeDown() }
+        editTop(app)
         let source = element(app, "home-card-recoveryTrend")
         let destination = element(app, "home-card-hrvTrend")
         scrollTo(app, source)
@@ -326,10 +352,10 @@ final class ScreenshotTests: XCTestCase {
             shot("67-home-stacked")
             XCTAssertFalse(source.exists || destination.exists, "recoveryTrend and hrvTrend did not become a stack")
         } else {
-            XCTFail("recoveryTrend or hrvTrend not reachable for stacking")
+            XCTFail("recoveryTrend or hrvTrend not reachable for stacking: \(describe(source)); \(describe(destination))")
         }
         // Time-of-day layouts: each part of the day starts as a copy and can be edited apart.
-        for _ in 0..<16 { app.swipeDown() }
+        editTop(app)
         let timeOfDay = app.switches["home-time-of-day"]
         if timeOfDay.waitForExistence(timeout: 3) {
             timeOfDay.tap()
@@ -349,8 +375,8 @@ final class ScreenshotTests: XCTestCase {
         // Every card is on Home in this mode, so Add cards is empty. Reset (kept in memory only
         // in this mode, nothing is stored) fills it with previews.
         let reset = app.buttons["home-reset"]
-        for _ in 0..<14 where !(reset.exists && reset.isHittable) { app.swipeUp() }
-        if reset.exists, reset.isHittable {
+        scrollTo(app, reset)
+        if onScreen(app, reset) {
             reset.tap()
             sleep(1)
             let addCards = app.buttons["home-add-cards"]
@@ -365,7 +391,7 @@ final class ScreenshotTests: XCTestCase {
             app.swipeUp()
             shot("49-home-add-previews-3")
         } else {
-            XCTFail("home-reset not reachable")
+            XCTFail("home-reset not reachable: \(describe(reset))")
         }
         if done.exists { done.tap() }
         sleep(1)
