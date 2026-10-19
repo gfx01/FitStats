@@ -12,7 +12,8 @@ struct HRVTrendCard: View {
     @EnvironmentObject var model: AppModel
 
     private static let metricKey = "hrv_rmssd"
-    private static let windowDays = 30
+    /// How many days the card covers (a Home card setting).
+    var windowDays = 30
     /// Days with HRV needed before a standard deviation says anything.
     private static let minBandDays = 5
     private static let tint = Theme.heart
@@ -118,14 +119,14 @@ struct HRVTrendCard: View {
                 RoundedRectangle(cornerRadius: 2, style: .continuous)
                     .fill(Self.tint.opacity(0.3))
                     .frame(width: 12, height: 8)
-                Text("Normal range \(bandText(band, data.def)) (mean ± 1 SD, \(band.count) days with HRV in the \(Self.windowDays) before \(Format.shortDay(date)))")
+                Text("Normal range \(bandText(band, data.def)) (mean ± 1 SD, \(band.count) days with HRV in the \(windowDays) before \(Format.shortDay(date)))")
                     .font(.caption2)
                     .foregroundStyle(Theme.tertiary)
                     .lineLimit(2)
             }
             .accessibilityHidden(true)
         } else {
-            Text("The normal range appears once \(Self.minBandDays) of the \(Self.windowDays) days before \(Format.shortDay(date)) have HRV.")
+            Text("The normal range appears once \(Self.minBandDays) of the \(windowDays) days before \(Format.shortDay(date)) have HRV.")
                 .font(.caption2)
                 .foregroundStyle(Theme.tertiary)
                 .lineLimit(2)
@@ -136,12 +137,12 @@ struct HRVTrendCard: View {
 
     private func trendData() -> HRVTrendData? {
         guard let def = MetricCatalog.def(Self.metricKey) else { return nil }
-        let start = Format.addDays(date, -(Self.windowDays - 1))
+        let start = Format.addDays(date, -(windowDays - 1))
         guard let firstDay = Format.chartDate(start), let lastDay = Format.chartDate(date) else { return nil }
         var points: [HRVTrendPoint] = []
         var run = 0
         var previousOffset: Int? = nil
-        for offset in 0..<Self.windowDays {
+        for offset in 0..<windowDays {
             let ymd = Format.addDays(start, offset)
             guard let v = value(of: def, on: ymd), let when = Format.chartDate(ymd) else { continue }
             // A missing day starts a new line segment, so the chart never bridges a gap.
@@ -150,7 +151,7 @@ struct HRVTrendCard: View {
             previousOffset = offset
         }
         // The same 30 days before `date` as `model.baseline`, so the range and the badge agree.
-        let before = (1...Self.windowDays).compactMap { back -> Double? in
+        let before = (1...windowDays).compactMap { back -> Double? in
             value(of: def, on: Format.addDays(date, -back))
         }
         return HRVTrendData(
@@ -196,7 +197,7 @@ struct HRVTrendCard: View {
     }
 
     private var rangeText: String {
-        let start = Format.addDays(date, -(Self.windowDays - 1))
+        let start = Format.addDays(date, -(windowDays - 1))
         return "\(Format.shortDay(start)) – \(Format.shortDay(date))"
     }
 
@@ -238,7 +239,7 @@ struct HRVTrendCard: View {
     private func chartSummary(_ data: HRVTrendData) -> String {
         guard let lowest = data.points.min(by: { $0.value < $1.value }),
               let highest = data.points.max(by: { $0.value < $1.value }) else { return "No HRV recorded" }
-        var parts = ["\(data.points.count) of \(Self.windowDays) days with HRV"]
+        var parts = ["\(data.points.count) of \(windowDays) days with HRV"]
         parts.append("Lowest \(Format.number(lowest.value)) milliseconds on \(Format.longDay(lowest.ymd))")
         parts.append("Highest \(Format.number(highest.value)) milliseconds on \(Format.longDay(highest.ymd))")
         if let band = data.band {

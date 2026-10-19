@@ -12,27 +12,27 @@ enum HomeGlanceMetrics {
 
 /// Picks the small or medium version of a card.
 struct HomeGlance: View {
-    let card: HomeCard
+    let spec: HomeCardSpec
     let size: CardSize
     let date: String
 
     var body: some View {
-        switch card {
+        switch spec.card {
         case .scores: ScoresGlance(date: date, size: size)
         case .tonight: TonightGlance(date: date, size: size)
         case .journal: JournalGlance(date: date, size: size)
-        case .vitals: VitalsGlance(date: date, size: size)
-        case .activity: ActivityGlance(date: date, size: size)
+        case .vitals: VitalsGlance(date: date, size: size, chosen: spec.options.metrics)
+        case .activity: ActivityGlance(date: date, size: size, chosen: spec.options.metrics)
         case .heartRate: HeartRateGlance(date: date, size: size)
         case .workouts: WorkoutsGlance(date: date, size: size)
         case .lastNight: LastNightGlance(date: date, size: size)
-        case .recoveryTrend: RecoveryTrendGlance(date: date, size: size)
+        case .recoveryTrend: RecoveryTrendGlance(date: date, size: size, days: spec.days)
         case .hrvTrend:
-            MetricTrendGlance(key: "hrv_rmssd", title: "HRV", icon: "waveform.path.ecg", tint: Theme.heart, date: date, size: size)
+            MetricTrendGlance(key: "hrv_rmssd", title: "HRV", icon: "waveform.path.ecg", tint: Theme.heart, date: date, size: size, days: spec.days)
         case .restingHrTrend:
-            MetricTrendGlance(key: "rhr", title: "Resting HR", icon: "heart.text.square", tint: Theme.heart, date: date, size: size)
+            MetricTrendGlance(key: "rhr", title: "Resting HR", icon: "heart.text.square", tint: Theme.heart, date: date, size: size, days: spec.days)
         case .stressDay: StressGlance(date: date, size: size)
-        case .thisWeek: ThisWeekGlance(date: date, size: size)
+        case .thisWeek: ThisWeekGlance(date: date, size: size, chosen: spec.options.metrics)
         case .weeklyZoneMinutes: ZoneMinutesGlance(date: date, size: size)
         case .streaks: StreaksGlance(date: date, size: size)
         case .topInsight: InsightGlance(date: date, size: size)
@@ -40,6 +40,8 @@ struct HomeGlance: View {
         case .body: BodyGlance(date: date, size: size)
         case .trainingLoad: LoadGlance(date: date, size: size)
         case .liveHeartRate: LiveHeartRateGlance(size: size)
+        case .metric: MetricGlance(key: spec.metricKey, days: spec.days, date: date, size: size)
+        case .stack: SmartStackView(entries: spec.options.stack ?? [], size: size, date: date, rotate: spec.options.rotate ?? true)
         }
     }
 }
@@ -500,7 +502,7 @@ struct TonightGlance: View {
         let plan = model.sleepPlan
         let bed = plan.bedtimeMin.map { Format.clock($0) } ?? "–"
         let wake = plan.wakeMin.map { Format.clock($0) } ?? "–"
-        GlanceLink(route: .homeCard(.tonight, date)) {
+        GlanceLink(route: .homeCard(HomeCardSpec(.tonight), date)) {
             GlanceFrame {
                 GlanceHeader(title: "Tonight", icon: "moon.stars.fill", tint: Theme.sleep)
                 Spacer(minLength: 0)
@@ -567,7 +569,7 @@ struct JournalGlance: View {
                     Text(date == model.today ? "Log today" : "Log this day")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.white)
-                    Text("Tag caffeine, alcohol, a late meal and more.")
+                    Text(loggedDaysText ?? "Tag caffeine, alcohol, a late meal and more.")
                         .font(.caption)
                         .foregroundStyle(Theme.tertiary)
                         .lineLimit(2)
@@ -599,18 +601,59 @@ struct JournalGlance: View {
             Text(note)
                 .font(.caption)
                 .foregroundStyle(Theme.secondary)
-                .lineLimit(size == .small ? 2 : 3)
+                .lineLimit(2)
         }
         Spacer(minLength: 0)
+        if size == .medium {
+            ForEach(Array(impactLines(entry).prefix(2)), id: \.self) { line in
+                Label(line, systemImage: "arrow.turn.down.right")
+                    .font(.caption)
+                    .foregroundStyle(Theme.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+        }
+    }
+
+    /// For the day's tags, the clearest effect found so far on the morning after (the
+    /// server's tag impacts): "Caffeine after 2 pm: Time asleep −24m (9 days)". Tags without
+    /// enough logged days have none.
+    private func impactLines(_ entry: JournalEntry) -> [String] {
+        let impacts = model.stats?.journal ?? []
+        return entry.tags.compactMap { tag -> String? in
+            guard let impact = impacts.first(where: { $0.tag == tag }) else { return nil }
+            let effects = impact.effects.filter { $0.diff.isFinite && MetricCatalog.def($0.metric) != nil }
+            guard let best = effects.filter(\.clear).max(by: { abs($0.t ?? 0) < abs($1.t ?? 0) })
+                    ?? effects.max(by: { abs($0.t ?? 0) < abs($1.t ?? 0) }),
+                  let def = MetricCatalog.def(best.metric) else { return nil }
+            return "\(impact.label): \(def.shortLabel) \(Self.signed(best.diff, def)) (\(impact.days) days)"
+        }
+    }
+
+    private static func signed(_ diff: Double, _ def: MetricDef) -> String {
+        let sign = diff < 0 ? "−" : "+"
+        switch def.format {
+        case .duration: return sign + Format.duration(abs(diff))
+        default: return sign + def.formatted(abs(diff))
+        }
+    }
+
+    /// "Logged 4 of the last 7 days" for a day not logged yet.
+    private var loggedDaysText: String? {
+        guard size == .medium else { return nil }
+        let logged = glanceDates(7, endingOn: date).filter { model.journal[$0] != nil }.count
+        return logged == 0 ? nil : "Logged \(logged) of the last 7 days. Tag caffeine, alcohol, a late meal and more."
     }
 }
 
 struct VitalsGlance: View {
     let date: String
     let size: CardSize
+    /// The metrics picked in the card's settings, in order; nil shows every vital.
+    var chosen: [String]? = nil
     @EnvironmentObject var model: AppModel
 
-    private static let keys = ["rhr", "hrv_rmssd", "spo2_avg", "resp_rate", "skin_temp_dev", "vo2max"]
+    static let keys = ["rhr", "hrv_rmssd", "spo2_avg", "resp_rate", "skin_temp_dev", "vo2max"]
     /// Names that fit next to the value in a small card.
     private static let tinyLabels = [
         "rhr": "RHR", "hrv_rmssd": "HRV", "spo2_avg": "SpO₂", "resp_rate": "Breath", "skin_temp_dev": "Skin", "vo2max": "VO₂",
@@ -622,7 +665,7 @@ struct VitalsGlance: View {
     ]
 
     var body: some View {
-        let defs = Self.keys.filter(model.recorded.contains).compactMap { MetricCatalog.def($0) }
+        let defs = (chosen ?? Self.keys).filter(model.recorded.contains).compactMap { MetricCatalog.def($0) }
         let day = model.daysByDate[date]
         GlanceFrame(spacing: 6) {
             GlanceHeader(title: "Vitals", icon: "stethoscope", tint: Theme.stress, trailing: size == .medium ? "vs 30-day average" : nil)
@@ -705,7 +748,12 @@ struct VitalsGlance: View {
 struct ActivityGlance: View {
     let date: String
     let size: CardSize
+    /// The numbers picked in the card's settings, in order; nil shows the first three defaults.
+    var chosen: [String]? = nil
     @EnvironmentObject var model: AppModel
+
+    static let keys = ["calories_total", "calories_active", "azm_total", "distance_km", "floors", "active_min_total"]
+    static let defaultKeys = ["calories_total", "azm_total", "distance_km"]
 
     var body: some View {
         let day = model.daysByDate[date]
@@ -740,7 +788,7 @@ struct ActivityGlance: View {
                         .foregroundStyle(Theme.tertiary)
                         .frame(maxWidth: .infinity)
                 } else {
-                    let keys = ["calories_total", "azm_total", "distance_km"].filter(model.recorded.contains)
+                    let keys = Array((chosen ?? Self.defaultKeys).filter(model.recorded.contains).prefix(3))
                     HStack(alignment: .top, spacing: 14) {
                         VStack(alignment: .leading, spacing: 6) {
                             GlanceValue(value: Format.number(steps), unit: "steps", size: 30)
@@ -806,7 +854,7 @@ struct HeartRateGlance: View {
         let series = Self.quarterHours(hr)
         let rhr = day?.double("rhr")
         let range = "\(Format.number(day?.double("hr_min")))–\(Format.number(day?.double("hr_max")))"
-        GlanceLink(route: .homeCard(.heartRate, date)) {
+        GlanceLink(route: .homeCard(HomeCardSpec(.heartRate), date)) {
             GlanceFrame {
                 GlanceHeader(title: "Heart rate", icon: "heart.fill", tint: Theme.heart, trailing: size == .medium ? "\(range) bpm" : nil)
                 if size == .small {
@@ -869,7 +917,15 @@ struct WorkoutsGlance: View {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if exercises.isEmpty {
-                GlanceMessage(icon: "figure.run", text: date == model.today ? "No workouts yet today." : "No workouts this day.")
+                if size == .medium, let day = model.daysByDate[date], !dayStats(day).isEmpty {
+                    Text(date == model.today ? "No workouts yet today." : "No workouts this day.")
+                        .font(.footnote)
+                        .foregroundStyle(Theme.secondary)
+                    Spacer(minLength: 0)
+                    statRow(dayStats(day), title: date == model.today ? "Today so far" : "That day")
+                } else {
+                    GlanceMessage(icon: "figure.run", text: date == model.today ? "No workouts yet today." : "No workouts this day.")
+                }
             } else if size == .small, let last = exercises.last {
                 NavigationLink(value: DetailRoute.workout(date, last.id)) {
                     smallWorkout(last, more: exercises.count - 1)
@@ -885,10 +941,16 @@ struct WorkoutsGlance: View {
                     .accessibilityIdentifier("workout-row")
                 }
                 if exercises.count == 1, let only = exercises.first {
-                    effort(only)
+                    let stats = effortStats(only)
+                    if !stats.isEmpty {
+                        statRow(stats, title: nil)
+                    } else if let day = model.daysByDate[date], !dayStats(day).isEmpty {
+                        Spacer(minLength: 0)
+                        statRow(dayStats(day), title: date == model.today ? "Today so far" : "That day")
+                    }
                 }
                 if exercises.count > 2 {
-                    NavigationLink(value: DetailRoute.homeCard(.workouts, date)) {
+                    NavigationLink(value: DetailRoute.homeCard(HomeCardSpec(.workouts), date)) {
                         Text("+\(exercises.count - 2) more")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(Theme.strain)
@@ -902,19 +964,39 @@ struct WorkoutsGlance: View {
 
     /// Strain, average and peak heart rate and zone minutes, the ones recorded. Without a strain
     /// the row already shows the average heart rate, so it isn't repeated.
-    private func effort(_ x: Exercise) -> some View {
+    private func effortStats(_ x: Exercise) -> [(String, String)] {
         var stats: [(String, String)] = []
         if let v = x.strain { stats.append(("Strain", Format.number(v, decimals: 1))) }
         if x.strain != nil, let v = x.avgHr { stats.append(("Avg HR", "\(Int(v.rounded()))")) }
         if let v = x.hrMax { stats.append(("Max HR", "\(Int(v.rounded()))")) }
         if let v = x.azm, v > 0 { stats.append(("Zone min", "\(Int(v.rounded()))")) }
-        return HStack(alignment: .top, spacing: 0) {
-            ForEach(Array(stats.enumerated()), id: \.offset) { _, stat in
-                GlanceStat(title: stat.0, value: stat.1, size: 17)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+        return stats
+    }
+
+    /// The day's own effort: strain, active minutes, zone minutes and active calories.
+    private func dayStats(_ day: DayRecord) -> [(String, String)] {
+        ["strain", "active_min_total", "azm_total", "calories_active"].compactMap { key -> (String, String)? in
+            guard model.recorded.contains(key), let def = MetricCatalog.def(key), let v = def.value(day) else { return nil }
+            return (def.shortLabel, def.formatted(v))
+        }
+    }
+
+    private func statRow(_ stats: [(String, String)], title: String?) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let title {
+                Text(title.uppercased())
+                    .font(.caption2.weight(.semibold))
+                    .tracking(0.6)
+                    .foregroundStyle(Theme.tertiary)
+            }
+            HStack(alignment: .top, spacing: 0) {
+                ForEach(Array(stats.prefix(4).enumerated()), id: \.offset) { _, stat in
+                    GlanceStat(title: stat.0, value: stat.1, size: 16)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
         }
-        .padding(.top, 6)
+        .padding(.top, 4)
     }
 
     private func smallWorkout(_ x: Exercise, more: Int) -> some View {
@@ -1057,16 +1139,17 @@ struct LastNightGlance: View {
 struct RecoveryTrendGlance: View {
     let date: String
     let size: CardSize
+    var days = 14
     @EnvironmentObject var model: AppModel
 
     var body: some View {
-        let values: [Double?] = glanceDates(14, endingOn: date).map { model.daysByDate[$0]?.double("recovery") }
+        let values: [Double?] = glanceDates(days, endingOn: date).map { model.daysByDate[$0]?.double("recovery") }
         let scored = values.compactMap { $0 }
         let average: Double? = scored.isEmpty ? nil : scored.reduce(0, +) / Double(scored.count)
         let latest: Double? = values.last ?? nil
         GlanceLink(route: .recovery(date)) {
             GlanceFrame {
-                GlanceHeader(title: "Recovery trend", icon: "chart.line.uptrend.xyaxis", tint: Theme.recoveryGreen, trailing: "14 days")
+                GlanceHeader(title: "Recovery trend", icon: "chart.line.uptrend.xyaxis", tint: Theme.recoveryGreen, trailing: "\(days) days")
                 if scored.isEmpty {
                     GlanceMessage(icon: "bolt.heart", text: "No recovery yet.")
                 } else {
@@ -1106,6 +1189,7 @@ struct MetricTrendGlance: View {
     let tint: Color
     let date: String
     let size: CardSize
+    var days = 30
     @EnvironmentObject var model: AppModel
 
     var body: some View {
@@ -1115,7 +1199,7 @@ struct MetricTrendGlance: View {
     }
 
     @ViewBuilder private func content(_ def: MetricDef) -> some View {
-        let values: [Double?] = glanceDates(30, endingOn: date).map { d -> Double? in
+        let values: [Double?] = glanceDates(days, endingOn: date).map { d -> Double? in
             guard let day = model.daysByDate[d], model.countsToward(def, day) else { return nil }
             return def.value(day)
         }
@@ -1123,7 +1207,7 @@ struct MetricTrendGlance: View {
         let base = model.baseline(def, before: date)
         GlanceLink(route: .metric(key)) {
             GlanceFrame {
-                GlanceHeader(title: title, icon: icon, tint: tint, trailing: "30 days")
+                GlanceHeader(title: title, icon: icon, tint: tint, trailing: "\(days) days")
                 if values.allSatisfy({ $0 == nil }) {
                     GlanceMessage(icon: icon, text: "No \(def.shortLabel) yet.")
                 } else {
@@ -1216,9 +1300,11 @@ struct StressGlance: View {
 struct ThisWeekGlance: View {
     let date: String
     let size: CardSize
+    /// The metrics picked in the card's settings, in order; nil shows the default five.
+    var chosen: [String]? = nil
     @EnvironmentObject var model: AppModel
 
-    private static let keys = ["sleep_asleep_min", "recovery", "strain", "steps", "azm_total"]
+    static let keys = ["sleep_asleep_min", "recovery", "strain", "steps", "azm_total"]
     /// Counted days each week needs before the two weeks are compared (as ThisWeekCard).
     private static let minDays = 3
     private static let columns = [
@@ -1228,8 +1314,8 @@ struct ThisWeekGlance: View {
     ]
 
     var body: some View {
-        let defs = Self.keys.filter(model.recorded.contains).compactMap { MetricCatalog.def($0) }
-        GlanceLink(route: .homeCard(.thisWeek, date)) {
+        let defs = Array((chosen ?? Self.keys).filter(model.recorded.contains).compactMap { MetricCatalog.def($0) }.prefix(6))
+        GlanceLink(route: .homeCard(HomeCardSpec(.thisWeek, CardOptions(metrics: chosen)), date)) {
             GlanceFrame(spacing: 6) {
                 GlanceHeader(title: "This week", icon: "calendar", tint: Theme.strain,
                              trailing: "daily avg vs last week", shortTrailing: "vs last week")
@@ -1377,7 +1463,7 @@ struct StreaksGlance: View {
         let streaks = (model.stats?.streaks ?? [])
             .filter { $0.current > 0 || $0.longest > 0 }
             .sorted { $0.current > $1.current }
-        GlanceLink(route: .homeCard(.streaks, date)) {
+        GlanceLink(route: .homeCard(HomeCardSpec(.streaks), date)) {
             GlanceFrame {
                 GlanceHeader(title: "Streaks", icon: "trophy.fill", tint: Theme.recoveryYellow)
                 if streaks.isEmpty {
@@ -1439,8 +1525,22 @@ struct InsightGlance: View {
         GlanceLink(route: route(first)) {
             GlanceFrame {
                 GlanceHeader(title: "Insights", icon: "sparkles", tint: Theme.recoveryYellow,
-                             trailing: insights.count > 1 ? "+\(insights.count - 1) more" : nil)
-                if let first {
+                             trailing: moreText(insights.count))
+                if first != nil, size == .medium, insights.count > 1 {
+                    ForEach(Array(insights.prefix(2))) { insight in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(insight.title)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                            Text(insight.body)
+                                .font(.caption)
+                                .foregroundStyle(Theme.secondary)
+                                .lineLimit(2)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                } else if let first {
                     Text(first.title)
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.white)
@@ -1457,9 +1557,15 @@ struct InsightGlance: View {
         }
     }
 
+    /// How many insights the card leaves out (a medium card shows two).
+    private func moreText(_ count: Int) -> String? {
+        let shown = size == .medium ? 2 : 1
+        return count > shown ? "+\(count - shown) more" : nil
+    }
+
     private func route(_ insight: Insight?) -> DetailRoute {
         if let key = insight?.metric, MetricCatalog.def(key) != nil { return .metric(key) }
-        return .homeCard(.topInsight, date)
+        return .homeCard(HomeCardSpec(.topInsight), date)
     }
 }
 
@@ -1472,7 +1578,7 @@ struct CoachGlance: View {
 
     var body: some View {
         let brief: CoachBrief? = coach.brief.flatMap { $0.date == date ? $0 : nil }
-        GlanceLink(route: .homeCard(.coachBrief, date)) {
+        GlanceLink(route: .homeCard(HomeCardSpec(.coachBrief), date)) {
             GlanceFrame {
                 GlanceHeader(title: "Coach briefing", icon: "text.bubble.fill", tint: Theme.strainEnd)
                 if date != model.today {
@@ -1611,7 +1717,7 @@ struct LoadGlance: View {
 
     var body: some View {
         let load = model.stats?.load
-        GlanceLink(route: .homeCard(.trainingLoad, date)) {
+        GlanceLink(route: .homeCard(HomeCardSpec(.trainingLoad), date)) {
             GlanceFrame {
                 GlanceHeader(title: "Training load", icon: "speedometer", tint: Theme.strain)
                 if let load, let latest = load.latest {
@@ -1732,5 +1838,203 @@ struct LiveHeartRateGlance: View {
         case .unsupported: return "Bluetooth isn't available."
         case .idle: return live.enabled ? "Starting…" : "Live heart rate is off in Settings."
         }
+    }
+}
+
+// MARK: - Metric card
+
+/// What a Metric card shows for the `days` days ending on `date`. Nothing is filled in: a day
+/// without a value stays empty, and today's still-growing day total is drawn but never averaged
+/// (model.countsToward).
+struct MetricSummary {
+    let def: MetricDef
+    let days: Int
+    /// One value per day, oldest first.
+    let values: [Double?]
+    /// The day's own value, else the newest one in the window (weight isn't measured daily).
+    let shown: (day: String, value: Double)?
+    let average: Double?
+    let low: Double?
+    let high: Double?
+    /// Days that went into the average.
+    let counted: Int
+    /// Change of the day's own value from the average of the days before it, as the Today
+    /// tiles compare: only a complete value, never clock times or skin temperature.
+    let change: Double?
+
+    init(def: MetricDef, model: AppModel, date: String, days: Int) {
+        self.def = def
+        self.days = days
+        let dates = glanceDates(days, endingOn: date)
+        let daily = dates.map { d -> Double? in
+            guard let day = model.daysByDate[d], let v = def.value(day), v.isFinite else { return nil }
+            return v
+        }
+        values = daily
+        let complete = dates.compactMap { d -> Double? in
+            guard let day = model.daysByDate[d], model.countsToward(def, day), let v = def.value(day), v.isFinite else { return nil }
+            return v
+        }
+        average = complete.isEmpty ? nil : complete.reduce(0, +) / Double(complete.count)
+        low = complete.min()
+        high = complete.max()
+        counted = complete.count
+        var newest: (day: String, value: Double)?
+        for (d, v) in zip(dates, daily).reversed() {
+            if let v {
+                newest = (d, v)
+                break
+            }
+        }
+        shown = newest
+        if let newest, newest.day == date, let day = model.daysByDate[date], model.countsToward(def, day),
+           def.format != .clock, def.key != "skin_temp_dev" {
+            change = glanceChange(newest.value, model.baseline(def, before: date, days: days))
+        } else {
+            change = nil
+        }
+    }
+}
+
+/// Any metric from the catalog, chosen in the card's settings: the latest value against the
+/// average of the days before, and the trend (bars for day totals, a line for the rest).
+struct MetricGlance: View {
+    let key: String
+    let days: Int
+    let date: String
+    let size: CardSize
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        if let def = MetricCatalog.def(key) ?? MetricCatalog.def("steps") {
+            content(MetricSummary(def: def, model: model, date: date, days: days))
+        }
+    }
+
+    @ViewBuilder private func content(_ m: MetricSummary) -> some View {
+        let def = m.def
+        let tint = def.category.color
+        GlanceLink(route: .metric(def.key)) {
+            GlanceFrame {
+                GlanceHeader(title: def.shortLabel, icon: def.icon, tint: tint, trailing: "\(days) days", shortTrailing: "\(days)d")
+                if let shown = m.shown {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        GlanceValue(value: def.formatted(shown.value, withUnit: false), unit: def.unit, size: 28)
+                        DeltaBadge(change: m.change, better: def.better)
+                        Spacer(minLength: 0)
+                        if size == .medium {
+                            HStack(alignment: .top, spacing: 14) {
+                                GlanceStat(title: "Average", value: def.formatted(m.average), size: 15)
+                                GlanceStat(title: "Low", value: def.formatted(m.low), size: 15)
+                                GlanceStat(title: "High", value: def.formatted(m.high), size: 15)
+                            }
+                        }
+                    }
+                    Text(caption(m, day: shown.day))
+                        .font(.caption2)
+                        .foregroundStyle(Theme.secondary)
+                        .lineLimit(1)
+                    chart(m, tint: tint)
+                        .frame(maxHeight: .infinity)
+                } else {
+                    GlanceMessage(icon: def.icon, text: "No \(def.label.lowercased()) in the last \(days) days.")
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func chart(_ m: MetricSummary, tint: Color) -> some View {
+        if m.def.isDayTotal {
+            MiniBars(values: m.values) { _ in tint }
+        } else {
+            MiniLine(values: m.values, color: tint, baseline: m.average)
+        }
+    }
+
+    private func caption(_ m: MetricSummary, day: String) -> String {
+        var parts: [String] = []
+        if day != date {
+            parts.append(Format.shortDay(day))
+        } else if m.def.isDayTotal && date >= model.today {
+            parts.append("So far today")
+        }
+        if size == .small, let avg = m.average { parts.append("avg \(m.def.formatted(avg))") }
+        return parts.isEmpty ? " " : parts.joined(separator: " · ")
+    }
+}
+
+// MARK: - Smart Stack
+
+/// Several cards in one spot, like an iOS Smart Stack: swipe sideways between them, the dots
+/// show which one is up. With rotate on it opens on the card that fits the time of day
+/// (last night and recovery in the morning, activity in the day, tonight in the evening).
+struct SmartStackView: View {
+    let entries: [StackEntry]
+    let size: CardSize
+    let date: String
+    var rotate = true
+    @State private var current: String?
+
+    /// No stack inside a stack.
+    private var cards: [StackEntry] { entries.filter { $0.card != .stack } }
+
+    var body: some View {
+        let shown: CardSize = size == .small ? .small : .medium
+        if cards.isEmpty {
+            GlanceFrame {
+                GlanceHeader(title: "Smart Stack", icon: HomeCard.stack.icon, tint: Theme.recoveryGreen)
+                GlanceMessage(text: "No cards in this stack yet. Tap it while editing Home to add some.")
+            }
+        } else {
+            ScrollView(.horizontal) {
+                LazyHStack(spacing: 0) {
+                    ForEach(cards) { entry in
+                        HomeGlance(spec: entry.spec, size: shown, date: date)
+                            .containerRelativeFrame(.horizontal)
+                            .id(entry.id)
+                    }
+                }
+                .scrollTargetLayout()
+            }
+            .scrollTargetBehavior(.paging)
+            .scrollIndicators(.hidden)
+            .scrollPosition(id: $current)
+            .frame(height: HomeGlanceMetrics.height)
+            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .overlay(alignment: .bottom) { dots }
+            .onAppear {
+                if current == nil || !cards.contains(where: { $0.id == current }) { current = startID }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(Text("Smart Stack, \(cards.count) cards"))
+            .accessibilityHint(Text("Swipe left or right for the next card"))
+        }
+    }
+
+    @ViewBuilder private var dots: some View {
+        if cards.count > 1 {
+            let up = current ?? cards.first?.id
+            HStack(spacing: 5) {
+                ForEach(cards) { entry in
+                    Circle()
+                        .fill(entry.id == up ? Color.white : Color.white.opacity(0.28))
+                        .frame(width: 5, height: 5)
+                }
+            }
+            .padding(.bottom, 5)
+            .allowsHitTesting(false)
+        }
+    }
+
+    private var startID: String? {
+        guard rotate else { return cards.first?.id }
+        let hour = Calendar.current.component(.hour, from: Date())
+        let fits: Set<HomeCard>
+        switch hour {
+        case 4..<11: fits = [.lastNight, .scores, .recoveryTrend, .hrvTrend, .restingHrTrend, .coachBrief, .vitals]
+        case 11..<18: fits = [.activity, .stressDay, .heartRate, .workouts, .weeklyZoneMinutes, .liveHeartRate, .metric, .trainingLoad]
+        default: fits = [.tonight, .journal, .thisWeek, .streaks, .topInsight, .body]
+        }
+        return (cards.first { fits.contains($0.card) } ?? cards.first)?.id
     }
 }

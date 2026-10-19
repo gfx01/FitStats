@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// The bottom of Home while editing: every card that isn't on Home yet, each as a live preview
-/// (your own data) at the size you pick, with an Add button, and a reset to the default layout.
+/// The bottom of Home while editing: every card that isn't on Home yet (and a Metric card and a
+/// Smart Stack, which can be added any number of times), each as a live preview of your own
+/// data at the size you pick, with an Add button, and a reset to the default layout.
 struct HomeAddSection: View {
     let date: String
     let shown: [HomeItem]
@@ -13,20 +14,32 @@ struct HomeAddSection: View {
 
     /// The size picked for each card's preview; a card's default until changed.
     @State private var sizes: [HomeCard: CardSize] = [:]
+    /// The Metric card preview's metric.
+    @State private var metricKey = "steps"
+    /// The Smart Stack preview, added as it is (its cards are changed in its settings).
+    @State private var stackOptions = HomeLayout.defaultOptions(.stack)
 
     private var more: [HomeCard] {
-        HomeCard.allCases.filter { card in !shown.contains { $0.card == card } }
+        HomeCard.allCases.filter { card in !card.isUnique || !shown.contains { $0.card == card } }
+    }
+
+    private func options(for card: HomeCard) -> CardOptions {
+        switch card {
+        case .metric: return CardOptions(metric: metricKey, days: 30)
+        case .stack: return stackOptions
+        default: return CardOptions()
+        }
+    }
+
+    private func add(_ card: HomeCard, size: CardSize) {
+        onAdd(HomeLayout.newItem(card, size: size, options: options(for: card)))
+        if card == .stack { stackOptions = HomeLayout.defaultOptions(.stack) }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             SectionHeader(title: "Add cards", subtitle: "Previews use your own data. Pick a size, then tap Add.")
                 .padding(.top, 16)
-            if more.isEmpty {
-                Text("Every card is already on Home. Remove one with its minus button to add it back at another size.")
-                    .font(.footnote)
-                    .foregroundStyle(Theme.secondary)
-            }
             LazyVStack(alignment: .leading, spacing: 26) {
                 ForEach(more) { card in
                     previewRow(card)
@@ -50,7 +63,8 @@ struct HomeAddSection: View {
     }
 
     private func size(for card: HomeCard) -> CardSize {
-        sizes[card] ?? card.defaultSize
+        let size = sizes[card] ?? card.defaultSize
+        return card.sizes.contains(size) ? size : card.defaultSize
     }
 
     private func previewRow(_ card: HomeCard) -> some View {
@@ -84,7 +98,7 @@ struct HomeAddSection: View {
                 }
                 Spacer(minLength: 8)
                 Button {
-                    onAdd(HomeItem(card: card, size: chosen))
+                    add(card, size: chosen)
                 } label: {
                     Label("Add", systemImage: "plus")
                         .font(.subheadline.weight(.semibold))
@@ -95,12 +109,22 @@ struct HomeAddSection: View {
                 .accessibilityIdentifier("home-add-\(card.rawValue)")
             }
             Picker("Size", selection: Binding(get: { size(for: card) }, set: { sizes[card] = $0 })) {
-                ForEach(CardSize.allCases) { size in
+                ForEach(card.sizes) { size in
                     Text(size.label).tag(size)
                 }
             }
             .pickerStyle(.segmented)
             .accessibilityIdentifier("home-size-\(card.rawValue)")
+            if card == .metric {
+                Picker("Metric", selection: $metricKey) {
+                    ForEach(metricChoices) { def in
+                        Text(def.label).tag(def.key)
+                    }
+                }
+                .pickerStyle(.menu)
+                .tint(Theme.recoveryGreen)
+                .accessibilityIdentifier("home-metric-picker")
+            }
             HomeGridLayout(columnSpacing: 12, rowSpacing: 14) {
                 preview(card, size: chosen)
                     .layoutValue(key: HomeCardSizeKey.self, value: chosen)
@@ -112,14 +136,22 @@ struct HomeAddSection: View {
         }
     }
 
+    @EnvironmentObject private var model: AppModel
+
+    /// The metrics a Metric card can show: the recorded ones (all before anything has synced).
+    private var metricChoices: [MetricDef] {
+        MetricCatalog.all.filter { model.recorded.isEmpty || model.recorded.contains($0.key) }
+    }
+
     @ViewBuilder private func preview(_ card: HomeCard, size: CardSize) -> some View {
+        let spec = HomeCardSpec(card, options(for: card))
         if !canShow(card) {
             // Editing always shows today, so only a day that hasn't synced yet hides a card here.
-            HomeCardPlaceholder(card: card, size: size, reason: "Shows once today's data has synced.")
+            HomeCardPlaceholder(card: card, title: card.title, size: size, reason: "Shows once today's data has synced.")
         } else if size == .large {
-            HomeLargeCard(card: card, date: date)
+            HomeLargeCard(spec: spec, date: date)
         } else {
-            HomeGlance(card: card, size: size, date: date)
+            HomeGlance(spec: spec, size: size, date: date)
         }
     }
 }

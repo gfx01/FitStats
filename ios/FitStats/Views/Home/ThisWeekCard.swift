@@ -9,6 +9,8 @@ import SwiftUI
 /// never recorded are hidden. Each row opens its detail.
 struct ThisWeekCard: View {
     let date: String
+    /// Metric keys to show (a Home card setting); nil shows the default five.
+    var keys: [String]? = nil
     @EnvironmentObject var model: AppModel
 
     /// Seven slots of about 11pt with 3pt gaps: wide enough for a caption2 "W" in semibold.
@@ -147,8 +149,17 @@ struct ThisWeekCard: View {
         (0..<7).map { offset -> String in Format.addDays(end, offset - 6) }
     }
 
+    /// The metrics picked in the card's Home settings, in their order, else the default five.
+    private var shownSpecs: [ThisWeekSpec] {
+        guard let keys, !keys.isEmpty else { return Self.specs }
+        return keys.compactMap { key -> ThisWeekSpec? in
+            if let spec = Self.specs.first(where: { $0.key == key }) { return spec }
+            return MetricCatalog.def(key).map { ThisWeekSpec(key: key, tint: $0.category.color) }
+        }
+    }
+
     private func buildRows(current: [String], previous: [String]) -> [ThisWeekRow] {
-        Self.specs.compactMap { spec -> ThisWeekRow? in
+        shownSpecs.compactMap { spec -> ThisWeekRow? in
             guard model.recorded.contains(spec.key), let def = MetricCatalog.def(spec.key) else { return nil }
             let days = current.map { d -> ThisWeekDay in dayValue(def, on: d) }
             let before = previous.map { d -> ThisWeekDay in dayValue(def, on: d) }

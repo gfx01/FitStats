@@ -25,6 +25,9 @@ enum HomeCard: String, CaseIterable, Identifiable, Codable {
     case body
     case trainingLoad
     case liveHeartRate
+    // Cards that can be on Home more than once, each with its own settings.
+    case metric
+    case stack
 
     var id: String { rawValue }
 
@@ -51,6 +54,8 @@ enum HomeCard: String, CaseIterable, Identifiable, Codable {
         case .body: return "Body"
         case .trainingLoad: return "Training load"
         case .liveHeartRate: return "Live heart rate"
+        case .metric: return "Metric"
+        case .stack: return "Smart Stack"
         }
     }
 
@@ -77,6 +82,8 @@ enum HomeCard: String, CaseIterable, Identifiable, Codable {
         case .body: return "Weight and body fat"
         case .trainingLoad: return "Fitness, fatigue and form from your training"
         case .liveHeartRate: return "From your Fitbit Air over Bluetooth"
+        case .metric: return "Any statistic with its trend; add as many as you like"
+        case .stack: return "Several cards in one spot: swipe between them"
         }
     }
 
@@ -103,6 +110,8 @@ enum HomeCard: String, CaseIterable, Identifiable, Codable {
         case .body: return "scalemass.fill"
         case .trainingLoad: return "speedometer"
         case .liveHeartRate: return "heart.circle"
+        case .metric: return "chart.xyaxis.line"
+        case .stack: return "square.stack.3d.up.fill"
         }
     }
 
@@ -115,14 +124,37 @@ enum HomeCard: String, CaseIterable, Identifiable, Codable {
         case .scores: return .large
         case .vitals, .activity, .heartRate, .workouts, .lastNight, .thisWeek, .topInsight, .coachBrief: return .medium
         case .tonight, .journal, .recoveryTrend, .hrvTrend, .restingHrTrend, .stressDay, .weeklyZoneMinutes,
-             .streaks, .body, .trainingLoad, .liveHeartRate: return .small
+             .streaks, .body, .trainingLoad, .liveHeartRate, .metric: return .small
+        case .stack: return .medium
+        }
+    }
+
+    /// Metric cards and Smart Stacks can be added again and again; every other card once.
+    var isUnique: Bool { self != .metric && self != .stack }
+
+    /// A Smart Stack pages between cards of one fixed height, so it has no large size.
+    var sizes: [CardSize] { self == .stack ? [.small, .medium] : CardSize.allCases }
+
+    /// Cards with something to set beyond their size (HomeCardSettingsView).
+    var hasSettings: Bool {
+        switch self {
+        case .metric, .stack, .vitals, .activity, .thisWeek, .recoveryTrend, .hrvTrend, .restingHrTrend: return true
+        default: return false
+        }
+    }
+
+    /// Days a trend card covers unless set otherwise.
+    var defaultDays: Int {
+        switch self {
+        case .recoveryTrend: return 14
+        default: return 30
         }
     }
 }
 
 /// How big a Home card is, like iOS widgets: small takes half the width (two sit side by
 /// side), medium the full width at the same height, large is the full card with everything.
-enum CardSize: String, CaseIterable, Identifiable {
+enum CardSize: String, CaseIterable, Identifiable, Codable {
     case small, medium, large
 
     var id: String { rawValue }
@@ -149,30 +181,102 @@ enum CardSize: String, CaseIterable, Identifiable {
     }
 }
 
-/// One card on Home and its size.
-struct HomeItem: Identifiable, Equatable {
-    var card: HomeCard
-    var size: CardSize
-
-    var id: HomeCard { card }
+/// What a card shows beyond its kind. Every field is optional, so a card without settings
+/// stores nothing and older layouts decode as they are.
+struct CardOptions: Codable, Hashable {
+    /// Metric card: the metric key (MetricCatalog).
+    var metric: String?
+    /// Metric and trend cards: how many days the trend covers.
+    var days: Int?
+    /// Vitals, Activity and This week: the metrics shown, in order.
+    var metrics: [String]?
+    /// Smart Stack: its cards, first on top.
+    var stack: [StackEntry]?
+    /// Smart Stack: open on the card that fits the time of day.
+    var rotate: Bool?
 }
 
-/// The ordered cards on Home with their sizes, stored for @AppStorage as a comma-separated
-/// string of "card:size" under `storageKey`.
+/// A card inside a Smart Stack.
+struct StackEntry: Codable, Hashable, Identifiable {
+    var id: String
+    var card: HomeCard
+    var options = CardOptions()
+
+    var spec: HomeCardSpec { HomeCardSpec(card, options) }
+}
+
+/// A card kind with its settings: what a card draws, whatever its size.
+struct HomeCardSpec: Hashable {
+    var card: HomeCard
+    var options: CardOptions
+
+    init(_ card: HomeCard, _ options: CardOptions = CardOptions()) {
+        self.card = card
+        self.options = options
+    }
+
+    var metricKey: String { options.metric ?? "steps" }
+    var days: Int { options.days ?? card.defaultDays }
+}
+
+/// One card on Home: its kind, size and settings. `id` tells apart two cards of one kind.
+struct HomeItem: Codable, Identifiable, Equatable {
+    var id: String
+    var card: HomeCard
+    var size: CardSize
+    var options = CardOptions()
+
+    var spec: HomeCardSpec { HomeCardSpec(card, options) }
+
+    /// The name shown in the editor: a Metric card is named after its metric.
+    var title: String {
+        if card == .metric, let def = MetricCatalog.def(spec.metricKey) { return def.label }
+        return card.title
+    }
+}
+
+/// The ordered cards on Home with their sizes and settings, stored for @AppStorage as JSON
+/// under `storageKey`.
 enum HomeLayout {
-    static let storageKey = "homeCards.v2"
-    /// Before sizes: the same list without them. Read once, when nothing is stored under v2.
+    static let storageKey = "homeCards.v3"
+    /// Before settings: "card:size,…". Read once, when nothing is stored under v3.
+    static let sizedKey = "homeCards.v2"
+    /// Before sizes: the same list without them.
     static let legacyKey = "homeCards.v1"
 
     static let defaultItems: [HomeItem] = [
-        HomeItem(card: .scores, size: .large),
-        HomeItem(card: .tonight, size: .small),
-        HomeItem(card: .journal, size: .small),
-        HomeItem(card: .vitals, size: .medium),
-        HomeItem(card: .activity, size: .medium),
-        HomeItem(card: .heartRate, size: .medium),
-        HomeItem(card: .workouts, size: .medium),
+        HomeItem(id: "scores", card: .scores, size: .large),
+        HomeItem(id: "tonight", card: .tonight, size: .small),
+        HomeItem(id: "journal", card: .journal, size: .small),
+        HomeItem(id: "vitals", card: .vitals, size: .medium),
+        HomeItem(id: "activity", card: .activity, size: .medium),
+        HomeItem(id: "heartRate", card: .heartRate, size: .medium),
+        HomeItem(id: "workouts", card: .workouts, size: .medium),
     ]
+
+    /// A new card with its default settings. A one-of-a-kind card is identified by its kind,
+    /// so it can never be on Home twice.
+    static func newItem(_ card: HomeCard, size: CardSize? = nil, options: CardOptions? = nil) -> HomeItem {
+        let id = card.isUnique ? card.rawValue : "\(card.rawValue)-\(UUID().uuidString.prefix(8).lowercased())"
+        let chosen = size ?? card.defaultSize
+        return HomeItem(id: id, card: card, size: card.sizes.contains(chosen) ? chosen : card.defaultSize,
+                        options: options ?? defaultOptions(card))
+    }
+
+    static func defaultOptions(_ card: HomeCard) -> CardOptions {
+        switch card {
+        case .metric:
+            return CardOptions(metric: "steps", days: 30)
+        case .stack:
+            return CardOptions(stack: [newEntry(.lastNight), newEntry(.activity), newEntry(.tonight)], rotate: true)
+        default:
+            return CardOptions()
+        }
+    }
+
+    static func newEntry(_ card: HomeCard) -> StackEntry {
+        StackEntry(id: "\(card.rawValue)-\(UUID().uuidString.prefix(8).lowercased())", card: card, options: defaultOptions(card))
+    }
 
     /// CI screenshots launch with FITSTATS_HOME_CARDS=all to show every card, whatever is stored,
     /// and FITSTATS_HOME_SIZE=small|medium|large to show them all at one size.
@@ -180,43 +284,67 @@ enum HomeLayout {
         ProcessInfo.processInfo.environment["FITSTATS_HOME_CARDS"] == "all"
     }
 
-    /// Every card in declaration order in fixture mode, otherwise nil (use the stored layout).
+    /// Every card in declaration order in fixture mode (ids fixed so tests can find them),
+    /// otherwise nil (use the stored layout).
     static var fixtureItems: [HomeItem]? {
         guard showsAllCards else { return nil }
         let forced = ProcessInfo.processInfo.environment["FITSTATS_HOME_SIZE"].flatMap(CardSize.init(rawValue:))
-        return HomeCard.allCases.map { HomeItem(card: $0, size: forced ?? $0.defaultSize) }
+        return HomeCard.allCases.map { card -> HomeItem in
+            let size = forced.flatMap { card.sizes.contains($0) ? $0 : nil } ?? card.defaultSize
+            var options = defaultOptions(card)
+            if card == .stack {
+                options.stack = [HomeCard.lastNight, .activity, .tonight].map { StackEntry(id: "stack-\($0.rawValue)", card: $0) }
+            }
+            return HomeItem(id: card.isUnique ? card.rawValue : "\(card.rawValue)-fixture", card: card, size: size, options: options)
+        }
     }
 
-    /// Parses a stored value: unknown cards and repeats are dropped, an unknown or missing size
-    /// means the card's default. Nothing stored means the layout from before sizes, if there is
-    /// one, else the default layout.
+    /// The stored layout, else the one from before settings, else the one from before sizes
+    /// (each card at its default size), else the default layout. Repeats of a one-of-a-kind
+    /// card and repeated ids are dropped.
     static func decode(_ stored: String?) -> [HomeItem] {
-        if let stored, !stored.isEmpty {
-            let items = parse(stored)
-            if !items.isEmpty { return items }
+        if let stored, !stored.isEmpty, let data = stored.data(using: .utf8),
+           let items = try? JSONDecoder().decode([HomeItem].self, from: data) {
+            let clean = sanitized(items)
+            if !clean.isEmpty { return clean }
         }
-        if let legacy = UserDefaults.standard.string(forKey: legacyKey), !legacy.isEmpty {
-            let items = parse(legacy)
-            if !items.isEmpty { return items }
+        for key in [sizedKey, legacyKey] {
+            if let old = UserDefaults.standard.string(forKey: key), !old.isEmpty {
+                let items = parseLegacy(old)
+                if !items.isEmpty { return items }
+            }
         }
         return defaultItems
     }
 
-    private static func parse(_ stored: String) -> [HomeItem] {
+    static func encode(_ items: [HomeItem]) -> String {
+        guard let data = try? JSONEncoder().encode(sanitized(items)) else { return "" }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    private static func sanitized(_ items: [HomeItem]) -> [HomeItem] {
+        var ids = Set<String>()
+        var kinds = Set<HomeCard>()
+        return items.compactMap { item -> HomeItem? in
+            guard ids.insert(item.id).inserted else { return nil }
+            if item.card.isUnique && !kinds.insert(item.card).inserted { return nil }
+            if item.card == .stack && (item.options.stack ?? []).isEmpty { return nil }
+            var fixed = item
+            if !item.card.sizes.contains(item.size) { fixed.size = item.card.defaultSize }
+            return fixed
+        }
+    }
+
+    /// "card:size,…" or "card,…" (the size then the card's default).
+    private static func parseLegacy(_ stored: String) -> [HomeItem] {
         var seen = Set<HomeCard>()
         var items: [HomeItem] = []
         for part in stored.split(separator: ",") {
             let pieces = part.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            guard let raw = pieces.first, let card = HomeCard(rawValue: raw), seen.insert(card).inserted else { continue }
+            guard let raw = pieces.first, let card = HomeCard(rawValue: raw), card.isUnique, seen.insert(card).inserted else { continue }
             let size = pieces.count > 1 ? CardSize(rawValue: pieces[1]) : nil
-            items.append(HomeItem(card: card, size: size ?? card.defaultSize))
+            items.append(HomeItem(id: card.rawValue, card: card, size: size ?? card.defaultSize))
         }
         return items
     }
-
-    static func encode(_ items: [HomeItem]) -> String {
-        var seen = Set<HomeCard>()
-        return items.filter { seen.insert($0.card).inserted }.map { "\($0.card.rawValue):\($0.size.rawValue)" }.joined(separator: ",")
-    }
 }
-

@@ -10,7 +10,7 @@ enum DetailRoute: Hashable {
     case workout(String, String) // date, exercise id
     case liveHeartRate
     /// A Home card at full size, opened from its small or medium version.
-    case homeCard(HomeCard, String) // card, date
+    case homeCard(HomeCardSpec, String) // card with its settings, date
 }
 
 struct DetailDestination: View {
@@ -30,7 +30,7 @@ struct DetailDestination: View {
             }
         case .workout(let date, let id): WorkoutDetailView(date: date, exerciseId: id)
         case .liveHeartRate: LiveHeartRateView()
-        case .homeCard(let card, let d): HomeCardDetailView(card: card, date: d)
+        case .homeCard(let spec, let d): HomeCardDetailView(spec: spec, date: d)
         }
     }
 }
@@ -47,8 +47,12 @@ struct TodayView: View {
     /// Edit mode, like the iOS Home Screen: the cards wobble and can be moved, resized, removed
     /// and added in place.
     @State private var editing = false
-    /// The card being dragged while editing.
-    @State private var dragging: HomeCard?
+    /// The card being dragged while editing (its id).
+    @State private var dragging: String?
+    /// The card whose resize outline is up, drawn above the others.
+    @State private var resizingID: String?
+    /// The card whose settings sheet is open.
+    @State private var settingsItem: HomeItem?
     @State private var editHaptic = 0
 
     private static let addSectionID = "home-add-section"
@@ -71,6 +75,7 @@ struct TodayView: View {
                         HomeGridLayout(columnSpacing: 12, rowSpacing: 14) {
                             ForEach(gridItems) { item in
                                 cell(item)
+                                    .zIndex(resizingID == item.id ? 1 : 0)
                                     .layoutValue(key: HomeCardSizeKey.self, value: item.size)
                             }
                         }
@@ -98,6 +103,11 @@ struct TodayView: View {
                 .navigationDestination(for: DetailRoute.self) { DetailDestination(route: $0) }
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { header(proxy) }
+                .sheet(item: $settingsItem) { item in
+                    HomeCardSettingsView(draft: item, canRemove: items.count > 1,
+                                         onChange: update, onRemove: { remove(item.id) })
+                        .environmentObject(model)
+                }
             }
         }
     }
@@ -154,7 +164,17 @@ struct TodayView: View {
 
     /// The cards Today draws for this day, so a skipped card never leaves an empty cell behind.
     private var visibleItems: [HomeItem] {
-        items.filter { isVisible($0.card) }
+        items.filter(isVisible)
+    }
+
+    /// A Smart Stack shows when any of its cards can.
+    private func isVisible(_ item: HomeItem) -> Bool {
+        if item.card == .stack { return !visibleEntries(item).isEmpty }
+        return isVisible(item.card)
+    }
+
+    private func visibleEntries(_ item: HomeItem) -> [StackEntry] {
+        (item.options.stack ?? []).filter { $0.card != .stack && isVisible($0.card) }
     }
 
     /// While editing every card shows (the hidden ones as placeholders), so each can be
@@ -180,6 +200,7 @@ struct TodayView: View {
     }
 
     private func hiddenReason(_ card: HomeCard) -> String {
+        if card == .stack { return "None of its cards has anything to show on this day." }
         if card.todayOnly && date != model.today { return "Shows on today only." }
         return model.days.isEmpty ? "Shows once your history has synced." : "Shows once today's data has synced."
     }
@@ -191,21 +212,23 @@ struct TodayView: View {
         if editing {
             HomeEditCell(
                 item: item,
-                seed: HomeCard.allCases.firstIndex(of: item.card) ?? 0,
+                seed: item.id.unicodeScalars.reduce(0) { $0 + Int($1.value) },
                 canRemove: items.count > 1,
-                isDragged: dragging == item.card,
-                onRemove: { remove(item.card) },
-                onResize: { resize(item.card, to: $0) },
-                onMove: { move(item.card, by: $0) },
+                isDragged: dragging == item.id,
+                onRemove: { remove(item.id) },
+                onResize: { resize(item.id, to: $0) },
+                onMove: { move(item.id, by: $0) },
+                onEdit: { settingsItem = item },
+                onResizing: { on in resizingID = on ? item.id : nil },
                 onDragStart: {
-                    dragging = item.card
-                    return NSItemProvider(object: item.card.rawValue as NSString)
+                    dragging = item.id
+                    return NSItemProvider(object: item.id as NSString)
                 }
             ) {
                 cellContent(item)
             }
-            .onDrop(of: [UTType.text], delegate: HomeDropDelegate(target: item.card, items: layout, dragging: $dragging))
-            .accessibilityIdentifier("home-card-\(item.card.rawValue)")
+            .onDrop(of: [UTType.text], delegate: HomeDropDelegate(target: item.id, items: layout, dragging: $dragging))
+            .accessibilityIdentifier("home-card-\(item.id)")
         } else {
             cellContent(item)
                 .highPriorityGesture(
@@ -213,17 +236,19 @@ struct TodayView: View {
                 )
                 .accessibilityElement(children: .contain)
                 .accessibilityAction(named: Text("Edit Home screen")) { startEditing() }
-                .accessibilityIdentifier("home-card-\(item.card.rawValue)")
+                .accessibilityIdentifier("home-card-\(item.id)")
         }
     }
 
     @ViewBuilder private func cellContent(_ item: HomeItem) -> some View {
-        if !isVisible(item.card) {
-            HomeCardPlaceholder(card: item.card, size: item.size, reason: hiddenReason(item.card))
+        if !isVisible(item) {
+            HomeCardPlaceholder(card: item.card, title: item.title, size: item.size, reason: hiddenReason(item.card))
+        } else if item.card == .stack {
+            SmartStackView(entries: visibleEntries(item), size: item.size, date: date, rotate: item.options.rotate ?? true)
         } else if item.size == .large {
-            HomeLargeCard(card: item.card, date: date)
+            HomeLargeCard(spec: item.spec, date: date)
         } else {
-            HomeGlance(card: item.card, size: item.size, date: date)
+            HomeGlance(spec: item.spec, size: item.size, date: date)
         }
     }
 
@@ -243,23 +268,31 @@ struct TodayView: View {
         }
     }
 
-    private func remove(_ card: HomeCard) {
+    private func remove(_ id: String) {
         guard items.count > 1 else { return }
-        let next = items.filter { $0.card != card }
+        let next = items.filter { $0.id != id }
         withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { layout.wrappedValue = next }
     }
 
-    private func resize(_ card: HomeCard, to size: CardSize) {
+    private func resize(_ id: String, to size: CardSize) {
         var next = items
-        guard let i = next.firstIndex(where: { $0.card == card }), next[i].size != size else { return }
+        guard let i = next.firstIndex(where: { $0.id == id }), next[i].size != size, next[i].card.sizes.contains(size) else { return }
         next[i].size = size
         withAnimation(.spring(response: 0.32, dampingFraction: 0.8)) { layout.wrappedValue = next }
     }
 
-    /// VoiceOver's move up / move down.
-    private func move(_ card: HomeCard, by offset: Int) {
+    /// A change from the card's settings sheet.
+    private func update(_ item: HomeItem) {
         var next = items
-        guard let i = next.firstIndex(where: { $0.card == card }) else { return }
+        guard let i = next.firstIndex(where: { $0.id == item.id }), next[i] != item else { return }
+        next[i] = item
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) { layout.wrappedValue = next }
+    }
+
+    /// VoiceOver's move up / move down.
+    private func move(_ id: String, by offset: Int) {
+        var next = items
+        guard let i = next.firstIndex(where: { $0.id == id }) else { return }
         let j = min(max(0, i + offset), next.count - 1)
         guard i != j else { return }
         next.swapAt(i, j)
@@ -267,7 +300,7 @@ struct TodayView: View {
     }
 
     private func add(_ item: HomeItem) {
-        guard !items.contains(where: { $0.card == item.card }) else { return }
+        guard !items.contains(where: { $0.id == item.id || (item.card.isUnique && $0.card == item.card) }) else { return }
         editHaptic += 1
         let next = items + [item]
         withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { layout.wrappedValue = next }
@@ -420,9 +453,11 @@ struct TodayView: View {
 /// A Home card at full size: everything the card has. Today shows it for large cards, and its
 /// own screen (HomeCardDetailView) opens it from a small or medium one.
 struct HomeLargeCard: View {
-    let card: HomeCard
+    let spec: HomeCardSpec
     let date: String
     @EnvironmentObject private var model: AppModel
+
+    private var card: HomeCard { spec.card }
 
     private var day: DayRecord? { model.daysByDate[date] }
     private var detail: DayDetail? { model.dayDetails[date] }
@@ -452,15 +487,15 @@ struct HomeLargeCard: View {
         case .lastNight:
             LastNightCard(date: date)
         case .recoveryTrend:
-            RecoveryTrendCard(date: date)
+            RecoveryTrendCard(date: date, days: spec.days)
         case .hrvTrend:
-            HRVTrendCard(date: date)
+            HRVTrendCard(date: date, windowDays: spec.days)
         case .restingHrTrend:
-            RestingHRTrendCard(date: date)
+            RestingHRTrendCard(date: date, windowDays: spec.days)
         case .stressDay:
             StressDayCard(date: date)
         case .thisWeek:
-            ThisWeekCard(date: date)
+            ThisWeekCard(date: date, keys: spec.options.metrics)
         case .weeklyZoneMinutes:
             WeeklyZoneMinutesCard(date: date)
         case .streaks:
@@ -475,6 +510,11 @@ struct HomeLargeCard: View {
             TrainingLoadHomeCard(date: date)
         case .liveHeartRate:
             if date == model.today { LiveHeartRateHomeCard() }
+        case .metric:
+            MetricLargeCard(key: spec.metricKey, days: spec.days, date: date)
+        case .stack:
+            // A stack has no large size (CardSize.sizes); a stored one shows as medium.
+            SmartStackView(entries: spec.options.stack ?? [], size: .medium, date: date, rotate: spec.options.rotate ?? true)
         }
     }
 
@@ -579,7 +619,7 @@ struct HomeLargeCard: View {
     }
 
     @ViewBuilder private func vitalsCard(_ day: DayRecord) -> some View {
-        let keys = ["rhr", "hrv_rmssd", "spo2_avg", "resp_rate", "skin_temp_dev", "vo2max"].filter(model.recorded.contains)
+        let keys = (spec.options.metrics ?? VitalsGlance.keys).filter(model.recorded.contains)
         if !keys.isEmpty {
             Card {
                 SectionHeader(title: "Vitals", subtitle: "Measured overnight, compared with your 30-day average")
@@ -600,7 +640,7 @@ struct HomeLargeCard: View {
     private func activityCard(_ day: DayRecord) -> some View {
         let steps = day.double("steps")
         let goal = Double(model.status?.settings.stepGoal ?? 10000)
-        let keys = ["calories_total", "calories_active", "azm_total", "distance_km", "floors", "active_min_total"].filter(model.recorded.contains)
+        let keys = (spec.options.metrics ?? ActivityGlance.keys).filter(model.recorded.contains)
         return Card {
             SectionHeader(title: "Activity", subtitle: date >= model.today ? "So far today" : nil)
             HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -715,19 +755,19 @@ struct HomeLargeCard: View {
 
 /// A small or medium Home card opened at full size.
 struct HomeCardDetailView: View {
-    let card: HomeCard
+    let spec: HomeCardSpec
     let date: String
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
         ScrollView {
-            HomeLargeCard(card: card, date: date)
+            HomeLargeCard(spec: spec, date: date)
                 .padding(.horizontal, 16)
                 .padding(.top, 8)
                 .padding(.bottom, 32)
         }
         .screenBackground()
-        .navigationTitle(card.title)
+        .navigationTitle(spec.card == .metric ? (MetricCatalog.def(spec.metricKey)?.label ?? spec.card.title) : spec.card.title)
         .navigationBarTitleDisplayMode(.inline)
         .task(id: date) { await model.loadDay(date) }
     }

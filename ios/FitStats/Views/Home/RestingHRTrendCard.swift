@@ -9,7 +9,8 @@ struct RestingHRTrendCard: View {
     let date: String
     @EnvironmentObject var model: AppModel
 
-    private static let windowDays = 30
+    /// How many days the card covers (a Home card setting).
+    var windowDays = 30
 
     var body: some View {
         let trend = trendDays()
@@ -82,7 +83,7 @@ struct RestingHRTrendCard: View {
     }
 
     @ViewBuilder private func chart(_ points: [RestingHRPoint], highlighted: RestingHRPoint, baseline: Double?) -> some View {
-        let start = Format.chartDate(Format.addDays(date, -(Self.windowDays - 1))) ?? highlighted.date
+        let start = Format.chartDate(Format.addDays(date, -(windowDays - 1))) ?? highlighted.date
         let end = Format.chartDate(date) ?? highlighted.date
         let halfDay: TimeInterval = 12 * 3600
         let lower = start.addingTimeInterval(-halfDay)
@@ -135,7 +136,7 @@ struct RestingHRTrendCard: View {
         }
         .frame(height: 110)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Resting heart rate line chart, \(Self.windowDays) days ending \(Format.longDay(date))")
+        .accessibilityLabel("Resting heart rate line chart, \(windowDays) days ending \(Format.longDay(date))")
         .accessibilityValue(spokenDays(points))
     }
 
@@ -163,7 +164,7 @@ struct RestingHRTrendCard: View {
 
     /// The 30 days ending on `date`, oldest first; `value` is nil for a day without a reading.
     private func trendDays() -> [RestingHRDay] {
-        (0..<Self.windowDays).reversed().map { offset -> RestingHRDay in
+        (0..<windowDays).reversed().map { offset -> RestingHRDay in
             let d = Format.addDays(date, -offset)
             return RestingHRDay(date: d, value: restingHR(on: d))
         }
@@ -214,21 +215,21 @@ struct RestingHRTrendCard: View {
     }
 
     private func subtitle(recordedCount: Int) -> String {
-        let first = Format.addDays(date, -(Self.windowDays - 1))
+        let first = Format.addDays(date, -(windowDays - 1))
         let range = "\(Format.shortDay(first)) – \(Format.shortDay(date))"
-        if recordedCount == 0 || recordedCount >= Self.windowDays { return range }
-        return "\(range) · \(recordedCount) of \(Self.windowDays) days recorded"
+        if recordedCount == 0 || recordedCount >= windowDays { return range }
+        return "\(range) · \(recordedCount) of \(windowDays) days recorded"
     }
 
     private var emptyMessage: String {
         if model.days.isEmpty { return "Your history is still syncing. Pull down to refresh in a minute." }
-        return "No resting heart rate was recorded in the \(Self.windowDays) days ending \(Format.shortDay(date))."
+        return "No resting heart rate was recorded in the \(windowDays) days ending \(Format.shortDay(date))."
     }
 
     // MARK: accessibility
 
     private func accessibilitySummary(latest: RestingHRPoint?, baseline: Double?, count: Int) -> String {
-        var parts = ["Resting heart rate trend, \(Self.windowDays) days ending \(Format.longDay(date))"]
+        var parts = ["Resting heart rate trend, \(windowDays) days ending \(Format.longDay(date))"]
         guard let latest else {
             parts.append("No resting heart rate recorded")
             return parts.joined(separator: ". ")
@@ -248,7 +249,7 @@ struct RestingHRTrendCard: View {
             reading += ", no baseline yet"
         }
         parts.append(reading)
-        parts.append("Recorded on \(count) of \(Self.windowDays) days")
+        parts.append("Recorded on \(count) of \(windowDays) days")
         return parts.joined(separator: ". ")
     }
 

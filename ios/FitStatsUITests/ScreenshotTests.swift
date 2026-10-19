@@ -178,9 +178,10 @@ final class ScreenshotTests: XCTestCase {
         }
     }
 
-    /// Every Home card (FITSTATS_HOME_CARDS=all) at its default size, then edit mode opened by
-    /// holding a card: the wobbling grid, a resize, the Add cards previews, an add. Then every
-    /// card small and every card medium (FITSTATS_HOME_SIZE).
+    /// Every Home card (FITSTATS_HOME_CARDS=all) at its default size and a Smart Stack swiped,
+    /// then edit mode opened by holding a card: the wobbling grid, a resize by dragging the
+    /// corner handle, a Metric card's and a stack's settings, the Add cards previews, an add.
+    /// Then every card small and every card medium (FITSTATS_HOME_SIZE).
     func test03HomeCards() {
         let fixtures = ProcessInfo.processInfo.environment["FITSTATS_FIXTURES"] ?? ""
         XCTAssertFalse(fixtures.isEmpty, "FITSTATS_FIXTURES is not set")
@@ -191,11 +192,22 @@ final class ScreenshotTests: XCTestCase {
         XCTAssertTrue(app.buttons["ring-recovery"].waitForExistence(timeout: 15), "Today screen did not load")
 
         shot("30-home-all")
-        for index in 1...5 {
+        for index in 1...6 {
             app.swipeUp()
             shot("3\(index)-home-all-\(index + 1)")
         }
-        for _ in 0..<12 { app.swipeDown() }
+        // A Smart Stack pages sideways to its next card.
+        let stack = element(app, "home-card-stack-fixture")
+        reveal(app, stack)
+        if stack.exists {
+            shot("65-home-stack")
+            stack.swipeLeft()
+            sleep(1)
+            shot("66-home-stack-swiped")
+        } else {
+            XCTFail("missing home-card-stack-fixture")
+        }
+        for _ in 0..<16 { app.swipeDown() }
 
         let card = element(app, "home-card-scores")
         guard card.waitForExistence(timeout: 5) else {
@@ -206,13 +218,58 @@ final class ScreenshotTests: XCTestCase {
         let done = app.buttons["home-done"]
         XCTAssertTrue(done.waitForExistence(timeout: 5), "edit mode did not start")
         shot("38-home-edit")
-        // Tapping a card's resize handle steps to the next size (large → small for Scores).
-        let resize = element(app, "home-resize-scores")
-        if resize.waitForExistence(timeout: 3) {
-            resize.tap()
+        // Dragging Tonight's corner handle to the right stretches it to medium when released.
+        let handle = element(app, "home-resize-tonight")
+        if handle.waitForExistence(timeout: 3) {
+            let start = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            start.press(forDuration: 0.05, thenDragTo: start.withOffset(CGVector(dx: 200, dy: 10)))
+            sleep(1)
             shot("47-home-edit-resized")
         } else {
-            XCTFail("missing home-resize-scores")
+            XCTFail("missing home-resize-tonight")
+        }
+        // Tapping a card while editing opens its settings: the Metric card switches to HRV.
+        let metric = element(app, "home-card-metric-fixture")
+        reveal(app, metric)
+        if metric.exists, metric.isHittable {
+            metric.tap()
+            let settingsDone = app.buttons["card-settings-done"]
+            if settingsDone.waitForExistence(timeout: 5) {
+                shot("61-card-settings-metric")
+                let pick = app.buttons["card-settings-metric"]
+                if pick.waitForExistence(timeout: 3) {
+                    pick.tap()
+                    sleep(1)
+                    shot("62-metric-picker")
+                    let hrv = app.buttons["metric-pick-hrv_rmssd"]
+                    if hrv.waitForExistence(timeout: 3) { hrv.tap() } else { XCTFail("missing metric-pick-hrv_rmssd") }
+                    sleep(1)
+                } else {
+                    XCTFail("missing card-settings-metric")
+                }
+                if settingsDone.exists { settingsDone.tap() }
+                sleep(1)
+                shot("63-home-metric-hrv")
+            } else {
+                XCTFail("Metric card settings did not open")
+            }
+        } else {
+            XCTFail("missing home-card-metric-fixture")
+        }
+        let stackCell = element(app, "home-card-stack-fixture")
+        reveal(app, stackCell)
+        if stackCell.exists, stackCell.isHittable {
+            stackCell.tap()
+            let settingsDone = app.buttons["card-settings-done"]
+            if settingsDone.waitForExistence(timeout: 5) {
+                shot("64-stack-settings")
+                settingsDone.tap()
+                sleep(1)
+            } else {
+                XCTFail("Smart Stack settings did not open")
+            }
+        } else {
+            XCTFail("missing home-card-stack-fixture in edit mode")
         }
         // Every card is on Home in this mode, so Add cards is empty. Reset (kept in memory only
         // in this mode, nothing is stored) fills it with previews.

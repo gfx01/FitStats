@@ -1,11 +1,13 @@
 import Charts
 import SwiftUI
 
-/// Home: recovery for the 14 days ending on `date`, one bar per day colored by recovery band,
+/// Home: recovery for the `days` days (14 by default) ending on `date`, one bar per day colored by recovery band,
 /// with the average of the scored days. Days without a score stay empty (nothing is filled in).
 /// Tapping opens the recovery detail.
 struct RecoveryTrendCard: View {
     let date: String
+    /// How many days the card covers (a Home card setting).
+    var days = 14
     @EnvironmentObject var model: AppModel
 
     var body: some View {
@@ -114,15 +116,15 @@ struct RecoveryTrendCard: View {
         }
         .frame(height: 110)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Recovery bar chart, 14 days ending \(Format.longDay(date))")
+        .accessibilityLabel("Recovery bar chart, \(days) days ending \(Format.longDay(date))")
         .accessibilityValue(spokenDays(trend))
     }
 
     // MARK: data
 
-    /// The 14 days ending on `date`, oldest first; `value` is nil for a day without a score.
+    /// The `days` days ending on `date`, oldest first; `value` is nil for a day without a score.
     private func trendDays() -> [RecoveryTrendDay] {
-        (0..<14).reversed().map { offset -> RecoveryTrendDay in
+        (0..<days).reversed().map { offset -> RecoveryTrendDay in
             let d = Format.addDays(date, -offset)
             return RecoveryTrendDay(date: d, value: recovery(on: d))
         }
@@ -155,13 +157,13 @@ struct RecoveryTrendCard: View {
 
     private var emptyMessage: String {
         if model.days.isEmpty { return "Your history is still syncing. Pull down to refresh in a minute." }
-        return "No recovery score in the 14 days ending \(Format.shortDay(date)). Recovery needs at least 5 nights of HRV or resting heart rate to build your personal baseline."
+        return "No recovery score in the \(days) days ending \(Format.shortDay(date)). Recovery needs at least 5 nights of HRV or resting heart rate to build your personal baseline."
     }
 
     // MARK: accessibility
 
     private func accessibilitySummary(average: Double?, count: Int, total: Int) -> String {
-        var parts = ["Recovery trend, 14 days ending \(Format.longDay(date))"]
+        var parts = ["Recovery trend, \(days) days ending \(Format.longDay(date))"]
         guard let average else {
             parts.append("No recovery score yet")
             return parts.joined(separator: ". ")

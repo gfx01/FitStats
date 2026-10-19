@@ -81,29 +81,40 @@ struct HomeGridLayout: Layout {
     }
 }
 
-/// A slight, endless wobble while Home is being edited, like the iOS Home Screen. Off with
-/// Reduce Motion.
+/// A slight, endless wobble while Home is being edited, like the iOS Home Screen. It pauses
+/// while `active` is false (a card being resized holds still) and is off with Reduce Motion.
 struct Jiggle: ViewModifier {
     let amplitude: Double
     let seed: Int
+    var active = true
     @State private var tilted = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         content
-            .rotationEffect(.degrees(reduceMotion ? 0 : (tilted ? amplitude : -amplitude)))
-            .onAppear {
-                guard !reduceMotion else { return }
-                withAnimation(.easeInOut(duration: 0.13 + Double(seed % 4) * 0.015).repeatForever(autoreverses: true)) {
-                    tilted = true
-                }
+            .rotationEffect(.degrees(reduceMotion || !active ? 0 : (tilted ? amplitude : -amplitude)))
+            .onAppear { start() }
+            .onChange(of: active) { _, on in
+                if on { start() }
             }
+    }
+
+    private func start() {
+        guard !reduceMotion, active else { return }
+        tilted = false
+        withAnimation(.easeInOut(duration: 0.13 + Double(seed % 4) * 0.015).repeatForever(autoreverses: true)) {
+            tilted = true
+        }
     }
 }
 
 /// A Home card in edit mode: it wobbles, can't be tapped through, has a remove button on its
-/// top-left corner and a resize handle on its bottom-right one. Holding it and dragging moves
-/// it (system drag and drop, see HomeDropDelegate).
+/// top-left corner and a resize handle on its bottom-right one. Tapping it opens its settings;
+/// holding it and dragging moves it (system drag and drop, see HomeDropDelegate).
+///
+/// Resizing works like iOS widgets: while the handle is dragged an outline follows the finger
+/// (from small up to the large footprint), labelled with the size it will take, and the card
+/// snaps to that size when the finger lifts.
 struct HomeEditCell<Content: View>: View {
     let item: HomeItem
     let seed: Int
@@ -112,32 +123,61 @@ struct HomeEditCell<Content: View>: View {
     var onRemove: () -> Void
     var onResize: (CardSize) -> Void
     var onMove: (Int) -> Void
+    var onEdit: () -> Void
+    /// True while the resize outline is up, so Today can draw this card above its neighbours.
+    var onResizing: (Bool) -> Void
     var onDragStart: () -> NSItemProvider
     @ViewBuilder var content: () -> Content
 
-    /// The size when the resize drag began; the target is worked out from it and the whole
-    /// drag, so growing past a step and coming back undoes it.
-    @State private var resizeStart: CardSize?
+    /// How far the resize handle has been dragged; nil when it isn't (also after a cancelled drag).
+    @GestureState private var resizeDrag: CGSize? = nil
+    @State private var cellSize: CGSize = .zero
+
+    // Computed: a generic type can't have static stored properties. Same as HomeGridLayout.
+    private static var columnSpacing: CGFloat { 12 }
+    private static var rowSpacing: CGFloat { 14 }
 
     var body: some View {
         content()
             .allowsHitTesting(false)
-            // Catches touches over the whole card, so holding anywhere on it starts a drag.
-            .overlay { Color.white.opacity(0.001) }
-            .overlay(alignment: .topLeading) {
-                if canRemove { removeButton }
+            // Catches touches over the whole card: a tap opens its settings, holding anywhere
+            // on it starts a drag.
+            .overlay {
+                Color.white.opacity(0.001)
+                    .onTapGesture { onEdit() }
             }
-            .overlay(alignment: .bottomTrailing) { resizeHandle }
+            .background {
+                GeometryReader { geo in
+                    Color.clear
+                        .onAppear { cellSize = geo.size }
+                        .onChange(of: geo.size) { _, size in cellSize = size }
+                }
+            }
+            .overlay(alignment: .topLeading) {
+                if let resizeDrag { outline(resizeDrag) }
+            }
+            .overlay(alignment: .topLeading) {
+                if canRemove && resizeDrag == nil { removeButton }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if resizeDrag == nil { resizeHandle }
+            }
             .opacity(isDragged ? 0.35 : 1)
-            .modifier(Jiggle(amplitude: amplitude, seed: seed))
+            .modifier(Jiggle(amplitude: amplitude, seed: seed, active: resizeDrag == nil))
             .onDrag(onDragStart)
             .sensoryFeedback(.selection, trigger: item.size)
+            .sensoryFeedback(.selection, trigger: resizeDrag.map(target))
+            .onChange(of: resizeDrag) { old, new in
+                if (old == nil) != (new == nil) { onResizing(new != nil) }
+            }
             .accessibilityElement(children: .contain)
-            .accessibilityLabel(Text("\(item.card.title), \(item.size.label)"))
+            .accessibilityLabel(Text("\(item.title), \(item.size.label)"))
+            .accessibilityHint(Text(item.card.hasSettings ? "Tap for its settings" : ""))
             .accessibilityActions {
-                ForEach(CardSize.allCases.filter { $0 != item.size }) { size in
+                ForEach(item.card.sizes.filter { $0 != item.size }) { size in
                     Button("Make \(size.label.lowercased())") { onResize(size) }
                 }
+                if item.card.hasSettings { Button("Settings") { onEdit() } }
                 Button("Move up") { onMove(-1) }
                 Button("Move down") { onMove(1) }
                 if canRemove { Button("Remove") { onRemove() } }
@@ -153,6 +193,60 @@ struct HomeEditCell<Content: View>: View {
         }
     }
 
+    // MARK: resize geometry
+
+    /// The full row width: a small card is half of it.
+    private var fullWidth: CGFloat {
+        item.size == .small ? cellSize.width * 2 + Self.columnSpacing : cellSize.width
+    }
+
+    private var smallWidth: CGFloat { max(0, (fullWidth - Self.columnSpacing) / 2) }
+
+    /// The tallest the outline goes: two glance rows, or the large card's own height if taller.
+    private var largeHeight: CGFloat {
+        let twoRows = 2 * HomeGlanceMetrics.height + Self.rowSpacing
+        return item.size == .large ? max(twoRows, cellSize.height) : twoRows
+    }
+
+    private func outlineSize(_ t: CGSize) -> CGSize {
+        let w = min(max(cellSize.width + t.width, smallWidth), fullWidth)
+        let maxH = item.card.sizes.contains(.large) ? largeHeight : HomeGlanceMetrics.height
+        let h = min(max(cellSize.height + t.height, min(HomeGlanceMetrics.height, cellSize.height)), maxH)
+        return CGSize(width: w, height: h)
+    }
+
+    /// The size the card takes when the finger lifts: past halfway between two footprints it
+    /// takes the bigger one. A one-column card can't be tall, so narrow means small.
+    private func target(_ t: CGSize) -> CardSize {
+        let o = outlineSize(t)
+        let wide = o.width > (smallWidth + fullWidth) / 2
+        let tall = o.height > (HomeGlanceMetrics.height + largeHeight) / 2
+        let size: CardSize = !wide ? .small : (tall ? .large : .medium)
+        return item.card.sizes.contains(size) ? size : .medium
+    }
+
+    private func outline(_ t: CGSize) -> some View {
+        let o = outlineSize(t)
+        return RoundedRectangle(cornerRadius: 22, style: .continuous)
+            .fill(Color.white.opacity(0.10))
+            .overlay(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.85), lineWidth: 2)
+            )
+            .overlay {
+                Text(target(t).label)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Capsule().fill(.white))
+            }
+            .frame(width: o.width, height: o.height)
+            .allowsHitTesting(false)
+    }
+
+    // MARK: corner controls
+
     private var removeButton: some View {
         Button(action: onRemove) {
             Image(systemName: "minus")
@@ -166,8 +260,8 @@ struct HomeEditCell<Content: View>: View {
         }
         .buttonStyle(.plain)
         .offset(x: -16, y: -16)
-        .accessibilityLabel(Text("Remove \(item.card.title)"))
-        .accessibilityIdentifier("home-remove-\(item.card.rawValue)")
+        .accessibilityLabel(Text("Remove \(item.title)"))
+        .accessibilityIdentifier("home-remove-\(item.id)")
     }
 
     private var resizeHandle: some View {
@@ -181,50 +275,38 @@ struct HomeEditCell<Content: View>: View {
             .contentShape(Rectangle())
             .offset(x: 10, y: 10)
             .highPriorityGesture(
-                // Global space: the card under the finger grows and moves while dragging.
-                DragGesture(minimumDistance: 4, coordinateSpace: .global)
-                    .onChanged { value in
-                        let start = resizeStart ?? item.size
-                        if resizeStart == nil { resizeStart = item.size }
-                        let target = Self.size(from: start, translation: value.translation)
-                        if target != item.size { onResize(target) }
+                // Global space, so the wobble's rotation doesn't shake the outline.
+                DragGesture(minimumDistance: 2, coordinateSpace: .global)
+                    .updating($resizeDrag) { value, state, _ in state = value.translation }
+                    .onEnded { value in
+                        let size = target(value.translation)
+                        if size != item.size { onResize(size) }
                     }
-                    .onEnded { _ in resizeStart = nil }
             )
-            .onTapGesture { onResize(item.size.next) }
-            .accessibilityLabel(Text("Resize \(item.card.title)"))
+            .onTapGesture { onResize(nextSize) }
+            .accessibilityLabel(Text("Resize \(item.title)"))
             .accessibilityValue(Text(item.size.label))
             .accessibilityHint(Text("Drag to resize, or tap for the next size"))
-            .accessibilityIdentifier("home-resize-\(item.card.rawValue)")
+            .accessibilityIdentifier("home-resize-\(item.id)")
     }
 
-    /// Dragging right or left past a step widens or narrows the card, down or up makes it
-    /// taller or shorter. Small is 1 × 1, medium 2 × 1 and large 2 × 2; a drag that asks for
-    /// 1 × 2 follows whichever direction moved further.
-    static func size(from start: CardSize, translation t: CGSize) -> CardSize {
-        let step: CGFloat = 50
-        var columns = start.columns
-        var rows = start.rows
-        if t.width > step { columns = 2 } else if t.width < -step { columns = 1 }
-        if t.height > step { rows = 2 } else if t.height < -step { rows = 1 }
-        if columns == 1 && rows == 2 {
-            return abs(t.height) > abs(t.width) ? .large : .small
-        }
-        if columns == 1 { return .small }
-        return rows == 1 ? .medium : .large
+    private var nextSize: CardSize {
+        let sizes = item.card.sizes
+        guard let i = sizes.firstIndex(of: item.size) else { return item.card.defaultSize }
+        return sizes[(i + 1) % sizes.count]
     }
 }
 
 /// Live reordering while a card is dragged over another one, like the iOS Home Screen.
 struct HomeDropDelegate: DropDelegate {
-    let target: HomeCard
+    let target: String
     @Binding var items: [HomeItem]
-    @Binding var dragging: HomeCard?
+    @Binding var dragging: String?
 
     func dropEntered(info: DropInfo) {
         guard let dragging, dragging != target,
-              let from = items.firstIndex(where: { $0.card == dragging }),
-              let to = items.firstIndex(where: { $0.card == target }) else { return }
+              let from = items.firstIndex(where: { $0.id == dragging }),
+              let to = items.firstIndex(where: { $0.id == target }) else { return }
         var next = items
         next.move(fromOffsets: IndexSet(integer: from), toOffset: to > from ? to + 1 : to)
         withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) { items = next }
@@ -242,7 +324,7 @@ struct HomeDropDelegate: DropDelegate {
 
 /// Catches a drop between cards, so the dragged card never stays faded.
 struct HomeDropEndDelegate: DropDelegate {
-    @Binding var dragging: HomeCard?
+    @Binding var dragging: String?
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
         DropProposal(operation: .move)
@@ -259,6 +341,7 @@ struct HomeDropEndDelegate: DropDelegate {
 /// resized or removed.
 struct HomeCardPlaceholder: View {
     let card: HomeCard
+    let title: String
     let size: CardSize
     let reason: String
 
@@ -267,7 +350,7 @@ struct HomeCardPlaceholder: View {
             Image(systemName: card.icon)
                 .font(.title3)
                 .foregroundStyle(Theme.tertiary)
-            Text(card.title)
+            Text(title)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(Theme.secondary)
                 .lineLimit(2)
