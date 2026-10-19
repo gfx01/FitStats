@@ -127,6 +127,8 @@ struct SleepDetailView: View {
         let detail = model.dayDetails[date]
         // The session behind the day's numbers, so the hypnogram and the rows describe the same sleep.
         let main = detail?.mainSleep(id: day?.string("sleep_main_id"))
+        // Every other session that day is a nap, as on the server.
+        let naps = (detail?.sleeps ?? []).filter { $0.id != main?.id }
         let score = day?.double("sleep_score")
         DetailScaffold(title: "Sleep", date: date) {
             Card {
@@ -157,6 +159,9 @@ struct SleepDetailView: View {
                 KeyValueRow(key: "Naps", value: Format.duration(day?.double("nap_min")))
                 KeyValueRow(key: "Breathing rate", value: day?.double("resp_rate").map { String(format: "%.1f /min", $0) } ?? "–")
                 KeyValueRow(key: "SpO₂ average", value: day?.double("spo2_avg").map { String(format: "%.1f%%", $0) } ?? "–")
+            }
+            if !naps.isEmpty {
+                NapsCard(naps: naps, hr: detail?.intraday?.hr)
             }
             if let hrv = detail?.samples["hrv"], hrv.count >= 2 {
                 Card {

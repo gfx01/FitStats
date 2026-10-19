@@ -11,7 +11,7 @@ mkdirSync(out, { recursive: true });
 
 const { runSync, clockFor, loadSettings, rebuildStats, recomputeScores } = await import("../functions/fitstats/lib/sync.ts");
 const { addDays } = await import("../functions/fitstats/lib/util.ts");
-const { mainSleepOf } = await import("../functions/fitstats/lib/transform.ts");
+const { mainSleepOf, sleepDayPatch, sleepPointToRow } = await import("../functions/fitstats/lib/transform.ts");
 const { JOURNAL_TAGS, journalEntries, saveJournalEntry } = await import("../functions/fitstats/lib/journal.ts");
 const log = await runSync("fixtures", true, 95_000);
 if (log.status !== "ok") throw new Error(`sync failed: ${JSON.stringify(log)}`);
@@ -47,6 +47,39 @@ for (const [i, date] of logged.entries()) {
   await saveJournalEntry({ date, tags }, today);
 }
 await saveJournalEntry({ date: today, tags: ["late_caffeine", "stressful_day"], note: "Long day at work, coffee at 4 pm." }, today);
+
+// An early-afternoon nap today, for the Sleep screen's Naps section: 13:20–14:05 local, with
+// stages, made by the real transform from an API-shaped point like the sync's.
+{
+  const clock = clockFor(acc as never);
+  const night = mainSleepOf(tables.fs_sleep.filter((s) => s.date === today));
+  const offset = Number(night?.end_offset_s ?? 7200);
+  const at = (min: number) => new Date(Date.parse(`${today}T13:20:00Z`) - offset * 1000 + min * 60000).toISOString();
+  const parts = [["AWAKE", 0, 4], ["LIGHT", 4, 19], ["DEEP", 19, 28], ["LIGHT", 28, 36], ["REM", 36, 41], ["AWAKE", 41, 45]] as const;
+  const minutes = (type: string) => parts.filter((p) => p[0] === type).reduce((sum, p) => sum + p[2] - p[1], 0);
+  const row = sleepPointToRow({
+    name: `users/me/dataTypes/sleep/dataPoints/n-${today}`,
+    sleep: {
+      interval: { startTime: at(0), endTime: at(45), startUtcOffset: `${offset}s`, endUtcOffset: `${offset}s` },
+      type: "STAGES",
+      metadata: { mainSleep: false, nap: true, processed: true },
+      stages: parts.map(([type, a, b]) => ({ type, startTime: at(a), endTime: at(b) })),
+      summary: {
+        minutesAsleep: String(45 - minutes("AWAKE")),
+        minutesInSleepPeriod: "45",
+        minutesAwake: String(minutes("AWAKE")),
+        minutesToFallAsleep: "0",
+        stagesSummary: ["DEEP", "REM", "LIGHT", "AWAKE"].map((type) => ({
+          type, minutes: String(minutes(type)), count: String(parts.filter((p) => p[0] === type).length),
+        })),
+      },
+    },
+  } as never, clock);
+  const day = tables.fs_days.find((d) => d.date === today);
+  if (!row || row.date !== today || !day) throw new Error(`fixture nap not made for ${today}: ${JSON.stringify(row)}`);
+  tables.fs_sleep.push(row as unknown as Row);
+  Object.assign(day, sleepDayPatch(today, tables.fs_sleep.filter((s) => s.date === today) as never, clock));
+}
 await rebuildStats(today, await loadSettings());
 const byDate = (a: Row, b: Row) => String(a.date).localeCompare(String(b.date));
 const days = [...tables.fs_days].sort(byDate);

@@ -458,8 +458,8 @@ final class ScreenshotTests: XCTestCase {
         }
     }
 
-    /// A swipe to the right from the middle of a pushed screen goes back, and a tap outside the
-    /// Coach's text field hides the keyboard.
+    /// A swipe to the right from the middle of a pushed screen goes back, the Sleep screen lists
+    /// the day's naps, and a tap outside the Coach's text field hides the keyboard.
     func test05Gestures() {
         let fixtures = ProcessInfo.processInfo.environment["FITSTATS_FIXTURES"] ?? ""
         XCTAssertFalse(fixtures.isEmpty, "FITSTATS_FIXTURES is not set")
@@ -478,6 +478,19 @@ final class ScreenshotTests: XCTestCase {
         sleep(1)
         shot("73-swiped-back")
         XCTAssertTrue(ring.isHittable, "a swipe from the middle of Recovery did not go back to Today")
+
+        // Today's nap (the fixtures add one, 13:20–14:05) has its own section on the Sleep screen.
+        let sleepRing = app.buttons["ring-sleep"]
+        if sleepRing.waitForExistence(timeout: 5) {
+            sleepRing.tap()
+            let naps = element(app, "sleep-naps")
+            scrollTo(app, naps)
+            reveal(app, naps)
+            shot("76-sleep-naps")
+            XCTAssertTrue(onScreen(app, naps), "no Naps section on the Sleep screen: \(describe(naps))")
+        } else {
+            XCTFail("missing ring-sleep")
+        }
 
         app.tabBars.buttons["Coach"].tap()
         let input = element(app, "coach-input")
@@ -499,6 +512,7 @@ final class ScreenshotTests: XCTestCase {
         sleep(1)
         shot("75-coach-keyboard-hidden")
         XCTAssertFalse(keyboard.exists, "tapping outside the text field did not hide the keyboard")
+
         app.terminate()
     }
 
