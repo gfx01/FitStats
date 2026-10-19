@@ -241,8 +241,15 @@ final class ScreenshotTests: XCTestCase {
                     pick.tap()
                     sleep(1)
                     shot("62-metric-picker")
+                    // HRV is under Heart, further down the list.
                     let hrv = app.buttons["metric-pick-hrv_rmssd"]
-                    if hrv.waitForExistence(timeout: 3) { hrv.tap() } else { XCTFail("missing metric-pick-hrv_rmssd") }
+                    let list = app.collectionViews.firstMatch
+                    for _ in 0..<6 where !(hrv.exists && hrv.isHittable) { list.swipeUp() }
+                    if hrv.exists, hrv.isHittable { hrv.tap() } else { XCTFail("missing metric-pick-hrv_rmssd") }
+                    sleep(1)
+                    // Back to the settings if the list is still open.
+                    let back = app.navigationBars["Metric"].buttons.firstMatch
+                    if back.exists { back.tap() }
                     sleep(1)
                 } else {
                     XCTFail("missing card-settings-metric")

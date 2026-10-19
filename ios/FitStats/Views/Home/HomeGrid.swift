@@ -159,9 +159,8 @@ struct HomeEditCell<Content: View>: View {
             .overlay(alignment: .topLeading) {
                 if canRemove && resizeDrag == nil { removeButton }
             }
-            .overlay(alignment: .bottomTrailing) {
-                if resizeDrag == nil { resizeHandle }
-            }
+            // Always in the view tree: removing it would cancel the drag it carries.
+            .overlay(alignment: .bottomTrailing) { resizeHandle }
             .opacity(isDragged ? 0.35 : 1)
             .modifier(Jiggle(amplitude: amplitude, seed: seed, active: resizeDrag == nil))
             .onDrag(onDragStart)
@@ -273,7 +272,7 @@ struct HomeEditCell<Content: View>: View {
             .shadow(color: .black.opacity(0.35), radius: 3)
             .frame(width: 44, height: 44)
             .contentShape(Rectangle())
-            .offset(x: 10, y: 10)
+            .offset(handleOffset)
             .highPriorityGesture(
                 // Global space, so the wobble's rotation doesn't shake the outline.
                 DragGesture(minimumDistance: 2, coordinateSpace: .global)
@@ -288,6 +287,13 @@ struct HomeEditCell<Content: View>: View {
             .accessibilityValue(Text(item.size.label))
             .accessibilityHint(Text("Drag to resize, or tap for the next size"))
             .accessibilityIdentifier("home-resize-\(item.id)")
+    }
+
+    /// On the card's corner, or on the outline's corner while resizing, so it stays under the finger.
+    private var handleOffset: CGSize {
+        guard let resizeDrag else { return CGSize(width: 10, height: 10) }
+        let o = outlineSize(resizeDrag)
+        return CGSize(width: 10 + o.width - cellSize.width, height: 10 + o.height - cellSize.height)
     }
 
     private var nextSize: CardSize {
