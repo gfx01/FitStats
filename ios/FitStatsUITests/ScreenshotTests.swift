@@ -81,13 +81,18 @@ final class ScreenshotTests: XCTestCase {
         "\(element.identifier): exists \(element.exists), frame \(element.frame)"
     }
 
-    /// Scrolls until the middle of `element` is near the middle of the screen.
-    private func scrollTo(_ app: XCUIApplication, _ element: XCUIElement) {
+    /// Scrolls until `element` is on screen, or with `near`, until its middle is within 90
+    /// points of that fraction of the screen's height.
+    private func scrollTo(_ app: XCUIApplication, _ element: XCUIElement, near: CGFloat? = nil) {
         let window = app.windows.firstMatch.frame
-        for _ in 0..<40 where !onScreen(app, element) {
+        let target = window.minY + window.height * (near ?? 0.45)
+        func placed() -> Bool {
+            onScreen(app, element) && (near == nil || abs(element.frame.midY - target) < 90)
+        }
+        for _ in 0..<40 where !placed() {
             if element.exists, !element.frame.isEmpty {
                 let before = element.frame.midY
-                let dy = before - (window.minY + window.height * 0.45)
+                let dy = before - target
                 scrollPage(app, by: dy)
                 trace("scroll \(element.identifier) by \(Int(dy)): midY \(Int(before)) -> \(Int(element.frame.midY))")
             } else {
@@ -296,7 +301,7 @@ final class ScreenshotTests: XCTestCase {
         // Holding Vitals and dragging it onto the lower part of Activity moves it below Activity.
         let vitals = element(app, "home-card-vitals")
         let activity = element(app, "home-card-activity")
-        scrollTo(app, vitals)
+        scrollTo(app, vitals, near: 0.35)
         if onScreen(app, vitals), onScreen(app, activity) {
             middle(vitals).press(forDuration: 0.6, thenDragTo: middle(activity, dy: 0.88),
                                  withVelocity: .default, thenHoldForDuration: 0.8)
