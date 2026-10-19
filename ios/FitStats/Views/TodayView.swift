@@ -135,7 +135,7 @@ struct TodayView: View {
     }
 
     private var editHint: some View {
-        Text("Hold a card and drag it to move it. Drag the corner handle to resize, or tap it for the next size.")
+        Text("Tap a card for its settings. Hold and drag to move it, drag the corner handle to resize.")
             .font(.caption)
             .foregroundStyle(Theme.secondary)
             .multilineTextAlignment(.center)
