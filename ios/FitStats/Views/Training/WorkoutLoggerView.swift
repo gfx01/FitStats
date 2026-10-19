@@ -180,7 +180,7 @@ private struct LoggedExerciseCard: View {
                 .accessibilityLabel("\(exercise.name) options")
             }
             if let last {
-                Text("Last time: \(last.map(\.summary).joined(separator: ", "))")
+                Text("Last time: \(LoggedSet.compact(last))")
                     .font(.caption)
                     .foregroundStyle(Theme.tertiary)
                     .lineLimit(2)

@@ -134,6 +134,16 @@ struct LoggedSet: Codable, Equatable, Identifiable {
         if let distanceKm { parts.append("\(Format.number(distanceKm, decimals: 1)) km") }
         return parts.isEmpty ? "Done" : parts.joined(separator: " · ")
     }
+
+    /// Sets in a row that are the same, counted once: "5 × 80 kg (5 sets)",
+    /// "8 × 60 kg (2 sets), 7 × 60 kg".
+    static func compact(_ sets: [LoggedSet]) -> String {
+        var runs: [(text: String, count: Int)] = []
+        for text in sets.map(\.summary) {
+            if runs.last?.text == text { runs[runs.count - 1].count += 1 } else { runs.append((text: text, count: 1)) }
+        }
+        return runs.map { $0.count > 1 ? "\($0.text) (\($0.count) sets)" : $0.text }.joined(separator: ", ")
+    }
 }
 
 struct LoggedExercise: Codable, Equatable, Identifiable {

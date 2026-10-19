@@ -117,7 +117,7 @@ struct RoutineDetailView: View {
                     Text(e.plan).font(.caption).foregroundStyle(Theme.secondary)
                 }
                 if let last = WorkoutLog.lastSets(of: e.name, in: model.workoutLogs) {
-                    Text("Last time: \(last.map(\.summary).joined(separator: ", "))")
+                    Text("Last time: \(LoggedSet.compact(last))")
                         .font(.caption)
                         .foregroundStyle(Theme.tertiary)
                         .lineLimit(2)

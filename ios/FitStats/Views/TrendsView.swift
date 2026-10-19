@@ -94,6 +94,8 @@ struct TrendsView: View {
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.right").font(.caption2).foregroundStyle(Theme.tertiary)
             }
+            // The same height whatever the icon, so the titles line up.
+            .frame(height: 22)
             Text(title)
                 .font(.subheadline.weight(.semibold))
                 .lineLimit(1)
