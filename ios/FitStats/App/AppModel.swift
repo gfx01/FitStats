@@ -494,7 +494,11 @@ final class AppModel: ObservableObject {
         }
         do {
             var body = try json(routine) as? [String: Any] ?? [:]
-            if routine.id.isEmpty { body["id"] = nil }
+            // A new one: the server gives it an id and puts it after the others.
+            if routine.id.isEmpty {
+                body["id"] = nil
+                body["position"] = nil
+            }
             let data = try await postTraining(["action": "save_routine", "routine": body])
             struct Reply: Decodable { let routine: Routine }
             let saved = try JSONDecoder().decode(Reply.self, from: data).routine

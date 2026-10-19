@@ -129,18 +129,32 @@ struct TrainingView: View {
 
     @ViewBuilder private var routinesSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            SectionHeader(title: "Routines", subtitle: model.routines.isEmpty ? nil : "Tap one to see it or start it")
+            SectionHeader(title: "Routines", subtitle: model.routines.isEmpty ? nil : "Tap one to see it or start it, hold it to move it")
             if model.routines.isEmpty {
                 Card {
                     EmptyStateView(icon: "list.bullet.clipboard", title: "No routines yet",
                                    message: "Make one with the + button, or ask the coach to make one for you.")
                 }
             }
-            ForEach(model.routines) { routine in
+            ForEach(Array(model.routines.enumerated()), id: \.element.id) { item in
+                let routine = item.element
                 NavigationLink(value: TrainingRoute.routine(routine.id)) {
                     RoutineCard(routine: routine, lastDone: model.workoutLogs.first { $0.routineId == routine.id }?.date)
                 }
                 .buttonStyle(.plain)
+                .contextMenu {
+                    if item.offset > 0 {
+                        Button("Move up", systemImage: "arrow.up") {
+                            Task { await model.moveRoutines(from: IndexSet(integer: item.offset), to: item.offset - 1) }
+                        }
+                    }
+                    if item.offset < model.routines.count - 1 {
+                        Button("Move down", systemImage: "arrow.down") {
+                            Task { await model.moveRoutines(from: IndexSet(integer: item.offset), to: item.offset + 2) }
+                        }
+                    }
+                    Button("Edit", systemImage: "pencil") { editingRoutine = routine }
+                }
                 .accessibilityIdentifier("routine-\(routine.name)")
             }
         }
