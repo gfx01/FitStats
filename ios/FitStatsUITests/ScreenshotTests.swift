@@ -180,7 +180,8 @@ final class ScreenshotTests: XCTestCase {
 
     /// Every Home card (FITSTATS_HOME_CARDS=all) at its default size and a Smart Stack swiped,
     /// then edit mode opened by holding a card: the wobbling grid, a resize by dragging the
-    /// corner handle, a Metric card's and a stack's settings, the Add cards previews, an add.
+    /// corner handle, a Metric card's and a stack's settings, a card dropped on another to
+    /// stack them, time-of-day layouts, the Add cards previews, an add.
     /// Then every card small and every card medium (FITSTATS_HOME_SIZE).
     func test03HomeCards() {
         let fixtures = ProcessInfo.processInfo.environment["FITSTATS_FIXTURES"] ?? ""
@@ -277,6 +278,36 @@ final class ScreenshotTests: XCTestCase {
             }
         } else {
             XCTFail("missing home-card-stack-fixture in edit mode")
+        }
+        // Dropping a card on the middle of another makes a Smart Stack of the two.
+        for _ in 0..<16 { app.swipeDown() }
+        let source = element(app, "home-card-recoveryTrend")
+        let destination = element(app, "home-card-hrvTrend")
+        reveal(app, source)
+        if source.exists, destination.exists, source.isHittable, destination.isHittable {
+            source.press(forDuration: 1.2, thenDragTo: destination)
+            sleep(2)
+            shot("67-home-stacked")
+        } else {
+            XCTFail("recoveryTrend or hrvTrend not reachable for stacking")
+        }
+        // Time-of-day layouts: each part of the day starts as a copy and can be edited apart.
+        for _ in 0..<16 { app.swipeDown() }
+        let timeOfDay = app.switches["home-time-of-day"]
+        if timeOfDay.waitForExistence(timeout: 3) {
+            timeOfDay.tap()
+            sleep(1)
+            shot("68-home-time-of-day")
+            let evening = app.buttons["Evening"]
+            if evening.waitForExistence(timeout: 3) {
+                evening.tap()
+                sleep(1)
+                shot("69-home-evening-layout")
+            } else {
+                XCTFail("missing the Evening layout button")
+            }
+        } else {
+            XCTFail("missing home-time-of-day")
         }
         // Every card is on Home in this mode, so Add cards is empty. Reset (kept in memory only
         // in this mode, nothing is stored) fills it with previews.

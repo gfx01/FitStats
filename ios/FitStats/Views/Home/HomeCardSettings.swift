@@ -7,6 +7,8 @@ struct HomeCardSettingsView: View {
     let canRemove: Bool
     var onChange: (HomeItem) -> Void
     var onRemove: () -> Void
+    /// A Smart Stack's card back onto Home on its own.
+    var onExtract: (StackEntry) -> Void = { _ in }
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
 
@@ -178,7 +180,7 @@ struct HomeCardSettingsView: View {
         } header: {
             Text("Cards in this stack")
         } footer: {
-            Text("Swipe sideways on the stack to go through them. Drag the handles to reorder; a stack keeps at least one card.")
+            Text("Swipe sideways on the stack to go through them. Drag the handles to reorder, or tap the arrow to put a card back on Home on its own. On Home, dropping a card on the stack's middle adds it too.")
         }
         .environment(\.editMode, .constant(.active))
         Section {
@@ -192,6 +194,23 @@ struct HomeCardSettingsView: View {
     }
 
     @ViewBuilder private func stackRow(_ entry: StackEntry) -> some View {
+        HStack {
+            stackLabel(entry)
+            Spacer(minLength: 8)
+            if entries.count > 1 {
+                Button {
+                    onExtract(entry)
+                    draft.options.stack = entries.filter { $0.id != entry.id }
+                } label: {
+                    Image(systemName: "rectangle.portrait.and.arrow.right")
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(Text("Move \(entry.card.title) to Home"))
+            }
+        }
+    }
+
+    @ViewBuilder private func stackLabel(_ entry: StackEntry) -> some View {
         if entry.card == .metric {
             NavigationLink {
                 MetricPickerList(selection: Binding(
@@ -253,5 +272,53 @@ struct MetricPickerList: View {
         }
         .navigationTitle("Metric")
         .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+/// When each part of the day starts, for time-of-day Home layouts.
+struct HomeTimesSheet: View {
+    @Binding var config: HomeConfig
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    DatePicker("Morning starts", selection: time(\.morningStart), displayedComponents: .hourAndMinute)
+                    DatePicker("Day starts", selection: time(\.dayStart), displayedComponents: .hourAndMinute)
+                    DatePicker("Evening starts", selection: time(\.eveningStart), displayedComponents: .hourAndMinute)
+                } footer: {
+                    Text("Home switches to that part of the day's layout at these times, by your phone's clock. Each part starts at least 30 minutes after the one before.")
+                }
+            }
+            .navigationTitle("Times of day")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium])
+        .preferredColorScheme(.dark)
+    }
+
+    /// A start time as a Date today; setting it keeps morning < day < evening.
+    private func time(_ path: WritableKeyPath<HomeConfig, Int>) -> Binding<Date> {
+        Binding(
+            get: {
+                let m = config[keyPath: path]
+                return Calendar.current.date(bySettingHour: m / 60, minute: m % 60, second: 0, of: Date()) ?? Date()
+            },
+            set: { date in
+                let c = Calendar.current.dateComponents([.hour, .minute], from: date)
+                var next = config
+                next[keyPath: path] = (c.hour ?? 0) * 60 + (c.minute ?? 0)
+                next.morningStart = min(next.morningStart, 1440 - 90)
+                next.dayStart = min(max(next.dayStart, next.morningStart + 30), 1440 - 60)
+                next.eveningStart = min(max(next.eveningStart, next.dayStart + 30), 1440 - 30)
+                config = next
+            }
+        )
     }
 }

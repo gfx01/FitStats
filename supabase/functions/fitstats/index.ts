@@ -5,7 +5,7 @@
 //   (code/state)       Google OAuth callback — this function's URL is the redirect URI
 //   cron               pg_cron trigger, authenticated with x-cron-secret
 //   health             unauthenticated setup check
-//   status | days | day | stats | sync | settings | journal | disconnect
+//   status | days | day | stats | sync | settings | journal | home | disconnect
 //                      app routes, authenticated with x-app-key
 //   coach | coach_status | coach_threads | coach_thread | coach_delete | coach_brief
 //                      Claude coach (lib/coach.ts), also x-app-key
@@ -376,6 +376,26 @@ async function journal(req: Request, params: URLSearchParams): Promise<Response>
   }
 }
 
+/**
+ * GET: the Home layout the app saved ({layout: null} before the first save).
+ * POST {layout, edited_at}: saves it, unless the stored one was edited later (then replies with
+ * that one, saved: false). The layout is the app's own JSON; the server only stores it.
+ */
+async function homeLayout(req: Request): Promise<Response> {
+  const current = await db.selectOne<Row>("fs_home_layout", "select=layout,edited_at&id=eq.1");
+  const currentEdited = Number(current?.edited_at ?? 0);
+  if (req.method !== "POST") return json({ layout: current?.layout ?? null, edited_at: currentEdited });
+  const body = (await req.json().catch(() => ({}))) as Row;
+  const edited = Number(body.edited_at);
+  if (!body.layout || typeof body.layout !== "object" || Array.isArray(body.layout) || !Number.isFinite(edited)) {
+    return json({ error: "layout (an object) and edited_at are required" }, 400);
+  }
+  if (JSON.stringify(body.layout).length > 200_000) return json({ error: "layout too large" }, 413);
+  if (current && currentEdited > edited) return json({ saved: false, layout: current.layout, edited_at: currentEdited });
+  await db.upsert("fs_home_layout", [{ id: 1, layout: body.layout, edited_at: edited, updated_at: new Date().toISOString() }], "id");
+  return json({ saved: true, edited_at: edited });
+}
+
 async function disconnect(params: URLSearchParams): Promise<Response> {
   await db.update("fs_account", "id=eq.1", {
     refresh_token: null,
@@ -385,7 +405,7 @@ async function disconnect(params: URLSearchParams): Promise<Response> {
     updated_at: new Date().toISOString(),
   });
   if (params.get("wipe") === "true") {
-    const tables = ["fs_days", "fs_sleep", "fs_exercise", "fs_intraday", "fs_samples", "fs_cache", "fs_journal", "fs_coach_messages", "fs_coach_threads"];
+    const tables = ["fs_days", "fs_sleep", "fs_exercise", "fs_intraday", "fs_samples", "fs_cache", "fs_journal", "fs_coach_messages", "fs_coach_threads", "fs_home_layout"];
     const keyColumn: Record<string, string> = { fs_samples: "metric", fs_cache: "key", fs_days: "date", fs_intraday: "date", fs_journal: "date" };
     for (const t of tables) await db.remove(t, `${keyColumn[t] ?? "id"}=not.is.null`);
     await db.update("fs_account", "id=eq.1", { google_sub: null, google_email: null, profile: null, google_settings: null, devices: null });
@@ -443,6 +463,8 @@ Deno.serve(async (req: Request) => {
         return await getSettings();
       case "journal":
         return await journal(req, params);
+      case "home":
+        return await homeLayout(req);
       case "disconnect":
         if (req.method !== "POST") return json({ error: "use POST" }, 405);
         return await disconnect(params);

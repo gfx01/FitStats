@@ -110,16 +110,19 @@ struct Jiggle: ViewModifier {
 
 /// A Home card in edit mode: it wobbles, can't be tapped through, has a remove button on its
 /// top-left corner and a resize handle on its bottom-right one. Tapping it opens its settings;
-/// holding it and dragging moves it (system drag and drop, see HomeDropDelegate).
+/// holding it and dragging moves it, and dropping it on the middle of another card stacks the
+/// two (system drag and drop, see HomeDropDelegate).
 ///
 /// Resizing works like iOS widgets: while the handle is dragged an outline follows the finger
-/// (from small up to the large footprint), labelled with the size it will take, and the card
-/// snaps to that size when the finger lifts.
+/// (from small up to the large footprint) showing the card at the size it will take, and the
+/// card snaps to that size when the finger lifts.
 struct HomeEditCell<Content: View>: View {
     let item: HomeItem
     let seed: Int
     let canRemove: Bool
     let isDragged: Bool
+    /// A dragged card hovers over this one's middle: dropping it makes a stack.
+    let isStackTarget: Bool
     var onRemove: () -> Void
     var onResize: (CardSize) -> Void
     var onMove: (Int) -> Void
@@ -127,7 +130,10 @@ struct HomeEditCell<Content: View>: View {
     /// True while the resize outline is up, so Today can draw this card above its neighbours.
     var onResizing: (Bool) -> Void
     var onDragStart: () -> NSItemProvider
-    @ViewBuilder var content: () -> Content
+    /// The drop target for this card, given its size (to tell its middle from its edges).
+    var makeDrop: (CGSize) -> HomeDropDelegate
+    /// The card at a size: its own, or the one the resize outline previews.
+    @ViewBuilder var content: (CardSize) -> Content
 
     /// How far the resize handle has been dragged; nil when it isn't (also after a cancelled drag).
     @GestureState private var resizeDrag: CGSize? = nil
@@ -138,7 +144,7 @@ struct HomeEditCell<Content: View>: View {
     private static var rowSpacing: CGFloat { 14 }
 
     var body: some View {
-        content()
+        content(item.size)
             .allowsHitTesting(false)
             // Catches touches over the whole card: a tap opens its settings, holding anywhere
             // on it starts a drag.
@@ -161,9 +167,16 @@ struct HomeEditCell<Content: View>: View {
             }
             // Always in the view tree: removing it would cancel the drag it carries.
             .overlay(alignment: .bottomTrailing) { resizeHandle }
+            .overlay {
+                if isStackTarget { stackHighlight }
+            }
             .opacity(isDragged ? 0.35 : 1)
-            .modifier(Jiggle(amplitude: amplitude, seed: seed, active: resizeDrag == nil))
+            .scaleEffect(isStackTarget ? 1.04 : 1)
+            .animation(.spring(response: 0.25, dampingFraction: 0.8), value: isStackTarget)
+            .modifier(Jiggle(amplitude: amplitude, seed: seed, active: resizeDrag == nil && !isStackTarget))
             .onDrag(onDragStart)
+            .onDrop(of: [UTType.text], delegate: makeDrop(cellSize))
+            .sensoryFeedback(.impact(weight: .light), trigger: isStackTarget)
             .sensoryFeedback(.selection, trigger: item.size)
             .sensoryFeedback(.selection, trigger: resizeDrag.map(target))
             .onChange(of: resizeDrag) { old, new in
@@ -224,23 +237,48 @@ struct HomeEditCell<Content: View>: View {
         return item.card.sizes.contains(size) ? size : .medium
     }
 
+    private func footprintWidth(_ size: CardSize) -> CGFloat {
+        size == .small ? smallWidth : fullWidth
+    }
+
+    /// The outline under the finger, with the card drawn at the size it will take.
     private func outline(_ t: CGSize) -> some View {
         let o = outlineSize(t)
-        return RoundedRectangle(cornerRadius: 22, style: .continuous)
-            .fill(Color.white.opacity(0.10))
-            .overlay(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.85), lineWidth: 2)
-            )
+        let size = target(t)
+        let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
+        return ZStack(alignment: .topLeading) {
+            shape.fill(Theme.background)
+            content(size)
+                .frame(width: footprintWidth(size), alignment: .topLeading)
+                .fixedSize(horizontal: false, vertical: true)
+                .environment(\.homeCardPreview, true)
+            shape.strokeBorder(Color.white.opacity(0.85), lineWidth: 2)
+            Text(size.label)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.black)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Capsule().fill(.white))
+                .shadow(color: .black.opacity(0.4), radius: 6)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(width: o.width, height: o.height, alignment: .topLeading)
+        .clipShape(shape)
+        .allowsHitTesting(false)
+    }
+
+    private var stackHighlight: some View {
+        RoundedRectangle(cornerRadius: 22, style: .continuous)
+            .strokeBorder(Color.white, lineWidth: 3)
+            .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(Color.white.opacity(0.08)))
             .overlay {
-                Text(target(t).label)
+                Label("Drop to stack", systemImage: HomeCard.stack.icon)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.black)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
                     .background(Capsule().fill(.white))
             }
-            .frame(width: o.width, height: o.height)
             .allowsHitTesting(false)
     }
 
@@ -303,34 +341,101 @@ struct HomeEditCell<Content: View>: View {
     }
 }
 
-/// Live reordering while a card is dragged over another one, like the iOS Home Screen.
+/// Where a dragged card hovers: over the middle of a card (to stack them) or near its edge (to
+/// move there), and since when.
+struct HomeHover: Equatable {
+    let target: String
+    let middle: Bool
+    let since: Date
+}
+
+/// Drag and drop on a Home card, like the iOS Home Screen. Pausing near a card's edge moves the
+/// dragged card there (the others make room); pausing over its middle highlights it, and
+/// dropping there stacks the two (a card dropped on a Smart Stack joins it). A short pause is
+/// needed for both, so passing over cards on the way doesn't shuffle them.
 struct HomeDropDelegate: DropDelegate {
     let target: String
+    /// The target card's size, to tell its middle from its edges.
+    let size: CGSize
     @Binding var items: [HomeItem]
     @Binding var dragging: String?
+    @Binding var hover: HomeHover?
+    @Binding var stackTarget: String?
+    /// Stack the dragged card (first id) onto the target (second id).
+    var onStack: (String, String) -> Void
+
+    private static let pause: TimeInterval = 0.3
 
     func dropEntered(info: DropInfo) {
-        guard let dragging, dragging != target,
-              let from = items.firstIndex(where: { $0.id == dragging }),
-              let to = items.firstIndex(where: { $0.id == target }) else { return }
-        var next = items
-        next.move(fromOffsets: IndexSet(integer: from), toOffset: to > from ? to + 1 : to)
-        withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) { items = next }
+        track(info)
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        DropProposal(operation: .move)
+        track(info)
+        return DropProposal(operation: .move)
+    }
+
+    func dropExited(info: DropInfo) {
+        if hover?.target == target { hover = nil }
+        if stackTarget == target { stackTarget = nil }
     }
 
     func performDrop(info: DropInfo) -> Bool {
+        let dragged = dragging
         dragging = nil
+        hover = nil
+        stackTarget = nil
+        if let dragged, dragged != target, canStack(dragged), isMiddle(info) {
+            onStack(dragged, target)
+        }
         return true
+    }
+
+    private func isMiddle(_ info: DropInfo) -> Bool {
+        guard size.width > 0, size.height > 0 else { return false }
+        let x = info.location.x / size.width
+        let y = info.location.y / size.height
+        return x > 0.22 && x < 0.78 && y > 0.22 && y < 0.78
+    }
+
+    /// Stacks don't nest: a Smart Stack can be moved, not stacked.
+    private func canStack(_ dragged: String) -> Bool {
+        items.first { $0.id == dragged }?.card != .stack
+    }
+
+    private func track(_ info: DropInfo) {
+        guard let dragged = dragging, dragged != target else { return }
+        let middle = canStack(dragged) && isMiddle(info)
+        let now = Date()
+        guard let current = hover, current.target == target, current.middle == middle else {
+            hover = HomeHover(target: target, middle: middle, since: now)
+            if !middle && stackTarget == target { stackTarget = nil }
+            return
+        }
+        guard now.timeIntervalSince(current.since) >= Self.pause else { return }
+        if middle {
+            if stackTarget != target { stackTarget = target }
+        } else {
+            move(dragged)
+            // Once per pause: the next move needs the finger to leave this spot.
+            hover = HomeHover(target: target, middle: false, since: .distantFuture)
+        }
+    }
+
+    private func move(_ dragged: String) {
+        guard let from = items.firstIndex(where: { $0.id == dragged }),
+              let to = items.firstIndex(where: { $0.id == target }), from != to else { return }
+        var next = items
+        next.move(fromOffsets: IndexSet(integer: from), toOffset: to > from ? to + 1 : to)
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) { items = next }
     }
 }
 
 /// Catches a drop between cards, so the dragged card never stays faded.
 struct HomeDropEndDelegate: DropDelegate {
     @Binding var dragging: String?
+    @Binding var hover: HomeHover?
+    @Binding var stackTarget: String?
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
         DropProposal(operation: .move)
@@ -338,6 +443,8 @@ struct HomeDropEndDelegate: DropDelegate {
 
     func performDrop(info: DropInfo) -> Bool {
         dragging = nil
+        hover = nil
+        stackTarget = nil
         return true
     }
 }

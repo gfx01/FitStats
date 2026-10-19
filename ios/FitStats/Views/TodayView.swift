@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -40,15 +41,24 @@ struct TodayView: View {
     @EnvironmentObject private var coach: CoachStore
     @EnvironmentObject private var live: LiveHeartRateMonitor
     @State private var selected: String?
-    /// The cards on Home and their sizes (Views/Home/HomeLayout.swift).
-    @AppStorage(HomeLayout.storageKey) private var storedCards = ""
+    /// Home: the cards, their sizes and settings, and the time-of-day layouts (HomeConfig).
+    @AppStorage(HomeLayout.configKey) private var storedConfig = ""
     /// Every card while CI takes screenshots (FITSTATS_HOME_CARDS=all); edits then stay in memory.
-    @State private var fixtureItems: [HomeItem]? = HomeLayout.fixtureItems
+    @State private var fixtureConfig: HomeConfig? = HomeLayout.fixtureItems.map { HomeConfig(items: $0) }
+    /// The time-of-day layout being edited (edit mode only).
+    @State private var editingPage: HomePage = .day
+    @State private var editingTimes = false
+    /// Moves Home to the next time-of-day layout while it's open.
+    @State private var now = Date()
+    @Environment(\.scenePhase) private var scenePhase
     /// Edit mode, like the iOS Home Screen: the cards wobble and can be moved, resized, removed
     /// and added in place.
     @State private var editing = false
     /// The card being dragged while editing (its id).
     @State private var dragging: String?
+    /// Where it hovers, and the card it would stack with if dropped now.
+    @State private var hover: HomeHover?
+    @State private var stackTarget: String?
     /// The card whose resize outline is up, drawn above the others.
     @State private var resizingID: String?
     /// The card whose settings sheet is open.
@@ -56,6 +66,7 @@ struct TodayView: View {
     @State private var editHaptic = 0
 
     private static let addSectionID = "home-add-section"
+    private static let minuteTicker = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
     private var date: String { selected ?? model.today }
     private var day: DayRecord? { model.daysByDate[date] }
@@ -66,7 +77,7 @@ struct TodayView: View {
                 ScrollView {
                     VStack(spacing: 14) {
                         if editing {
-                            editHint
+                            editHeader
                         } else {
                             WeekStrip(today: model.today, selected: $selected) { model.daysByDate[$0]?.double("recovery") }
                             banners
@@ -79,7 +90,7 @@ struct TodayView: View {
                                     .layoutValue(key: HomeCardSizeKey.self, value: item.size)
                             }
                         }
-                        .onDrop(of: [UTType.text], delegate: HomeDropEndDelegate(dragging: $dragging))
+                        .onDrop(of: [UTType.text], delegate: HomeDropEndDelegate(dragging: $dragging, hover: $hover, stackTarget: $stackTarget))
                         if editing {
                             HomeAddSection(date: date, shown: items, isDefault: items == HomeLayout.defaultItems,
                                            canShow: isVisible, onAdd: add, onReset: reset)
@@ -105,8 +116,16 @@ struct TodayView: View {
                 .toolbar { header(proxy) }
                 .sheet(item: $settingsItem) { item in
                     HomeCardSettingsView(draft: item, canRemove: items.count > 1,
-                                         onChange: update, onRemove: { remove(item.id) })
+                                         onChange: update, onRemove: { remove(item.id) },
+                                         onExtract: { entry in extract(entry, from: item.id) })
                         .environmentObject(model)
+                }
+                .sheet(isPresented: $editingTimes) {
+                    HomeTimesSheet(config: configBinding)
+                }
+                .onReceive(Self.minuteTicker) { now = $0 }
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active { now = Date() }
                 }
             }
         }
@@ -134,30 +153,113 @@ struct TodayView: View {
         }
     }
 
-    private var editHint: some View {
-        Text("Tap a card for its settings. Hold and drag to move it, drag the corner handle to resize.")
-            .font(.caption)
-            .foregroundStyle(Theme.secondary)
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity)
-            .padding(.bottom, 4)
+    /// The hint, and with time-of-day layouts on, which one is being edited.
+    private var editHeader: some View {
+        VStack(spacing: 10) {
+            Text("Tap a card for its settings. Hold and drag to move it, or drop it on another card's middle to stack them. Drag the corner handle to resize.")
+                .font(.caption)
+                .foregroundStyle(Theme.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+            Card(padding: 12) {
+                Toggle(isOn: timeOfDayBinding) {
+                    Label("Change Home by time of day", systemImage: "clock.arrow.2.circlepath")
+                        .font(.subheadline.weight(.semibold))
+                }
+                .tint(Theme.recoveryGreen)
+                .accessibilityIdentifier("home-time-of-day")
+                if config.timeOfDay {
+                    Picker("Layout", selection: $editingPage) {
+                        ForEach(HomePage.allCases) { page in
+                            Text(page.title).tag(page)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("home-page-picker")
+                    Button {
+                        editingTimes = true
+                    } label: {
+                        HStack {
+                            Text(timesText)
+                                .font(.caption)
+                                .foregroundStyle(Theme.secondary)
+                                .multilineTextAlignment(.leading)
+                            Spacer(minLength: 8)
+                            Text("Change").font(.caption.weight(.semibold))
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.recoveryGreen)
+                }
+            }
+        }
+        .padding(.bottom, 4)
+    }
+
+    private var timesText: String {
+        let c = config
+        return "Morning from \(Format.clock(Double(c.morningStart))), day from \(Format.clock(Double(c.dayStart))), evening from \(Format.clock(Double(c.eveningStart)))."
     }
 
     // MARK: home cards
 
+    private var config: HomeConfig {
+        fixtureConfig ?? HomeLayout.config(from: storedConfig)
+    }
+
+    /// Saves Home, stamped with the time of the edit (the newer copy wins on the server).
+    private func save(_ config: HomeConfig) {
+        var stamped = config
+        stamped.editedAt = Date().timeIntervalSince1970
+        if fixtureConfig != nil {
+            fixtureConfig = stamped
+        } else {
+            storedConfig = HomeLayout.encode(stamped)
+            model.homeLayoutEdited()
+        }
+    }
+
+    private var configBinding: Binding<HomeConfig> {
+        Binding(get: { config }, set: { save($0) })
+    }
+
+    /// The time-of-day layout on screen: the one being edited, else the one for now; nil when
+    /// Home has a single layout.
+    private var page: HomePage? {
+        guard config.timeOfDay else { return nil }
+        return editing ? editingPage : config.page(at: now)
+    }
+
     private var items: [HomeItem] {
-        fixtureItems ?? HomeLayout.decode(storedCards)
+        config.items(for: page)
     }
 
     private var layout: Binding<[HomeItem]> {
         Binding(
-            get: { fixtureItems ?? HomeLayout.decode(storedCards) },
+            get: { config.items(for: page) },
             set: { next in
-                if fixtureItems != nil {
-                    fixtureItems = next
-                } else {
-                    storedCards = HomeLayout.encode(next)
+                var c = config
+                c.setItems(next, for: page)
+                save(c)
+            }
+        )
+    }
+
+    /// Turning it on gives each part of the day a copy of the current layout to start from;
+    /// turning it off keeps them for next time.
+    private var timeOfDayBinding: Binding<Bool> {
+        Binding(
+            get: { config.timeOfDay },
+            set: { on in
+                var c = config
+                if on {
+                    if c.morning == nil { c.morning = c.items }
+                    if c.day == nil { c.day = c.items }
+                    if c.evening == nil { c.evening = c.items }
+                    editingPage = c.page(at: Date())
                 }
+                c.timeOfDay = on
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { save(c) }
             }
         )
     }
@@ -215,6 +317,7 @@ struct TodayView: View {
                 seed: item.id.unicodeScalars.reduce(0) { $0 + Int($1.value) },
                 canRemove: items.count > 1,
                 isDragged: dragging == item.id,
+                isStackTarget: stackTarget == item.id,
                 onRemove: { remove(item.id) },
                 onResize: { resize(item.id, to: $0) },
                 onMove: { move(item.id, by: $0) },
@@ -222,15 +325,20 @@ struct TodayView: View {
                 onResizing: { on in resizingID = on ? item.id : nil },
                 onDragStart: {
                     dragging = item.id
+                    hover = nil
+                    stackTarget = nil
                     return NSItemProvider(object: item.id as NSString)
+                },
+                makeDrop: { size in
+                    HomeDropDelegate(target: item.id, size: size, items: layout, dragging: $dragging,
+                                     hover: $hover, stackTarget: $stackTarget, onStack: stack)
                 }
-            ) {
-                cellContent(item)
+            ) { size in
+                cellContent(item, size: size)
             }
-            .onDrop(of: [UTType.text], delegate: HomeDropDelegate(target: item.id, items: layout, dragging: $dragging))
             .accessibilityIdentifier("home-card-\(item.id)")
         } else {
-            cellContent(item)
+            cellContent(item, size: item.size)
                 .highPriorityGesture(
                     LongPressGesture(minimumDuration: 0.45).onEnded { _ in startEditing() }
                 )
@@ -240,21 +348,23 @@ struct TodayView: View {
         }
     }
 
-    @ViewBuilder private func cellContent(_ item: HomeItem) -> some View {
+    /// The card at `size`: its own, or the size a resize outline previews.
+    @ViewBuilder private func cellContent(_ item: HomeItem, size: CardSize) -> some View {
         if !isVisible(item) {
-            HomeCardPlaceholder(card: item.card, title: item.title, size: item.size, reason: hiddenReason(item.card))
+            HomeCardPlaceholder(card: item.card, title: item.title, size: size, reason: hiddenReason(item.card))
         } else if item.card == .stack {
-            SmartStackView(entries: visibleEntries(item), size: item.size, date: date, rotate: item.options.rotate ?? true)
-        } else if item.size == .large {
+            SmartStackView(entries: visibleEntries(item), size: size, date: date, rotate: item.options.rotate ?? true)
+        } else if size == .large {
             HomeLargeCard(spec: item.spec, date: date)
         } else {
-            HomeGlance(spec: item.spec, size: item.size, date: date)
+            HomeGlance(spec: item.spec, size: size, date: date)
         }
     }
 
     private func startEditing() {
         editHaptic += 1
         dragging = nil
+        editingPage = config.page(at: now)
         withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
             selected = nil
             editing = true
@@ -265,7 +375,45 @@ struct TodayView: View {
         withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
             editing = false
             dragging = nil
+            hover = nil
+            stackTarget = nil
         }
+    }
+
+    /// A card dropped on another's middle: the two become a Smart Stack where the target was
+    /// (each keeps its settings), or the card joins the target stack.
+    private func stack(_ draggedID: String, onto targetID: String) {
+        var next = items
+        guard let di = next.firstIndex(where: { $0.id == draggedID }),
+              let ti = next.firstIndex(where: { $0.id == targetID }) else { return }
+        let dragged = next[di]
+        let target = next[ti]
+        guard dragged.card != .stack else { return }
+        let entry = StackEntry(id: dragged.id, card: dragged.card, options: dragged.options)
+        if target.card == .stack {
+            next[ti].options.stack = (target.options.stack ?? []) + [entry]
+        } else {
+            let first = StackEntry(id: target.id, card: target.card, options: target.options)
+            next[ti] = HomeLayout.newItem(.stack, size: target.size == .small ? .small : .medium,
+                                          options: CardOptions(stack: [first, entry], rotate: false))
+        }
+        next.remove(at: di)
+        editHaptic += 1
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) { layout.wrappedValue = next }
+    }
+
+    /// "Move to Home" in a stack's settings: the card goes back on Home right after the stack.
+    /// A one-of-a-kind card already on Home just leaves the stack.
+    private func extract(_ entry: StackEntry, from stackID: String) {
+        var next = items
+        guard let si = next.firstIndex(where: { $0.id == stackID }) else { return }
+        let size = next[si].size
+        var card = HomeLayout.newItem(entry.card, size: entry.card.sizes.contains(size) ? size : entry.card.defaultSize,
+                                      options: entry.options)
+        if !entry.card.isUnique { card.id = entry.id }
+        guard !next.contains(where: { $0.id == card.id || (entry.card.isUnique && $0.card == entry.card) }) else { return }
+        next.insert(card, at: si + 1)
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { layout.wrappedValue = next }
     }
 
     private func remove(_ id: String) {
@@ -412,6 +560,11 @@ struct TodayView: View {
     /// phone (the step FitStats cannot speed up).
     private var footer: some View {
         VStack(alignment: .leading, spacing: 6) {
+            if let page {
+                Label("\(page.title) Home · changes by time of day", systemImage: page.icon)
+                    .font(.caption)
+                    .foregroundStyle(Theme.tertiary)
+            }
             HStack(spacing: 8) {
                 if model.isSyncing {
                     ProgressView().scaleEffect(0.8)

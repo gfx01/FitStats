@@ -322,7 +322,7 @@ enum HomeLayout {
         return String(decoding: data, as: UTF8.self)
     }
 
-    private static func sanitized(_ items: [HomeItem]) -> [HomeItem] {
+    static func sanitized(_ items: [HomeItem]) -> [HomeItem] {
         var ids = Set<String>()
         var kinds = Set<HomeCard>()
         return items.compactMap { item -> HomeItem? in
@@ -346,5 +346,161 @@ enum HomeLayout {
             items.append(HomeItem(id: card.rawValue, card: card, size: size ?? card.defaultSize))
         }
         return items
+    }
+}
+
+/// A part of the day with its own Home layout (when time-of-day layouts are on).
+enum HomePage: String, CaseIterable, Identifiable, Codable {
+    case morning, day, evening
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .morning: return "Morning"
+        case .day: return "Day"
+        case .evening: return "Evening"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .morning: return "sunrise.fill"
+        case .day: return "sun.max.fill"
+        case .evening: return "moon.stars.fill"
+        }
+    }
+}
+
+/// Everything about Home: its layout, and optionally one layout per part of the day. Stored on
+/// the phone under `HomeLayout.configKey` and on the server (AppModel.syncHomeLayout); the
+/// copy edited last wins.
+struct HomeConfig: Codable, Equatable {
+    /// The layout when time-of-day layouts are off, and the starting point for each of them.
+    var items: [HomeItem]
+    var timeOfDay = false
+    var morning: [HomeItem]?
+    var day: [HomeItem]?
+    var evening: [HomeItem]?
+    /// Minutes after midnight each part of the day starts (morning < day < evening).
+    var morningStart = 240
+    var dayStart = 660
+    var eveningStart = 1080
+    /// Last edit, in seconds since 1970; 0 for a layout never edited on this version.
+    var editedAt: Double = 0
+
+    init(items: [HomeItem]) {
+        self.items = items
+    }
+
+    /// Every field but `items` may be missing (older or newer copies still load).
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        items = try c.decode([HomeItem].self, forKey: .items)
+        timeOfDay = (try? c.decodeIfPresent(Bool.self, forKey: .timeOfDay)) ?? false
+        morning = try? c.decodeIfPresent([HomeItem].self, forKey: .morning)
+        day = try? c.decodeIfPresent([HomeItem].self, forKey: .day)
+        evening = try? c.decodeIfPresent([HomeItem].self, forKey: .evening)
+        morningStart = (try? c.decodeIfPresent(Int.self, forKey: .morningStart)) ?? 240
+        dayStart = (try? c.decodeIfPresent(Int.self, forKey: .dayStart)) ?? 660
+        eveningStart = (try? c.decodeIfPresent(Int.self, forKey: .eveningStart)) ?? 1080
+        editedAt = (try? c.decodeIfPresent(Double.self, forKey: .editedAt)) ?? 0
+    }
+
+    /// The part of the day `date` falls in (the phone's clock).
+    func page(at date: Date) -> HomePage {
+        let c = Calendar.current.dateComponents([.hour, .minute], from: date)
+        let minute = (c.hour ?? 0) * 60 + (c.minute ?? 0)
+        if minute >= eveningStart || minute < morningStart { return .evening }
+        return minute >= dayStart ? .day : .morning
+    }
+
+    /// The cards of `page`, or the single layout for nil; a page never set up starts as a copy.
+    func items(for page: HomePage?) -> [HomeItem] {
+        let list: [HomeItem]?
+        switch page {
+        case .morning: list = morning
+        case .day: list = day
+        case .evening: list = evening
+        case nil: list = items
+        }
+        let clean = HomeLayout.sanitized(list ?? items)
+        return clean.isEmpty ? HomeLayout.defaultItems : clean
+    }
+
+    mutating func setItems(_ new: [HomeItem], for page: HomePage?) {
+        switch page {
+        case .morning: morning = new
+        case .day: day = new
+        case .evening: evening = new
+        case nil: items = new
+        }
+    }
+
+    /// The minute after midnight `page` starts.
+    func start(of page: HomePage) -> Int {
+        switch page {
+        case .morning: return morningStart
+        case .day: return dayStart
+        case .evening: return eveningStart
+        }
+    }
+}
+
+extension HomeLayout {
+    /// The whole Home configuration (JSON of HomeConfig).
+    static let configKey = "homeConfig.v1"
+
+    /// The stored configuration, else one built from the layout before time-of-day layouts.
+    static func config(from stored: String?) -> HomeConfig {
+        if let stored, !stored.isEmpty, let data = stored.data(using: .utf8),
+           let config = try? JSONDecoder().decode(HomeConfig.self, from: data), !sanitized(config.items).isEmpty {
+            return config
+        }
+        return HomeConfig(items: decode(UserDefaults.standard.string(forKey: storageKey)))
+    }
+
+    static func encode(_ config: HomeConfig) -> String {
+        guard let data = try? JSONEncoder().encode(config) else { return "" }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// The configuration on this phone right now (same key and format as TodayView's @AppStorage).
+    static var storedConfig: HomeConfig {
+        config(from: UserDefaults.standard.string(forKey: configKey))
+    }
+
+    /// False until Home has been stored on this phone in any version: a new install, which takes
+    /// the server's copy whatever its time.
+    static var hasLocalLayout: Bool {
+        [configKey, storageKey, sizedKey, legacyKey].contains { !(UserDefaults.standard.string(forKey: $0) ?? "").isEmpty }
+    }
+}
+
+/// The server's copy of the Home configuration (route "home").
+struct HomeLayoutResponse: Decodable {
+    let layout: HomeConfig?
+    let editedAt: Double
+
+    enum CodingKeys: String, CodingKey {
+        case layout
+        case editedAt = "edited_at"
+    }
+
+    /// A copy this version can't read counts as none.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        layout = try? c.decodeIfPresent(HomeConfig.self, forKey: .layout)
+        editedAt = (try? c.decode(Double.self, forKey: .editedAt)) ?? 0
+    }
+}
+
+struct HomeLayoutUpload: Encodable {
+    let layout: HomeConfig
+    let editedAt: Double
+
+    enum CodingKeys: String, CodingKey {
+        case layout
+        case editedAt = "edited_at"
     }
 }

@@ -188,6 +188,7 @@ final class AppModel: ObservableObject {
                 applyJournal(result.0)
                 DiskCache.save(result.1, as: "journal.json")
             }
+            await syncHomeLayout()
             // Today's minute data grows with every sync. Replace it rather than drop it: the Today
             // screen only loads a day when it appears, so a dropped detail never came back.
             if let result = try? await api.fetch(DayDetail.self, "day", query: ["date": s.today]) {
@@ -386,6 +387,45 @@ final class AppModel: ObservableObject {
 
     var sleepPlan: SleepPlan {
         SleepPlan.plan(days: daysByDate, today: today, sleepNeedMin: Double(status?.settings.sleepNeedMin ?? 480))
+    }
+
+    // MARK: - Home layout backup
+
+    private var homePush: Task<Void, Never>?
+
+    /// Keeps the newer of the phone's and the server's Home layout: a new install gets its Home
+    /// back, and edits made on the phone go up. Failures are silent; the next refresh retries.
+    func syncHomeLayout() async {
+        guard fixtureDir == nil, let api else { return }
+        guard let result = try? await api.fetch(HomeLayoutResponse.self, "home") else { return }
+        let remote = result.0
+        let local = HomeLayout.storedConfig
+        if let saved = remote.layout, !HomeLayout.hasLocalLayout || remote.editedAt > local.editedAt {
+            UserDefaults.standard.set(HomeLayout.encode(saved), forKey: HomeLayout.configKey)
+        } else if remote.layout == nil || local.editedAt > remote.editedAt {
+            await pushHomeLayout(local)
+        }
+    }
+
+    /// Called after every Home edit: uploads it once the edits pause for 2 seconds.
+    func homeLayoutEdited() {
+        guard fixtureDir == nil else { return }
+        homePush?.cancel()
+        homePush = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled, let self else { return }
+            await self.pushHomeLayout(HomeLayout.storedConfig)
+        }
+    }
+
+    private func pushHomeLayout(_ config: HomeConfig) async {
+        guard let api, let body = try? JSONEncoder().encode(HomeLayoutUpload(layout: config, editedAt: config.editedAt)) else { return }
+        guard let data = try? await api.post("home", body: body),
+              let reply = try? JSONDecoder().decode(HomeLayoutResponse.self, from: data) else { return }
+        // The server kept a copy edited later (on a reinstall, say): take it.
+        if let newer = reply.layout, reply.editedAt > config.editedAt {
+            UserDefaults.standard.set(HomeLayout.encode(newer), forKey: HomeLayout.configKey)
+        }
     }
 
     // MARK: - Journal
