@@ -189,10 +189,17 @@ final class ScreenshotTests: XCTestCase {
             back(app)
         }
 
-        app.tabBars.buttons["Insights"].tap()
-        shot("17-insights")
-        app.swipeUp()
-        shot("18-insights-2")
+        // Insights, from the top of Trends.
+        let insights = app.buttons["open-insights"]
+        if insights.waitForExistence(timeout: 5) {
+            insights.tap()
+            shot("17-insights")
+            app.swipeUp()
+            shot("18-insights-2")
+            back(app)
+        } else {
+            XCTFail("missing open-insights")
+        }
 
         app.tabBars.buttons["Coach"].tap()
         shot("19-coach")
@@ -555,7 +562,9 @@ final class ScreenshotTests: XCTestCase {
         let toggle = app.switches["toggle-reminders.bedtime"]
         for _ in 0..<8 where !(toggle.exists && toggle.isHittable) { app.swipeUp() }
         if toggle.exists, toggle.isHittable {
-            toggle.tap()
+            // On the switch itself: the element is the whole row, and a tap on its label does
+            // nothing (the last run tapped the middle and the switch never moved).
+            toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
             let allow = XCUIApplication(bundleIdentifier: "com.apple.springboard").buttons["Allow"]
             if allow.waitForExistence(timeout: 5) { allow.tap() }
             sleep(2)
@@ -583,6 +592,125 @@ final class ScreenshotTests: XCTestCase {
         }
     }
 
+    /// The Training tab: a routine, logging it set by set and saving it, a new routine, and an
+    /// "Ask coach" button that opens the Coach with the question typed in.
+    func test07Training() {
+        let fixtures = ProcessInfo.processInfo.environment["FITSTATS_FIXTURES"] ?? ""
+        XCTAssertFalse(fixtures.isEmpty, "FITSTATS_FIXTURES is not set")
+        let app = XCUIApplication()
+        app.launchEnvironment["FITSTATS_FIXTURES"] = fixtures
+        app.launch()
+        XCTAssertTrue(app.buttons["ring-recovery"].waitForExistence(timeout: 15), "Today screen did not load")
+
+        app.tabBars.buttons["Training"].tap()
+        let legs = app.buttons["routine-Legs"]
+        guard legs.waitForExistence(timeout: 5) else {
+            XCTFail("no Legs routine in Training")
+            return
+        }
+        shot("90-training")
+        app.swipeUp()
+        shot("91-training-2")
+        app.swipeUp()
+        shot("92-training-3")
+        for _ in 0..<4 { app.swipeDown() }
+
+        // Legs (done 3 times in the fixtures), then logging it.
+        scrollTo(app, legs)
+        legs.tap()
+        let start = app.buttons["routine-start"]
+        guard start.waitForExistence(timeout: 5) else {
+            XCTFail("missing routine-start")
+            return
+        }
+        shot("93-routine")
+        start.tap()
+        let firstDone = app.buttons["set-1-done"].firstMatch
+        guard firstDone.waitForExistence(timeout: 5) else {
+            XCTFail("the workout logger did not open")
+            return
+        }
+        shot("94-logger")
+        firstDone.tap()
+        let kg = app.textFields["set-2-kg"].firstMatch
+        if kg.waitForExistence(timeout: 3) {
+            // At its right edge, so the cursor goes after the weight already in it.
+            kg.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+            kg.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 6) + "85")
+            XCTAssertEqual(kg.value as? String, "85", "the weight field didn't take 85")
+            let done = app.toolbars.buttons["Done"].firstMatch
+            if done.exists { done.tap() }
+        } else {
+            XCTFail("missing set-2-kg")
+        }
+        app.buttons["set-2-done"].firstMatch.tap()
+        shot("95-logger-sets")
+
+        app.buttons["logger-finish"].tap()
+        let effort = app.buttons["effort-7"]
+        guard effort.waitForExistence(timeout: 5) else {
+            XCTFail("the finish sheet did not open")
+            return
+        }
+        effort.tap()
+        shot("96-finish")
+        app.buttons["finish-save"].tap()
+        XCTAssertTrue(start.waitForExistence(timeout: 5), "saving did not close the logger")
+        XCTAssertTrue(app.staticTexts["DONE 4 TIMES"].waitForExistence(timeout: 5), "the saved workout is not with the routine")
+        shot("97-routine-logged")
+
+        // The saved workout's own screen.
+        let saved = app.buttons["history-log"].firstMatch
+        back(app)
+        scrollTo(app, saved)
+        if saved.exists {
+            saved.tap()
+            sleep(1)
+            shot("98-log-detail")
+            app.swipeUp()
+            shot("99-log-detail-2")
+            back(app)
+        } else {
+            XCTFail("no logged workout in the history")
+        }
+
+        // A new routine with one exercise.
+        for _ in 0..<6 { app.swipeDown() }
+        app.buttons["training-new-routine"].tap()
+        let name = app.textFields["routine-name"]
+        guard name.waitForExistence(timeout: 5) else {
+            XCTFail("the routine editor did not open")
+            return
+        }
+        name.tap()
+        name.typeText("Push day")
+        app.buttons["routine-add-exercise"].tap()
+        let exercise = app.textFields["exercise-name"]
+        if exercise.waitForExistence(timeout: 5) {
+            exercise.tap()
+            exercise.typeText("Dips")
+            shot("100-exercise-editor")
+            // The sheet's own back button (the Training screen's bar is still there under the sheet).
+            app.navigationBars["Dips"].buttons.element(boundBy: 0).tap()
+        } else {
+            XCTFail("the exercise editor did not open")
+        }
+        shot("101-routine-editor")
+        app.buttons["routine-save"].tap()
+        XCTAssertTrue(app.buttons["routine-Push day"].waitForExistence(timeout: 5), "the new routine is not in Training")
+
+        // "Make me a routine" opens the Coach with it typed in.
+        let ask = app.buttons["ask-coach-Make me a routine"]
+        scrollTo(app, ask)
+        ask.tap()
+        let input = element(app, "coach-input")
+        XCTAssertTrue(input.waitForExistence(timeout: 5), "the Coach did not open")
+        sleep(1)
+        shot("102-ask-coach")
+        XCTAssertTrue((input.value as? String ?? "").hasPrefix("Make me a routine"), "the question is not in the Coach's field: \(input.value ?? "nil")")
+        app.terminate()
+    }
+
     /// Training load and best bedtime on Insights, the calendar and compare periods from Trends,
     /// and a workout's heart-rate recovery.
     func test04InsightsPack() {
@@ -593,18 +721,24 @@ final class ScreenshotTests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["ring-recovery"].waitForExistence(timeout: 15), "Today screen did not load")
 
-        app.tabBars.buttons["Insights"].tap()
-        for (id, name) in [("training-load", "40-insights-load"), ("bedtime-card", "41-insights-bedtime")] {
-            let card = element(app, id)
-            if card.waitForExistence(timeout: 5) {
-                reveal(app, card)
-                shot(name)
-            } else {
-                XCTFail("missing \(id)")
+        app.tabBars.buttons["Trends"].tap()
+        let insights = app.buttons["open-insights"]
+        if insights.waitForExistence(timeout: 5) {
+            insights.tap()
+            for (id, name) in [("training-load", "40-insights-load"), ("bedtime-card", "41-insights-bedtime")] {
+                let card = element(app, id)
+                if card.waitForExistence(timeout: 5) {
+                    reveal(app, card)
+                    shot(name)
+                } else {
+                    XCTFail("missing \(id)")
+                }
             }
+            back(app)
+        } else {
+            XCTFail("missing open-insights")
         }
 
-        app.tabBars.buttons["Trends"].tap()
         for (button, screen, name) in [("open-calendar", "calendar-heatmap", "42-calendar"), ("open-compare", "compare-periods", "43-compare")] {
             let link = app.buttons[button]
             guard link.waitForExistence(timeout: 5) else {

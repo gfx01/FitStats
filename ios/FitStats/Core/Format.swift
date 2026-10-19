@@ -149,6 +149,16 @@ enum Format {
         return f.string(from: NSNumber(value: value)) ?? "\(value)"
     }
 
+    /// A weight without trailing zeros: "60", "62.5", "1.25".
+    static func kg(_ value: Double) -> String {
+        number(value, decimals: value == value.rounded() ? 0 : (value * 10 == (value * 10).rounded() ? 1 : 2))
+    }
+
+    /// Now as an ISO 8601 timestamp, as the server stores times.
+    static func isoNow() -> String {
+        isoFractional.string(from: Date())
+    }
+
     static func signed(_ value: Double?, decimals: Int = 0) -> String {
         guard let value, value.isFinite else { return "–" }
         let s = number(abs(value), decimals: decimals)

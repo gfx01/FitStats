@@ -1,40 +1,34 @@
 import SwiftUI
 
+/// Insights, streaks, correlations and the training load, opened from the top of Trends.
 struct InsightsView: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 14) {
-                    if let stats = model.stats {
-                        insightsSection(stats.insights)
-                        TrainingLoadCard(load: stats.load, today: stats.today)
-                        BedtimeCard(bedtime: stats.bedtime)
-                        JournalImpactsCard(impacts: stats.journal ?? [])
-                            .accessibilityIdentifier("journal-impacts")
-                        streaksSection(stats.streaks)
-                        correlationsSection(stats.correlations)
-                    } else {
-                        Card {
-                            EmptyStateView(icon: "sparkles", title: "No insights yet",
-                                           message: "Insights appear once a few days have synced.")
-                        }
+        ScrollView {
+            VStack(spacing: 14) {
+                if let stats = model.stats {
+                    insightsSection(stats.insights)
+                    TrainingLoadCard(load: stats.load, today: stats.today)
+                    BedtimeCard(bedtime: stats.bedtime)
+                    JournalImpactsCard(impacts: stats.journal ?? [])
+                        .accessibilityIdentifier("journal-impacts")
+                    streaksSection(stats.streaks)
+                    correlationsSection(stats.correlations)
+                } else {
+                    Card {
+                        EmptyStateView(icon: "sparkles", title: "No insights yet",
+                                       message: "Insights appear once a few days have synced.")
                     }
                 }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 32)
             }
-            .refreshable { await model.pullToRefresh() }
-            .screenBackground()
-            .navigationTitle("Insights")
-            .swipeBackFromAnywhere()
-            .navigationDestination(for: Correlation.ID.self) { id in
-                if let c = model.stats?.correlations.first(where: { $0.id == id }) {
-                    CorrelationDetailView(correlation: c)
-                }
-            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 32)
         }
+        .refreshable { await model.pullToRefresh() }
+        .screenBackground()
+        .navigationTitle("Insights")
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     @ViewBuilder private func insightsSection(_ insights: [Insight]) -> some View {

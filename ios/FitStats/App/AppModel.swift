@@ -28,6 +28,16 @@ final class AppModel: ObservableObject {
 
     let baseURL: URL
     let coach = CoachStore()
+    /// The workout being logged in the Training tab.
+    let workout = ActiveWorkout()
+    @Published private(set) var routines: [Routine] = []
+    /// Logged in the app over the last year, newest first.
+    @Published private(set) var workoutLogs: [WorkoutLog] = []
+    /// The band's workouts of the last 120 days, for the Training tab's history.
+    @Published private(set) var bandWorkouts: [Exercise] = []
+    @Published var trainingError: String?
+    /// Text for the Coach's message field, from an "Ask coach" button elsewhere in the app.
+    @Published var coachDraft: String?
     private let authenticator = WebAuthenticator()
     private var lastRefresh: Date?
     private var lastSyncRequest: Date?
@@ -47,6 +57,10 @@ final class AppModel: ObservableObject {
         coach.onUnauthorized = { [weak self] in
             self?.signOutLocally()
             self?.connectMessage = "This app key is no longer valid. Connect Google again."
+        }
+        // The coach saved a routine: the Training tab shows it.
+        coach.onTrainingChanged = { [weak self] in
+            Task { await self?.refreshTraining() }
         }
         if let fixtureDir {
             appKey = "fixture"
@@ -73,6 +87,7 @@ final class AppModel: ObservableObject {
         days = load(DaysResponse.self, "days.json")?.days ?? []
         stats = load(StatsPayload.self, "stats.json")
         if let j = load(JournalResponse.self, "journal.json") { applyJournal(j) }
+        if let t = load(TrainingResponse.self, "training.json") { applyTraining(t) }
         for offset in 0..<7 {
             let date = Format.addDays(today, -offset)
             if let detail = load(DayDetail.self, "day-\(date).json") { dayDetails[date] = detail }
@@ -106,6 +121,7 @@ final class AppModel: ObservableObject {
         if let d = DiskCache.load("days.json"), let r = try? decoder.decode(DaysResponse.self, from: d) { days = r.days }
         if let d = DiskCache.load("stats.json"), let s = try? decoder.decode(StatsPayload.self, from: d) { stats = s }
         if let d = DiskCache.load("journal.json"), let j = try? decoder.decode(JournalResponse.self, from: d) { applyJournal(j) }
+        if let d = DiskCache.load("training.json"), let t = try? decoder.decode(TrainingResponse.self, from: d) { applyTraining(t) }
     }
 
     // MARK: - Connect
@@ -193,6 +209,7 @@ final class AppModel: ObservableObject {
                 DiskCache.save(result.1, as: "journal.json")
             }
             await syncHomeLayout()
+            await refreshTraining()
             // Today's minute data grows with every sync. Replace it rather than drop it: the Today
             // screen only loads a day when it appears, so a dropped detail never came back.
             if let result = try? await api.fetch(DayDetail.self, "day", query: ["date": s.today]) {
@@ -309,6 +326,9 @@ final class AppModel: ObservableObject {
         journalTags = []
         dayDetails = [:]
         failedDays = []
+        routines = []
+        workoutLogs = []
+        bandWorkouts = []
         coach.reset()
     }
 
@@ -431,6 +451,127 @@ final class AppModel: ObservableObject {
         if let newer = reply.layout, reply.editedAt > config.editedAt {
             UserDefaults.standard.set(HomeLayout.encode(newer), forKey: HomeLayout.configKey)
         }
+    }
+
+    // MARK: - Training
+
+    private func applyTraining(_ response: TrainingResponse) {
+        routines = response.routines
+        workoutLogs = response.logs
+        bandWorkouts = response.bandWorkouts
+    }
+
+    func refreshTraining() async {
+        guard !isFixture, let api else { return }
+        do {
+            let (result, data) = try await api.fetch(TrainingResponse.self, "training")
+            applyTraining(result)
+            DiskCache.save(data, as: "training.json")
+            trainingError = nil
+        } catch {
+            if !error.isCancellation { trainingError = "Couldn't load your training: \(error.localizedDescription)" }
+        }
+    }
+
+    private func postTraining(_ body: [String: Any]) async throws -> Data {
+        guard let api else { throw APIError.unauthorized }
+        let data = try JSONSerialization.data(withJSONObject: body)
+        return try await api.post("training", body: data)
+    }
+
+    private func json<T: Encodable>(_ value: T) throws -> Any {
+        try JSONSerialization.jsonObject(with: JSONEncoder().encode(value))
+    }
+
+    /// Saves a new or changed routine and returns it as saved (with its id).
+    @discardableResult
+    func saveRoutine(_ routine: Routine) async -> Routine? {
+        if isFixture {
+            var saved = routine
+            if saved.id.isEmpty { saved.id = UUID().uuidString.lowercased(); saved.position = (routines.last?.position ?? -1) + 1 }
+            if let i = routines.firstIndex(where: { $0.id == saved.id }) { routines[i] = saved } else { routines.append(saved) }
+            return saved
+        }
+        do {
+            var body = try json(routine) as? [String: Any] ?? [:]
+            if routine.id.isEmpty { body["id"] = nil }
+            let data = try await postTraining(["action": "save_routine", "routine": body])
+            struct Reply: Decodable { let routine: Routine }
+            let saved = try JSONDecoder().decode(Reply.self, from: data).routine
+            if let i = routines.firstIndex(where: { $0.id == saved.id }) { routines[i] = saved } else { routines.append(saved) }
+            trainingError = nil
+            Task { await refreshTraining() }
+            return saved
+        } catch {
+            trainingError = "Couldn't save the routine: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    func deleteRoutine(_ id: String) async {
+        routines.removeAll { $0.id == id }
+        guard !isFixture else { return }
+        do {
+            _ = try await postTraining(["action": "delete_routine", "id": id])
+        } catch {
+            trainingError = "Couldn't delete the routine: \(error.localizedDescription)"
+            await refreshTraining()
+        }
+    }
+
+    func moveRoutines(from source: IndexSet, to destination: Int) async {
+        routines.move(fromOffsets: source, toOffset: destination)
+        guard !isFixture else { return }
+        do {
+            _ = try await postTraining(["action": "reorder_routines", "ids": routines.map(\.id)])
+        } catch {
+            trainingError = "Couldn't save the order: \(error.localizedDescription)"
+        }
+    }
+
+    /// Saves a new or changed workout and returns it as saved (with its id).
+    @discardableResult
+    func saveLog(_ log: WorkoutLog) async -> WorkoutLog? {
+        func keep(_ saved: WorkoutLog) {
+            workoutLogs.removeAll { $0.id == saved.id }
+            workoutLogs.append(saved)
+            workoutLogs.sort { $0.date != $1.date ? $0.date > $1.date : ($0.startedAt ?? "") > ($1.startedAt ?? "") }
+        }
+        if isFixture {
+            var saved = log
+            if saved.id.isEmpty { saved.id = UUID().uuidString.lowercased() }
+            keep(saved)
+            return saved
+        }
+        do {
+            var body = try json(log) as? [String: Any] ?? [:]
+            if log.id.isEmpty { body["id"] = nil }
+            let data = try await postTraining(["action": "save_log", "log": body])
+            struct Reply: Decodable { let log: WorkoutLog }
+            let saved = try JSONDecoder().decode(Reply.self, from: data).log
+            keep(saved)
+            trainingError = nil
+            return saved
+        } catch {
+            trainingError = "Couldn't save the workout: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    func deleteLog(_ id: String) async {
+        workoutLogs.removeAll { $0.id == id }
+        guard !isFixture else { return }
+        do {
+            _ = try await postTraining(["action": "delete_log", "id": id])
+        } catch {
+            trainingError = "Couldn't delete the workout: \(error.localizedDescription)"
+            await refreshTraining()
+        }
+    }
+
+    /// Opens the Coach with `text` in its message field, ready to finish and send.
+    func askCoach(_ text: String) {
+        coachDraft = text
     }
 
     // MARK: - Journal

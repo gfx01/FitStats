@@ -16,6 +16,7 @@ struct FitStatsApp: App {
             RootView()
                 .environmentObject(model)
                 .environmentObject(model.coach)
+                .environmentObject(model.workout)
                 .environmentObject(live)
                 .preferredColorScheme(.dark)
                 .tint(Theme.recoveryGreen)
@@ -61,15 +62,16 @@ struct MainTabs: View {
             TodayView()
                 .tabItem { Label("Today", systemImage: "circle.circle.fill") }
                 .tag("today")
-            TrendsView()
-                .tabItem { Label("Trends", systemImage: "chart.xyaxis.line") }
-                .tag("trends")
+            TrainingView()
+                .tabItem { Label("Training", systemImage: "dumbbell.fill") }
+                .tag("training")
             CoachView()
                 .tabItem { Label("Coach", systemImage: "bubble.left.and.bubble.right.fill") }
                 .tag("coach")
-            InsightsView()
-                .tabItem { Label("Insights", systemImage: "sparkles") }
-                .tag("insights")
+            // Insights are reached from the top of Trends.
+            TrendsView()
+                .tabItem { Label("Trends", systemImage: "chart.xyaxis.line") }
+                .tag("trends")
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gearshape.fill") }
                 .tag("settings")
@@ -78,6 +80,10 @@ struct MainTabs: View {
         // A tapped journal reminder opens Today, which shows the journal.
         .onChange(of: model.journalRequest) { _, day in
             if day != nil { tab = "today" }
+        }
+        // An "Ask coach" button anywhere in the app opens the Coach with the question typed in.
+        .onChange(of: model.coachDraft) { _, draft in
+            if draft != nil { tab = "coach" }
         }
     }
 }

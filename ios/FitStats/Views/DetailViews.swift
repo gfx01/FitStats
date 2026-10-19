@@ -22,6 +22,11 @@ private struct DetailScaffold<Content: View>: View {
         .screenBackground()
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                AskCoachButton(text: "About my \(title.lowercased()) on \(Format.longDay(date)): ")
+            }
+        }
         .task { await model.loadDay(date) }
     }
 }

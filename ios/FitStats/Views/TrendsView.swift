@@ -2,6 +2,7 @@ import SwiftUI
 
 /// The tools linked at the top of Trends.
 private enum TrendsRoute: Hashable {
+    case insights
     case calendar
     case compare
 }
@@ -51,8 +52,14 @@ struct TrendsView: View {
             .navigationDestination(for: DetailRoute.self) { DetailDestination(route: $0) }
             .navigationDestination(for: TrendsRoute.self) { route in
                 switch route {
+                case .insights: InsightsView()
                 case .calendar: CalendarHeatmapView()
                 case .compare: ComparePeriodsView()
+                }
+            }
+            .navigationDestination(for: Correlation.ID.self) { id in
+                if let c = model.stats?.correlations.first(where: { $0.id == id }) {
+                    CorrelationDetailView(correlation: c)
                 }
             }
         }
@@ -60,13 +67,18 @@ struct TrendsView: View {
 
     private var toolLinks: some View {
         HStack(spacing: 10) {
+            NavigationLink(value: TrendsRoute.insights) {
+                toolTile("Insights", icon: "sparkles")
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("open-insights")
             NavigationLink(value: TrendsRoute.calendar) {
                 toolTile("Calendar", icon: "calendar")
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("open-calendar")
             NavigationLink(value: TrendsRoute.compare) {
-                toolTile("Compare periods", icon: "arrow.left.arrow.right")
+                toolTile("Compare", icon: "arrow.left.arrow.right")
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("open-compare")
@@ -74,20 +86,22 @@ struct TrendsView: View {
     }
 
     private func toolTile(_ title: String, icon: String) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(.subheadline)
-                .foregroundStyle(Theme.recoveryGreen)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: icon)
+                    .font(.subheadline)
+                    .foregroundStyle(Theme.recoveryGreen)
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right").font(.caption2).foregroundStyle(Theme.tertiary)
+            }
             Text(title)
                 .font(.subheadline.weight(.semibold))
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
-            Spacer(minLength: 0)
-            Image(systemName: "chevron.right").font(.caption2).foregroundStyle(Theme.tertiary)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 11)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Theme.card))
         .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Theme.cardBorder, lineWidth: 1))
         .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -268,6 +282,11 @@ struct MetricDetailView: View {
         }
         .screenBackground()
         .navigationTitle(def.label)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                AskCoachButton(text: "About the \(def.label) trend: ")
+            }
+        }
         .navigationBarTitleDisplayMode(.inline)
     }
 

@@ -113,6 +113,10 @@ struct TodayView: View {
                                            canShow: isVisible, onAdd: add, onReset: reset)
                                 .id(Self.addSectionID)
                         } else {
+                            AskCoachRow(prompts: date == model.today
+                                ? [("sparkles", "Explain today", "About today: what stands out so far, and why?"),
+                                   ("figure.run", "What should I do today?", "What should I do today, given my recovery, sleep and training?")]
+                                : [("sparkles", "Explain this day", "About my day on \(Format.longDay(date)): what stands out, and why?")])
                             editHomeButton
                             footer
                         }

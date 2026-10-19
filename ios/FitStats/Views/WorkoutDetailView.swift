@@ -158,6 +158,13 @@ struct WorkoutDetailView: View {
         .screenBackground()
         .navigationTitle(Format.shortDay(date))
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                if let exercise {
+                    AskCoachButton(text: "About my band workout “\(exercise.displayName)” on \(Format.longDay(date)): ")
+                }
+            }
+        }
         .task { await model.loadDay(date) }
     }
 

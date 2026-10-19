@@ -21,6 +21,8 @@ final class CoachStore: ObservableObject {
 
     var apiProvider: @MainActor () -> APIClient? = { nil }
     var onUnauthorized: @MainActor () -> Void = {}
+    /// A tool saved something the Training tab shows (event "changed").
+    var onTrainingChanged: @MainActor () -> Void = {}
 
     private var fixtureDir: URL?
     private var fixtureMessages: [CoachMessage] = []
@@ -155,6 +157,8 @@ final class CoachStore: ObservableObject {
                 case "text":
                     streamingText += event.text ?? ""
                     toolStatus = nil
+                case "changed":
+                    onTrainingChanged()
                 case "done":
                     let reply = streamingText.trimmingCharacters(in: .whitespacesAndNewlines)
                     messages.append(CoachMessage(id: event.messageId ?? UUID().uuidString, role: "assistant", content: reply, createdAt: nil))

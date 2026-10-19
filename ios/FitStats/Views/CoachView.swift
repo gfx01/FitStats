@@ -69,6 +69,20 @@ struct CoachView: View {
             }
             .sheet(isPresented: $showHistory) { CoachHistoryView() }
             .task { await coach.refresh() }
+            .onAppear(perform: takeDraft)
+            .onChange(of: model.coachDraft) { _, _ in takeDraft() }
+        }
+    }
+
+    /// A question from an "Ask coach" button elsewhere in the app: put in the message field with
+    /// the keyboard up, to finish or send as it is.
+    private func takeDraft() {
+        guard let draft = model.coachDraft else { return }
+        model.coachDraft = nil
+        input = draft
+        Task {
+            try? await Task.sleep(for: .milliseconds(450))
+            inputFocused = true
         }
     }
 
