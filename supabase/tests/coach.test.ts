@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { before, test } from "node:test";
 
-import { claudeFailures, claudeRequests, env, FAKE_ROUTINE, NAP_MAIN_DAY, type Row, tables } from "./fakes.ts";
+import { claudeFailures, claudeRequests, env, FAKE_ROUTINE, NAP_MAIN_DAY, PNG_SCREENSHOT, type Row, tables } from "./fakes.ts";
 
 const coach = await import("../functions/fitstats/lib/coach.ts");
 
@@ -33,6 +33,9 @@ test("chat: tool round trip, streamed reply, saved thread and usage", async () =
   assert.match(streamed, /^Let me look at your last week\.\n\nYour HRV averaged \*\*\d+ ms\*\*/);
   const done = evs.at(-1)!;
   assert.equal(done.type, "done", JSON.stringify(evs.filter((e) => e.type === "error")));
+  // The thread is known from the start, so the app can pick the answer up if it goes away.
+  assert.equal(evs[0].type, "started");
+  assert.equal(evs[0].thread_id, done.thread_id);
 
   // First request: cached system prompt with the data summary, tools, medium effort.
   const first = claudeRequests[0];
@@ -95,9 +98,13 @@ test("briefing: cached for today", async () => {
 
 test("errors: bad key, unknown thread, missing key, bad input", async () => {
   claudeFailures.push(401);
+  const threadsBefore = tables.fs_coach_threads.length, messagesBefore = tables.fs_coach_messages.length;
   const evs = await events(await coach.handleCoach(post({ message: "Hi" })));
-  assert.deepEqual(evs.map((e) => e.type), ["error"]);
-  assert.equal(evs[0].code, "invalid_api_key");
+  assert.deepEqual(evs.map((e) => e.type), ["started", "error"]);
+  assert.equal(evs[1].code, "invalid_api_key");
+  // The question was saved when it started; a failed answer takes it (and its new thread) away again.
+  assert.equal(tables.fs_coach_threads.length, threadsBefore);
+  assert.equal(tables.fs_coach_messages.length, messagesBefore);
 
   const missing = await coach.handleCoach(post({ message: "Hi", thread_id: "00000000-0000-4000-8000-000000000000" }));
   assert.equal(missing.status, 404);
@@ -172,11 +179,24 @@ test("training: the app saves routines and workouts, the coach reads them and sa
   assert.deepEqual([(data.routines as Row[]).length, (data.logs as Row[]).length], [1, 1]);
   assert.ok((data.band_workouts as Row[]).length > 0, "the band's workouts of the last 120 days");
 
+  const library = data.library as { muscles: Row[]; exercises: Row[] };
+  assert.equal(library.muscles.length, 15);
+  assert.ok(library.exercises.length > 60);
+
   const read = await coach.runTool("get_training", {}, ctx, null) as Row;
   const progress = read.exercise_progress_last_year as Row[];
   assert.deepEqual([progress[0].name, (progress[0].best as Row).weight_kg], ["Squat", 85]);
+  // Two done squat sets: 1 each for the main muscles, ½ each for the helpers.
+  assert.deepEqual(read.muscle_sets_last_7_days, { quads: 2, glutes: 2, adductors: 1, hamstrings: 1, lower_back: 1 });
+  const squat = ((read.routines as Row[])[0].exercises as Row[])[0];
+  assert.deepEqual([squat.works, squat.helps], [["quads", "glutes"], ["adductors", "hamstrings", "lower_back"]]);
+  assert.ok((read.library_exercises as string[]).includes("Romanian deadlift"));
+  // An exercise outside the library keeps the muscles chosen for it (known ones only).
+  const sled = await training.saveRoutine({ name: "Sled", exercises: [{ name: "Sled push", kind: "strength", muscles: ["quads", "glutes", "wings"] }] }, "user");
+  assert.deepEqual(sled.exercises[0].muscles, ["quads", "glutes"]);
+  await training.deleteRoutine(sled.id);
   const context = await coach.buildContext(ctx, null);
-  assert.match(context, /Routine \(id [0-9a-f-]{36}\) Legs: Squat \(strength: 5 sets of 5 @ 80 kg\)/);
+  assert.match(context, /Routine \(id [0-9a-f-]{36}\) Legs: Squat \(strength: 5 sets of 5 @ 80 kg; works quads, glutes \(helps: adductors, hamstrings, lower_back\)\)/);
   assert.match(context, /Logged 2026-10-17 Legs \(effort 8\/10\): Squat: 5 reps × 80 kg, 5 reps × 85 kg/);
   await assert.rejects(coach.runTool("save_routine", { id: crypto.randomUUID(), name: "X", exercises: [] }, ctx, null), /no routine with id/);
 
@@ -195,4 +215,75 @@ test("training: the app saves routines and workouts, the coach reads them and sa
   assert.deepEqual((await training.loadRoutines()).map((r) => r.name), ["Upper body A", "Legs"]);
   await training.deleteRoutine(mine.id);
   assert.deepEqual((await training.loadRoutines()).map((r) => r.name), ["Upper body A"]);
+});
+
+test("chat: the chosen coach's voice, and screenshots in, previews kept, not resent", async () => {
+  claudeRequests.length = 0;
+  const shot = PNG_SCREENSHOT;
+  const evs = await events(await coach.handleCoach(post({
+    message: "What do you make of this?", persona: "ace", images: [{ media_type: "image/png", data: shot, thumb: shot }],
+  })));
+  const done = evs.at(-1)!;
+  assert.equal(done.type, "done", JSON.stringify(evs.filter((e) => e.type === "error")));
+  assert.equal(done.persona, "ace");
+  const first = claudeRequests[0];
+  const system = first.system as Row[];
+  assert.equal(system.length, 3);
+  assert.match(String(system[2].text), /^Your personality\nYou are Ace, the tough-love performance coach/);
+  assert.equal(system[2].cache_control, undefined, "after the cached data, so switching coaches keeps the cache");
+  const question = (first.messages as Row[]).at(-1)!.content as Row[];
+  assert.deepEqual(question, [
+    { type: "image", source: { type: "base64", media_type: "image/png", data: shot } },
+    { type: "text", text: "What do you make of this?" },
+  ]);
+  assert.match(evs.filter((e) => e.type === "text").map((e) => e.text).join(""), /I can see your screenshot/);
+
+  const msgs = tables.fs_coach_messages.filter((m) => m.thread_id === done.thread_id);
+  assert.deepEqual(msgs[0].attachments, [{ media_type: "image/png", thumb: shot }]);
+  assert.equal(msgs[1].persona, "ace");
+  const detail = await (await coach.coachThread(String(done.thread_id))).json() as Row;
+  assert.deepEqual(((detail.messages as Row[])[0].attachments as Row[]).length, 1);
+
+  // The next message names the earlier screenshot instead of sending it again; Kai's voice now.
+  claudeRequests.length = 0;
+  const again = await events(await coach.handleCoach(post({ message: "And now?", thread_id: done.thread_id, persona: "kai" })));
+  assert.equal(again.at(-1)!.type, "done");
+  const history = claudeRequests[0].messages as Row[];
+  assert.equal(history[0].content, "What do you make of this?\n\n[They attached a screenshot to this message. You saw it then; it isn't shown again.]");
+  assert.ok(!JSON.stringify(history).includes(shot));
+  assert.match(String((claudeRequests[0].system as Row[])[2].text), /You are Kai/);
+
+  // No persona: Nova. The briefing has no personality block.
+  claudeRequests.length = 0;
+  await events(await coach.handleCoach(post({ message: "Hi" })));
+  assert.match(String((claudeRequests[0].system as Row[])[2].text), /You are Nova/);
+
+  for (const [images, why] of [
+    [[{ media_type: "image/bmp", data: shot }], /JPEG, PNG, WebP or GIF/],
+    [[{ media_type: "image/png", data: "not base64!" }], /empty or too large/],
+    [Array.from({ length: 4 }, () => ({ media_type: "image/png", data: shot })), /At most 3/],
+  ] as const) {
+    const res = await coach.handleCoach(post({ message: "x", images }));
+    assert.equal(res.status, 400);
+    assert.match(String(((await res.json()) as Row).message), why);
+  }
+  // A screenshot alone is a message.
+  const alone = await events(await coach.handleCoach(post({ images: [{ media_type: "image/png", data: shot }] })));
+  assert.equal(alone.at(-1)!.type, "done");
+  assert.equal(tables.fs_coach_threads.find((t) => t.id === alone.at(-1)!.thread_id)!.title, "Screenshot");
+});
+
+test("chat: an answer the app stops listening to (backgrounded, network lost) is still saved", async () => {
+  const res = await coach.handleCoach(post({ message: "Quick one before I lock my phone" }));
+  const reader = res.body!.getReader();
+  const first = new TextDecoder().decode((await reader.read()).value);
+  const started = JSON.parse(first.split("\n\n").find((b) => b.startsWith("data: "))!.slice(6)) as Row;
+  assert.equal(started.type, "started");
+  await reader.cancel();
+  const answered = () => tables.fs_coach_messages.some((m) => m.thread_id === started.thread_id && m.role === "assistant");
+  for (let i = 0; i < 200 && !answered(); i++) await new Promise((r) => setTimeout(r, 10));
+  const saved = tables.fs_coach_messages.filter((m) => m.thread_id === started.thread_id);
+  assert.deepEqual(saved.map((m) => m.role), ["user", "assistant"]);
+  assert.equal(saved[0].id, started.message_id);
+  assert.match(String(saved[1].content), /Your HRV averaged/);
 });

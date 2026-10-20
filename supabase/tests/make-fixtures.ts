@@ -3,7 +3,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { type Row, tables } from "./fakes.ts";
+import { PNG_SCREENSHOT, type Row, tables } from "./fakes.ts";
 
 const out = process.argv[2];
 if (!out) throw new Error("usage: make-fixtures.ts <outDir>");
@@ -193,6 +193,11 @@ const ask = async (body: unknown) => {
   if (!text.includes('"type":"done"')) throw new Error(`coach fixture failed: ${text.slice(0, 500)}`);
 };
 await ask({ message: "How has my sleep been this week, and is it affecting my HRV?" });
+// A follow-up with a screenshot, so the conversation shows an attachment.
+await ask({
+  message: "Here's my week from another app. Anything stand out?", thread_id: tables.fs_coach_threads[0].id, persona: "nova",
+  images: [{ media_type: "image/png", data: PNG_SCREENSHOT, thumb: PNG_SCREENSHOT }],
+});
 await ask({ kind: "brief" });
 write("coach-status.json", await coach.coachStatus());
 write("coach-threads.json", await coach.coachThreads());

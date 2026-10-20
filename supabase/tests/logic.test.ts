@@ -893,7 +893,7 @@ test("training: routines and logged workouts are validated", async () => {
   assert.deepEqual([edited.id, edited.created_by], [r.id, "coach"], "an edit keeps the id and who made it");
   assert.throws(() => normalizeRoutine({ name: " ", exercises: [] }, null, "user", now), TrainingInputError);
   assert.throws(() => normalizeRoutine({ name: "x", exercises: "nope" }, null, "user", now), TrainingInputError);
-  assert.match(routineText(r), /^Push day \[made by you, the coach\]: Bench press \(strength: 3 sets of 8 @ 62.5 kg rest 90 s\)/);
+  assert.match(routineText(r), /^Push day \[made by you, the coach\]: Bench press \(strength: 3 sets of 8 @ 62.5 kg rest 90 s; works chest \(helps: triceps, shoulders\)\)/);
 
   const log = normalizeLog({
     date: "2026-10-19", name: "Push day", effort: 7, started_at: "2026-10-19T16:00:00Z", ended_at: "2026-10-19T17:05:00Z",

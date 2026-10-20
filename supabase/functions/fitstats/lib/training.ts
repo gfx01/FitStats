@@ -4,6 +4,7 @@
 // routines (created_by "coach").
 
 import * as db from "./db.ts";
+import { exerciseMuscles, LIBRARY, muscleList, type MuscleId, MUSCLES, muscleSets } from "./exercises.ts";
 import { addDays, type Ymd } from "./util.ts";
 
 type Row = Record<string, unknown>;
@@ -24,6 +25,8 @@ export interface RoutineExercise {
   distance_km: number | null;
   rest_s: number | null;
   notes: string | null;
+  /** Muscles chosen for an exercise outside the library (exercises.ts); null = the library's. */
+  muscles?: MuscleId[] | null;
 }
 
 export interface Routine {
@@ -50,6 +53,8 @@ export interface LoggedExercise {
   kind: ExerciseKind;
   sets: LoggedSet[];
   notes: string | null;
+  /** As RoutineExercise.muscles. */
+  muscles?: MuscleId[] | null;
 }
 
 export interface WorkoutLog {
@@ -126,6 +131,7 @@ export function normalizeRoutineExercise(e: Row): RoutineExercise | null {
     distance_km: number(e.distance_km, 0, 1000, 2),
     rest_s: number(e.rest_s, 0, 3600),
     notes: text(e.notes, 300),
+    muscles: muscleList(e.muscles),
   };
 }
 
@@ -148,6 +154,7 @@ export function normalizeLoggedExercise(e: Row): LoggedExercise | null {
       };
     }),
     notes: text(e.notes, 300),
+    muscles: muscleList(e.muscles),
   };
 }
 
@@ -204,14 +211,17 @@ export async function loadLogs(from: Ymd, to?: Ymd): Promise<WorkoutLog[]> {
     .sort((a, b) => b.date.localeCompare(a.date) || String(b.started_at ?? b.created_at).localeCompare(String(a.started_at ?? a.created_at)));
 }
 
-/** What the Training tab shows: routines, logged workouts and the band's workouts. */
+/**
+ * What the Training tab shows: routines, logged workouts, the band's workouts, and the exercise
+ * library (which muscles each exercise works).
+ */
 export async function trainingData(today: Ymd): Promise<Row> {
   const [routines, logs, band] = await Promise.all([
     loadRoutines(),
     loadLogs(addDays(today, -LOG_DAYS)),
     db.select<Row>("fs_exercise", `select=*&date=gte.${addDays(today, -BAND_DAYS)}&order=start_time.desc`),
   ]);
-  return { routines, logs, band_workouts: band };
+  return { routines, logs, band_workouts: band, library: { muscles: MUSCLES, exercises: LIBRARY } };
 }
 
 export async function saveRoutine(input: Row, by: "user" | "coach"): Promise<Routine> {
@@ -256,6 +266,19 @@ export async function deleteLog(id: string): Promise<void> {
 
 // ----------------------------------------------------------- for the coach
 
+/** "; works quads, glutes (helps: hamstrings)", or nothing for an exercise the library doesn't know. */
+function musclesText(name: string, chosen?: MuscleId[] | null): string {
+  const m = exerciseMuscles(name, chosen);
+  if (!m.primary.length && !m.secondary.length) return "";
+  return `; works ${m.primary.join(", ") || "—"}${m.secondary.length ? ` (helps: ${m.secondary.join(", ")})` : ""}`;
+}
+
+/** Sets per muscle, rounded to halves, largest first. */
+export function muscleSetsText(logs: WorkoutLog[]): Row {
+  const sets = muscleSets(logs);
+  return Object.fromEntries(Object.entries(sets).sort((a, b) => b[1] - a[1]).map(([k, v]) => [k, Math.round(v * 2) / 2]));
+}
+
 /** "3×8 @ 60 kg", "5 km in 25 min", one set's or a plan's numbers in words. */
 function setText(s: { reps?: number | string | null; weight_kg?: number | null; duration_min?: number | null; distance_km?: number | null }): string {
   const parts: string[] = [];
@@ -276,7 +299,7 @@ export function routineText(r: Routine): string {
       e.distance_km !== null ? `${e.distance_km} km` : "",
       e.rest_s !== null ? `rest ${e.rest_s} s` : "",
     ].filter(Boolean).join(" ");
-    return `${e.name} (${e.kind}${plan ? `: ${plan}` : ""}${e.notes ? `; ${e.notes}` : ""})`;
+    return `${e.name} (${e.kind}${plan ? `: ${plan}` : ""}${e.notes ? `; ${e.notes}` : ""}${musclesText(e.name, e.muscles)})`;
   });
   return `${r.name}${r.created_by === "coach" ? " [made by you, the coach]" : ""}: ${ex.join("; ") || "no exercises"}${r.notes ? ` — ${r.notes}` : ""}`;
 }

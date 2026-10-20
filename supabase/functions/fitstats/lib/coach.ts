@@ -4,6 +4,7 @@
 // the system prompt and tools to look up anything else in the database.
 
 import * as db from "./db.ts";
+import { exerciseMuscles, LIBRARY, type MuscleId, MUSCLES } from "./exercises.ts";
 import { type JournalEntry, journalEntries, tagLabel } from "./journal.ts";
 import { sleepPlan } from "./planner.ts";
 import type { DayRow } from "./scores.ts";
@@ -15,6 +16,7 @@ import {
   loadLogs,
   loadRoutines,
   logText,
+  muscleSetsText,
   routineText,
   saveRoutine,
   TrainingInputError,
@@ -43,6 +45,78 @@ export const DAILY_REQUEST_LIMIT = 100;
 const MAX_ROUNDS = 6;
 const MAX_TOKENS = 8000; // thinking (always on for these models) + the reply
 const HISTORY_MESSAGES = 20;
+/** An answer that takes longer is given up (Edge Functions stop at 150 s on the free plan). */
+const ANSWER_TIMEOUT_MS = 140_000;
+/** Screenshots per message, and their size as base64 (the app sends JPEGs of about 0.3–0.6 MB). */
+const MAX_IMAGES = 3;
+const MAX_IMAGE_CHARS = 4_000_000;
+const MAX_THUMB_CHARS = 120_000;
+const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
+
+/**
+ * The three coaches the app lets them choose from. Only the voice changes: the same
+ * instructions, data and tools for all three. Not used for the daily briefing.
+ */
+export const COACH_PERSONAS: Record<string, { name: string; prompt: string }> = {
+  nova: {
+    name: "Nova",
+    prompt: "You are Nova, the analytical coach: precise, curious and calm. Explain the why behind each answer with their numbers and baselines, " +
+      "say how sure you are and what data is missing, and prefer a few short bullets. Never preachy.",
+  },
+  ace: {
+    name: "Ace",
+    prompt: "You are Ace, the tough-love performance coach: direct, energetic and demanding, but always on their side. Lead with the verdict in one short " +
+      "sentence, then exactly what to do. Push them to train hard when recovery allows, and name missed sessions or slipping habits plainly, never with insults. " +
+      "Short sentences; no hedging beyond what the data needs.",
+  },
+  kai: {
+    name: "Kai",
+    prompt: "You are Kai, the calm, recovery-first coach: warm, patient and reassuring. Put sleep, stress and recovery first, offer gentler options on " +
+      "low days, and help them feel in control without false comfort.",
+  },
+};
+export const DEFAULT_PERSONA = "nova";
+
+function personaPrompt(id: string): string {
+  const p = COACH_PERSONAS[id];
+  return `Your personality\n${p.prompt} Your personality changes only your voice and emphasis: the facts, the rules above and what their data says ` +
+    `stay the same. If they ask who you are: ${p.name}, one of the three FitStats coaches (Nova, Ace and Kai), who all read the same data.`;
+}
+
+export interface CoachImage {
+  media_type: string;
+  data: string;
+  /** A small preview the app keeps with the message (the full image isn't stored). */
+  thumb: string | null;
+}
+
+/** The screenshots of a chat request, or a message saying what is wrong with them. */
+export function parseImages(v: unknown): CoachImage[] | string {
+  if (v === undefined || v === null) return [];
+  if (!Array.isArray(v)) return "images must be a list.";
+  if (v.length > MAX_IMAGES) return `At most ${MAX_IMAGES} screenshots per message.`;
+  const out: CoachImage[] = [];
+  for (const raw of v) {
+    const img = (raw ?? {}) as Row;
+    const type = String(img.media_type ?? "");
+    const data = typeof img.data === "string" ? img.data : "";
+    const thumb = typeof img.thumb === "string" && img.thumb.length <= MAX_THUMB_CHARS && BASE64.test(img.thumb) ? img.thumb : null;
+    if (!IMAGE_TYPES.has(type)) return "Screenshots must be JPEG, PNG, WebP or GIF.";
+    if (!data || data.length > MAX_IMAGE_CHARS || !BASE64.test(data)) return "A screenshot is empty or too large.";
+    out.push({ media_type: type, data, thumb });
+  }
+  return out;
+}
+
+/** A stored message as history for the next request: earlier screenshots are named, not resent. */
+function historyContent(r: Row): string {
+  const n = Array.isArray(r.attachments) ? r.attachments.length : 0;
+  if (!n) return String(r.content);
+  const note = `[They attached ${n === 1 ? "a screenshot" : `${n} screenshots`} to this message. You saw ${n === 1 ? "it" : "them"} then; ` +
+    `${n === 1 ? "it isn't" : "they aren't"} shown again.]`;
+  return r.content ? `${r.content}\n\n${note}` : note;
+}
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -499,6 +573,8 @@ export const TOOLS: Json[] = [
     description: "Their Training tab: every routine (id, name, exercises with target sets, reps, kg, minutes, km, rest, notes, and whether you made it), " +
       "the workouts they logged in the app between two dates (default the last 90 days; set by set: reps, kg, minutes, km, done; effort 1–10; notes), " +
       "and per exercise over the last year: sessions logged, the best set with its date, and the last session with its volume (reps × kg). " +
+      "Also the muscles each exercise works (from the app's exercise library, or chosen by them), done sets per muscle over the last 7 and 28 days " +
+      "(a set counts 1 for the main muscles and 0.5 for helpers; cardio isn't counted), and the library's exercise names. " +
       "The band's own workouts (heart rate, strain) are in get_workouts.",
     input_schema: {
       type: "object",
@@ -512,7 +588,9 @@ export const TOOLS: Json[] = [
     name: "save_routine",
     description: "Saves a routine to their Training tab, where they can start it and log it set by set. Use it only when they ask you to make or change a routine " +
       "(or agree to one you suggested). To change one of their routines, pass its id and the whole routine as it should be; leave id out to make a new one. " +
-      "Weights in kg, distance in km, durations in minutes, rest in seconds. Reps is text so it can be a range (\"8-12\") or \"AMRAP\".",
+      "Weights in kg, distance in km, durations in minutes, rest in seconds. Reps is text so it can be a range (\"8-12\") or \"AMRAP\". " +
+      "Name exercises as the app's exercise library does (get_training lists the names) so the app can show the muscles they work; " +
+      "for an exercise outside the library, pass the muscles it works.",
     input_schema: {
       type: "object",
       properties: {
@@ -534,6 +612,12 @@ export const TOOLS: Json[] = [
               distance_km: { type: "number" },
               rest_s: { type: "integer" },
               notes: { type: "string" },
+              muscles: {
+                type: "array",
+                description: "Only for an exercise not in the library: the muscles it mainly works",
+                items: { type: "string", enum: MUSCLES.map((m) => m.id) },
+                maxItems: 6,
+              },
             },
             required: ["name", "kind"],
           },
@@ -660,10 +744,17 @@ export async function runTool(name: string, input: Json, ctx: Ctx, stats: Json |
     case "get_training": {
       const [from, to] = input.from || input.to ? rangeArgs(input) : [addDays(ctx.today, -89), ctx.today];
       const [routines, logs, year] = await Promise.all([loadRoutines(), loadLogs(from, to), loadLogs(addDays(ctx.today, -364), ctx.today)]);
+      const withMuscles = <T extends { name: string; muscles?: MuscleId[] | null }>(e: T) => {
+        const m = exerciseMuscles(e.name, e.muscles);
+        return { ...e, muscles: undefined, works: m.primary, helps: m.secondary };
+      };
       return {
-        routines: routines.map((r) => ({ id: r.id, name: r.name, made_by: r.created_by === "coach" ? "you (the coach)" : "them", notes: r.notes, exercises: r.exercises })),
-        logged_workouts: { from, to, workouts: logs.map((l) => ({ ...l, created_at: undefined, updated_at: undefined })) },
+        routines: routines.map((r) => ({ id: r.id, name: r.name, made_by: r.created_by === "coach" ? "you (the coach)" : "them", notes: r.notes, exercises: r.exercises.map(withMuscles) })),
+        logged_workouts: { from, to, workouts: logs.map((l) => ({ ...l, created_at: undefined, updated_at: undefined, exercises: l.exercises.map(withMuscles) })) },
         exercise_progress_last_year: exerciseProgress(year),
+        muscle_sets_last_7_days: muscleSetsText(year.filter((l) => l.date > addDays(ctx.today, -7))),
+        muscle_sets_last_28_days: muscleSetsText(year.filter((l) => l.date > addDays(ctx.today, -28))),
+        library_exercises: LIBRARY.map((e) => e.name),
       };
     }
     case "save_routine": {
@@ -726,6 +817,10 @@ Training
 - Use get_training to see routines, logged workouts and each exercise's progress before you judge or change their training.
 - To make or change a routine, design it for them: their goal if they said one, how often they train, what they have logged, recovery and training load. Then save it with save_routine and say it's in the Training tab. To change one of theirs, pass its id. Don't save a routine they didn't ask for; suggest it first.
 - When reviewing workouts, be concrete: compare with their earlier sessions of the same exercise (more reps or kg at the same effort is progress), weekly volume, effort, and how recovery and strain looked the days after. Suggest the next session's numbers.
+- The app shows which muscles each exercise works (its exercise library) and done sets per muscle on a body map. get_training has the same numbers: use them to spot muscles trained much more or less than the rest, and keep routines balanced unless they want a focus.
+
+Screenshots
+- They can attach screenshots to a message: from this app, another app (a workout, a nutrition label, a lab result) or anything else. Read them carefully and use what matters for their question; say plainly if something is unreadable or cut off. An earlier message's screenshots aren't shown again later in the conversation: rely on what you said about them then.
 
 How to answer
 - Lead with the answer, then the two or three numbers from their data that support it, with dates. Be specific to them; skip generic advice.
@@ -971,7 +1066,7 @@ export async function coachThread(id: string): Promise<Response> {
   if (!UUID.test(id)) return jsonResponse({ error: "bad_request", message: "id must be a UUID" }, 400);
   const thread = await db.selectOne<Row>("fs_coach_threads", `select=id,title,created_at,updated_at&id=eq.${id}`);
   if (!thread) return jsonResponse({ error: "not_found", message: "No such conversation." }, 404);
-  const messages = await db.select<Row>("fs_coach_messages", `select=id,role,content,created_at&thread_id=eq.${id}&order=created_at.asc`);
+  const messages = await db.select<Row>("fs_coach_messages", `select=id,role,content,persona,attachments,created_at&thread_id=eq.${id}&order=created_at.asc`);
   return jsonResponse({ thread, messages });
 }
 
@@ -990,7 +1085,9 @@ export async function coachBrief(): Promise<Row> {
 }
 
 /**
- * POST {message, thread_id?} for chat, or {kind: "brief"} for today's briefing.
+ * POST {message, thread_id?, persona?, images?} for chat, or {kind: "brief"} for today's briefing.
+ * persona: nova (default), ace or kai. images: up to 3 screenshots, {media_type, data (base64),
+ * thumb (a small base64 JPEG kept with the message)}.
  * Streams `data: {...}` events: status (a tool is running), text (reply text as it
  * arrives), changed (a tool saved something the app shows: what = "training"), done (saved;
  * includes thread_id or brief, and usage) or error.
@@ -1000,8 +1097,11 @@ export async function handleCoach(req: Request): Promise<Response> {
   const kind = body.kind === "brief" ? "brief" : "chat";
   const message = typeof body.message === "string" ? body.message.trim() : "";
   const threadId = typeof body.thread_id === "string" && UUID.test(body.thread_id) ? body.thread_id : null;
-  if (kind === "chat" && (message.length === 0 || message.length > 4000)) {
-    return jsonResponse({ error: "bad_request", message: "A message of 1–4000 characters is needed." }, 400);
+  const persona = typeof body.persona === "string" && COACH_PERSONAS[body.persona] ? body.persona : DEFAULT_PERSONA;
+  const images = kind === "chat" ? parseImages(body.images) : [];
+  if (typeof images === "string") return jsonResponse({ error: "bad_request", message: images }, 400);
+  if (kind === "chat" && ((message.length === 0 && !images.length) || message.length > 4000)) {
+    return jsonResponse({ error: "bad_request", message: "A message of 1–4000 characters (or a screenshot) is needed." }, 400);
   }
   const apiKey = db.optionalEnv("ANTHROPIC_API_KEY");
   if (!apiKey) {
@@ -1014,52 +1114,56 @@ export async function handleCoach(req: Request): Promise<Response> {
   }
   let history: Json[] = [];
   if (kind === "chat" && threadId) {
-    const rows = await db.select<Row>("fs_coach_messages", `select=role,content,created_at&thread_id=eq.${threadId}&order=created_at.asc`);
+    const rows = await db.select<Row>("fs_coach_messages", `select=role,content,attachments,created_at&thread_id=eq.${threadId}&order=created_at.asc`);
     if (!rows.length) return jsonResponse({ error: "not_found", message: "No such conversation." }, 404);
-    history = rows.slice(-HISTORY_MESSAGES).map((r) => ({ role: r.role, content: r.content }));
+    history = rows.slice(-HISTORY_MESSAGES).map((r) => ({ role: r.role, content: historyContent(r) }));
     while (history.length && history[0].role !== "user") history.shift();
   }
 
-  const abort = new AbortController();
   const encoder = new TextEncoder();
   let closed = false;
+  const sink: { out?: ReadableStreamDefaultController<Uint8Array> } = {};
   const stream = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      const write = (chunk: string) => {
-        if (closed) return;
-        try {
-          controller.enqueue(encoder.encode(chunk));
-        } catch {
-          closed = true;
-        }
-      };
-      const send = (event: Row) => write(`data: ${JSON.stringify(event)}\n\n`);
-      // Claude can think for a while without output; SSE comments keep the connection open.
-      const keepAlive = setInterval(() => write(": keep-alive\n\n"), 10_000);
-      try {
-        await converse({ kind, message, threadId, history, ctx, apiKey, signal: abort.signal, send });
-      } catch (e) {
-        if (!abort.signal.aborted) {
-          console.error("coach", String(e));
-          send({ type: "error", code: e instanceof CoachError ? e.code : "server_error", message: String((e as Error).message ?? e).slice(0, 400) });
-        }
-      } finally {
-        clearInterval(keepAlive);
-        if (!closed) {
-          closed = true;
-          try {
-            controller.close();
-          } catch {
-            // already closed by the client
-          }
-        }
-      }
+    start(controller) {
+      sink.out = controller;
     },
+    // The app went away (backgrounded, lost the network): the answer is still written and
+    // saved, and the app picks it up from the thread ("started" told it which).
     cancel() {
       closed = true;
-      abort.abort();
     },
   });
+  const write = (chunk: string) => {
+    if (closed || !sink.out) return;
+    try {
+      sink.out.enqueue(encoder.encode(chunk));
+    } catch {
+      closed = true;
+    }
+  };
+  const send = (event: Row) => write(`data: ${JSON.stringify(event)}\n\n`);
+  const work = (async () => {
+    // Claude can think for a while without output; SSE comments keep the connection open.
+    const keepAlive = setInterval(() => write(": keep-alive\n\n"), 10_000);
+    try {
+      await converse({ kind, message, images, persona, threadId, history, ctx, apiKey, signal: AbortSignal.timeout(ANSWER_TIMEOUT_MS), send });
+    } catch (e) {
+      console.error("coach", String(e));
+      send({ type: "error", code: e instanceof CoachError ? e.code : "server_error", message: String((e as Error).message ?? e).slice(0, 400) });
+    } finally {
+      clearInterval(keepAlive);
+      if (!closed) {
+        closed = true;
+        try {
+          sink.out?.close();
+        } catch {
+          // already closed by the client
+        }
+      }
+    }
+  })();
+  // Keeps the function running until the answer is saved, after the response has gone.
+  (globalThis as { EdgeRuntime?: { waitUntil(p: Promise<unknown>): void } }).EdgeRuntime?.waitUntil(work);
   return new Response(stream, {
     headers: { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-store" },
   });
@@ -1068,6 +1172,8 @@ export async function handleCoach(req: Request): Promise<Response> {
 async function converse(o: {
   kind: "chat" | "brief";
   message: string;
+  images: CoachImage[];
+  persona: string;
   threadId: string | null;
   history: Json[];
   ctx: Ctx;
@@ -1078,57 +1184,92 @@ async function converse(o: {
   const startedAt = new Date().toISOString();
   const model = coachModel(o.ctx.settings);
   const stats = ((await db.selectOne<Row>("fs_cache", "select=value&key=eq.stats"))?.value ?? null) as Json | null;
-  const system = [
+  const system: Json[] = [
     { type: "text", text: INSTRUCTIONS },
     { type: "text", text: `Their data\n\n${await buildContext(o.ctx, stats)}`, cache_control: { type: "ephemeral" } },
   ];
-  const messages: Json[] = [...o.history, { role: "user", content: o.kind === "brief" ? BRIEF_PROMPT : o.message }];
+  // After the cached part, so switching coaches keeps the cache.
+  if (o.kind === "chat") system.push({ type: "text", text: personaPrompt(o.persona) });
+  const question: Json[] | string = o.images.length
+    ? [
+      ...o.images.map((img) => ({ type: "image", source: { type: "base64", media_type: img.media_type, data: img.data } })),
+      ...(o.message ? [{ type: "text", text: o.message }] : []),
+    ]
+    : o.message;
+  const messages: Json[] = [...o.history, { role: "user", content: o.kind === "brief" ? BRIEF_PROMPT : question }];
   const usage = emptyUsage();
   let text = "";
 
-  for (let round = 0; round < MAX_ROUNDS; round++) {
-    const result = await callClaude(o.apiKey, {
-      model,
-      max_tokens: MAX_TOKENS,
-      system,
-      tools: TOOLS,
-      // The last round must answer with what it has.
-      ...(round === MAX_ROUNDS - 1 ? { tool_choice: { type: "none" } } : {}),
-      output_config: { effort: "medium" },
-      messages,
-    }, model, o.signal, {
-      onTextStart: () => {
-        if (text && !text.endsWith("\n")) {
-          text += "\n\n";
-          o.send({ type: "text", text: "\n\n" });
-        }
-      },
-      onText: (t) => {
-        text += t;
-        o.send({ type: "text", text: t });
-      },
-      onToolUse: (b) => o.send({ type: "status", text: toolStatus(b.name, (b.input ?? {}) as Json) }),
-    });
-    addUsage(usage, model, result.usage);
-    if (result.stopReason !== "tool_use") break;
-
-    const results: Json[] = [];
-    for (const b of result.content.filter((c) => c.type === "tool_use")) {
-      try {
-        const out = await runTool(String(b.name), (b.input ?? {}) as Json, o.ctx, stats);
-        results.push({ type: "tool_result", tool_use_id: b.id, content: JSON.stringify(out) });
-        if (TRAINING_WRITES.has(String(b.name))) o.send({ type: "changed", what: "training" });
-      } catch (e) {
-        results.push({ type: "tool_result", tool_use_id: b.id, content: String((e as Error).message ?? e), is_error: true });
-      }
+  // A chat question is saved first and the app told its thread, so an answer that finishes
+  // after the app went away can be read from the thread. A failed answer keeps nothing.
+  let threadId = o.threadId;
+  const newThread = o.kind === "chat" && !threadId;
+  const questionId = crypto.randomUUID();
+  if (o.kind === "chat") {
+    if (!threadId) {
+      threadId = crypto.randomUUID();
+      await db.insert("fs_coach_threads", [{ id: threadId, title: titleFrom(o.message || "Screenshot"), created_at: startedAt, updated_at: startedAt }]);
     }
-    // Thinking blocks go back unchanged with the tool results, as the API requires.
-    messages.push({ role: "assistant", content: result.content });
-    messages.push({ role: "user", content: results });
+    const attachments = o.images.length
+      ? o.images.map((img) => ({ media_type: img.thumb?.startsWith("iVBORw0KGgo") ? "image/png" : "image/jpeg", thumb: img.thumb }))
+      : null;
+    await db.insert("fs_coach_messages", [
+      { id: questionId, thread_id: threadId, role: "user", content: o.message, model: null, usage: null, persona: null, attachments, created_at: startedAt },
+    ]);
+    o.send({ type: "started", thread_id: threadId, message_id: questionId });
+  }
+  try {
+    for (let round = 0; round < MAX_ROUNDS; round++) {
+      const result = await callClaude(o.apiKey, {
+        model,
+        max_tokens: MAX_TOKENS,
+        system,
+        tools: TOOLS,
+        // The last round must answer with what it has.
+        ...(round === MAX_ROUNDS - 1 ? { tool_choice: { type: "none" } } : {}),
+        output_config: { effort: "medium" },
+        messages,
+      }, model, o.signal, {
+        onTextStart: () => {
+          if (text && !text.endsWith("\n")) {
+            text += "\n\n";
+            o.send({ type: "text", text: "\n\n" });
+          }
+        },
+        onText: (t) => {
+          text += t;
+          o.send({ type: "text", text: t });
+        },
+        onToolUse: (b) => o.send({ type: "status", text: toolStatus(b.name, (b.input ?? {}) as Json) }),
+      });
+      addUsage(usage, model, result.usage);
+      if (result.stopReason !== "tool_use") break;
+
+      const results: Json[] = [];
+      for (const b of result.content.filter((c) => c.type === "tool_use")) {
+        try {
+          const out = await runTool(String(b.name), (b.input ?? {}) as Json, o.ctx, stats);
+          results.push({ type: "tool_result", tool_use_id: b.id, content: JSON.stringify(out) });
+          if (TRAINING_WRITES.has(String(b.name))) o.send({ type: "changed", what: "training" });
+        } catch (e) {
+          results.push({ type: "tool_result", tool_use_id: b.id, content: String((e as Error).message ?? e), is_error: true });
+        }
+      }
+      // Thinking blocks go back unchanged with the tool results, as the API requires.
+      messages.push({ role: "assistant", content: result.content });
+      messages.push({ role: "user", content: results });
+    }
+
+    text = text.trim();
+    if (!text) throw new CoachError("empty_reply", "Claude returned no answer. Try again.");
+  } catch (e) {
+    if (o.kind === "chat") {
+      await db.remove("fs_coach_messages", `id=eq.${questionId}`);
+      if (newThread) await db.remove("fs_coach_threads", `id=eq.${threadId}`);
+    }
+    throw e;
   }
 
-  text = text.trim();
-  if (!text) throw new CoachError("empty_reply", "Claude returned no answer. Try again.");
   const now = new Date().toISOString();
   if (o.kind === "brief") {
     const brief = { date: o.ctx.today, text, created_at: now, model };
@@ -1137,18 +1278,11 @@ async function converse(o: {
     o.send({ type: "done", brief, model, usage });
     return;
   }
-  let threadId = o.threadId;
-  if (threadId) {
-    await db.update("fs_coach_threads", `id=eq.${threadId}`, { updated_at: now });
-  } else {
-    threadId = crypto.randomUUID();
-    await db.insert("fs_coach_threads", [{ id: threadId, title: titleFrom(o.message), created_at: startedAt, updated_at: now }]);
-  }
+  await db.update("fs_coach_threads", `id=eq.${threadId}`, { updated_at: now });
   const messageId = crypto.randomUUID();
   await db.insert("fs_coach_messages", [
-    { id: crypto.randomUUID(), thread_id: threadId, role: "user", content: o.message, model: null, usage: null, created_at: startedAt },
-    { id: messageId, thread_id: threadId, role: "assistant", content: text, model, usage, created_at: now },
+    { id: messageId, thread_id: threadId, role: "assistant", content: text, model, usage, persona: o.persona, attachments: null, created_at: now },
   ]);
   await saveUsage(o.ctx.today, usage);
-  o.send({ type: "done", thread_id: threadId, message_id: messageId, model, usage });
+  o.send({ type: "done", thread_id: threadId, message_id: messageId, model, persona: o.persona, usage });
 }

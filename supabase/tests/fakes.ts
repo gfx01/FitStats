@@ -2,6 +2,7 @@
 // tests and the app screenshot fixtures. Importing this module installs a fake
 // global fetch.
 import assert from "node:assert/strict";
+import { deflateSync } from "node:zlib";
 
 export type Row = Record<string, unknown>;
 
@@ -490,6 +491,53 @@ function message(model: string, usage: Row, blocks: Row[], stop: string, output:
 const avg = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : NaN);
 const hm = (min: number) => `${Math.floor(min / 60)}h ${Math.round(min % 60)}m`;
 
+/**
+ * A small PNG standing in for a screenshot (dark screen, a few coloured bars), as base64: for
+ * the coach's image input in tests and the screenshot fixtures.
+ */
+function makePng(width: number, height: number): string {
+  const crcTable = Array.from({ length: 256 }, (_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c >>> 0;
+  });
+  const crc = (buf: Buffer) => {
+    let c = 0xffffffff;
+    for (const b of buf) c = crcTable[(c ^ b) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type: string, data: Buffer) => {
+    const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
+    const out = Buffer.alloc(12 + data.length);
+    out.writeUInt32BE(data.length, 0);
+    body.copy(out, 4);
+    out.writeUInt32BE(crc(body), 8 + data.length);
+    return out;
+  };
+  const bars = [[0.18, [77, 140, 255]], [0.34, [46, 230, 158]], [0.5, [255, 209, 89]], [0.66, [255, 97, 120]]] as const;
+  const raw = Buffer.alloc((width * 3 + 1) * height);
+  for (let y = 0; y < height; y++) {
+    raw[y * (width * 3 + 1)] = 0;
+    for (let x = 0; x < width; x++) {
+      let rgb = [16, 16, 24];
+      for (const [at, color] of bars) {
+        if (Math.abs(y / height - at) < 0.04 && x / width > 0.12 && x / width < 0.12 + 0.76 * (1 - at / 2)) rgb = [...color];
+      }
+      raw.set(rgb, y * (width * 3 + 1) + 1 + x * 3);
+    }
+  }
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header.set([8, 2, 0, 0, 0], 8);
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", header), chunk("IDAT", deflateSync(raw)), chunk("IEND", Buffer.alloc(0)),
+  ]).toString("base64");
+}
+
+export const PNG_SCREENSHOT = makePng(120, 240);
+
 /** The routine the fake coach saves for "Make me a routine…". */
 export const FAKE_ROUTINE = {
   name: "Upper body A",
@@ -536,6 +584,19 @@ function claudeFetch(init: RequestInit): Response {
   }
 
   const results = Array.isArray(last.content) ? (last.content as Row[]).filter((c) => c.type === "tool_result") : [];
+  // Screenshots: image blocks first, then the question.
+  const images = Array.isArray(last.content) ? (last.content as Row[]).filter((c) => c.type === "image") : [];
+  if (images.length && !results.length) {
+    for (const img of images) {
+      const source = img.source as Row;
+      assert.equal(source.type, "base64");
+      assert.match(String(source.media_type), /^image\/(jpeg|png|webp|gif)$/);
+      assert.ok(Buffer.from(String(source.data), "base64").length > 0);
+    }
+    const text = `I can see your screenshot${images.length > 1 ? "s" : ""}: a dark screen with four coloured bars, longest at the top. ` +
+      "If those are your weekly sets per muscle, the top one is doing most of the work.";
+    return sseResponse(message(model, usage1, textEvents(0, text), "end_turn", 60));
+  }
   // "Make me a routine…": the coach saves one with save_routine, then says so.
   if (!results.length && typeof last.content === "string" && last.content.startsWith("Make me a routine")) {
     const input = JSON.stringify(FAKE_ROUTINE);
