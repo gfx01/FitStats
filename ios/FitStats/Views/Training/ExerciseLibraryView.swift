@@ -17,15 +17,21 @@ struct ExerciseLibraryView: View {
         var id: String { title }
     }
 
-    /// Body regions, by an exercise's first main muscle.
-    private static let regions: [(String, Set<String>)] = [
-        ("Chest", ["chest"]),
-        ("Back", ["upper_back", "lats", "lower_back"]),
-        ("Shoulders", ["shoulders"]),
-        ("Arms", ["biceps", "triceps", "forearms"]),
-        ("Legs", ["quads", "hamstrings", "glutes", "adductors", "calves"]),
-        ("Core", ["abs", "obliques"]),
+    /// The library's categories in order; older servers send none, so their exercises are
+    /// grouped by their first main muscle.
+    private static let categories = ["Chest", "Back", "Shoulders", "Arms", "Legs", "Glutes", "Core", "Full body", "Calisthenics", "Cardio", "Sports", "Mobility"]
+    private static let regions: [String: String] = [
+        "chest": "Chest", "upper_back": "Back", "lats": "Back", "lower_back": "Back", "shoulders": "Shoulders",
+        "biceps": "Arms", "triceps": "Arms", "forearms": "Arms", "quads": "Legs", "hamstrings": "Legs", "adductors": "Legs",
+        "calves": "Legs", "glutes": "Glutes", "abs": "Core", "obliques": "Core",
     ]
+
+    private static func category(_ e: LibraryExercise) -> String {
+        if let c = e.category { return c }
+        if e.kind == "cardio" { return "Cardio" }
+        if e.kind == "mobility" { return "Mobility" }
+        return regions[e.primary.first ?? ""] ?? "Full body"
+    }
 
     var body: some View {
         let library = model.library
@@ -79,14 +85,11 @@ struct ExerciseLibraryView: View {
             (muscle == nil || e.primary.contains(muscle!) || e.secondary.contains(muscle!)) &&
                 (typed.isEmpty || ([e.name] + e.aliases).contains { $0.localizedCaseInsensitiveContains(typed) })
         }
-        var out: [ExerciseGroup] = []
-        for (title, members) in Self.regions {
-            let inRegion = matching.filter { $0.kind != "cardio" && members.contains($0.primary.first ?? "") }
-            if !inRegion.isEmpty { out.append(ExerciseGroup(title: title, exercises: inRegion)) }
+        let byCategory = Dictionary(grouping: matching, by: Self.category)
+        let order = Self.categories + byCategory.keys.filter { !Self.categories.contains($0) }.sorted()
+        return order.compactMap { title in
+            byCategory[title].map { ExerciseGroup(title: title, exercises: $0) }
         }
-        let cardio = matching.filter { $0.kind == "cardio" || $0.primary.isEmpty }
-        if !cardio.isEmpty { out.append(ExerciseGroup(title: "Cardio", exercises: cardio)) }
-        return out
     }
 
     private func muscleFilter(_ library: ExerciseLibrary) -> some View {

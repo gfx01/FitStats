@@ -290,7 +290,8 @@ struct ExerciseLibrary: Codable, Equatable {
             for e in log.exercises where e.kind != .cardio {
                 let done = Double(e.doneSets.count)
                 guard done > 0 else { continue }
-                if e.muscles?.isEmpty ?? true, find(e.name)?.kind == "cardio" { continue }
+                // Cardio, sports and stretches aren't sets of an exercise.
+                if e.muscles?.isEmpty ?? true, let kind = find(e.name)?.kind, kind == "cardio" || kind == "mobility" { continue }
                 let m = muscles(for: e.name, chosen: e.muscles)
                 for id in m.primary { out[id, default: 0] += done }
                 for id in m.secondary { out[id, default: 0] += done * 0.5 }
@@ -303,6 +304,7 @@ struct ExerciseLibrary: Codable, Equatable {
     func sets(in routine: Routine) -> [String: Double] {
         var out: [String: Double] = [:]
         for e in routine.exercises where e.kind != .cardio {
+            if e.muscles?.isEmpty ?? true, let kind = find(e.name)?.kind, kind == "cardio" || kind == "mobility" { continue }
             let planned = Double(e.sets ?? 1)
             let m = muscles(for: e.name, chosen: e.muscles)
             for id in m.primary { out[id, default: 0] += planned }
@@ -323,6 +325,8 @@ struct LibraryExercise: Codable, Equatable, Identifiable, Hashable {
     let name: String
     let aliases: [String]
     let kind: String
+    /// Chest, Back, …, Cardio, Sports, Mobility; missing from servers before the bigger library.
+    let category: String?
     let equipment: String
     let primary: [String]
     let secondary: [String]
