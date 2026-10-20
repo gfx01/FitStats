@@ -35,6 +35,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var workoutLogs: [WorkoutLog] = []
     /// The band's workouts of the last 120 days, for the Training tab's history.
     @Published private(set) var bandWorkouts: [Exercise] = []
+    /// Which muscles exercises work (with the training data from server 1.8.0).
+    @Published private(set) var library = ExerciseLibrary.empty
     @Published var trainingError: String?
     /// Text for the Coach's message field, from an "Ask coach" button elsewhere in the app.
     @Published var coachDraft: String?
@@ -459,6 +461,7 @@ final class AppModel: ObservableObject {
         routines = response.routines
         workoutLogs = response.logs
         bandWorkouts = response.bandWorkouts
+        if let l = response.library { library = l }
     }
 
     func refreshTraining() async {

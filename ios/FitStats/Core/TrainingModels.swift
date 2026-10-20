@@ -48,9 +48,11 @@ struct RoutineExercise: Codable, Equatable, Identifiable {
     var distanceKm: Double?
     var restS: Int?
     var notes: String?
+    /// Muscles chosen for an exercise the library doesn't know (nil: the library's).
+    var muscles: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case name, kind, sets, reps, notes
+        case name, kind, sets, reps, notes, muscles
         case weightKg = "weight_kg"
         case durationMin = "duration_min"
         case distanceKm = "distance_km"
@@ -152,9 +154,11 @@ struct LoggedExercise: Codable, Equatable, Identifiable {
     var kind: ExerciseKind = .strength
     var sets: [LoggedSet]
     var notes: String?
+    /// As RoutineExercise.muscles.
+    var muscles: [String]? = nil
 
     enum CodingKeys: String, CodingKey {
-        case name, kind, sets, notes
+        case name, kind, sets, notes, muscles
     }
 
     var doneSets: [LoggedSet] { sets.filter(\.done) }
@@ -212,7 +216,7 @@ struct WorkoutLog: Codable, Equatable, Identifiable, Hashable {
                           weightKg: e.kind.timed ? nil : e.weightKg ?? last?[safe: i]?.weightKg,
                           durationMin: e.durationMin, distanceKm: e.distanceKm)
             }
-            return LoggedExercise(name: e.name, kind: e.kind, sets: sets, notes: nil)
+            return LoggedExercise(name: e.name, kind: e.kind, sets: sets, notes: nil, muscles: e.muscles)
         }
         return WorkoutLog(id: "", date: date, startedAt: Format.isoNow(), endedAt: nil, routineId: routine?.id,
                           name: routine?.name ?? "Workout", exercises: exercises, notes: nil, effort: nil)
@@ -233,11 +237,98 @@ struct TrainingResponse: Codable {
     let routines: [Routine]
     let logs: [WorkoutLog]
     let bandWorkouts: [Exercise]
+    /// Missing from servers before 1.8.0.
+    let library: ExerciseLibrary?
 
     enum CodingKeys: String, CodingKey {
-        case routines, logs
+        case routines, logs, library
         case bandWorkouts = "band_workouts"
     }
+}
+
+// MARK: - Exercise library
+
+/// Which muscles common exercises work, from the server (lib/exercises.ts). `primary` muscles
+/// do most of the work, `secondary` ones help.
+struct ExerciseLibrary: Codable, Equatable {
+    let muscles: [MuscleInfo]
+    let exercises: [LibraryExercise]
+
+    static let empty = ExerciseLibrary(muscles: [], exercises: [])
+
+    func label(_ muscle: String) -> String {
+        muscles.first { $0.id == muscle }?.label ?? muscle.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+
+    /// "Pull-up", "pull up" and "Pullups" are the same exercise (as the server's
+    /// normalizeExerciseName).
+    static func normalize(_ name: String) -> String {
+        name.lowercased().filter { $0.isASCII && ($0.isLetter || $0.isNumber) }
+    }
+
+    func find(_ name: String) -> LibraryExercise? {
+        let n = Self.normalize(name)
+        guard !n.isEmpty else { return nil }
+        func matches(_ key: String) -> LibraryExercise? {
+            exercises.first { e in ([e.name] + e.aliases).contains { Self.normalize($0) == key } }
+        }
+        return matches(n) ?? (n.hasSuffix("s") ? matches(String(n.dropLast())) : nil)
+    }
+
+    /// What an exercise works: the muscles chosen for it, or the library's.
+    func muscles(for name: String, chosen: [String]?) -> (primary: [String], secondary: [String]) {
+        if let chosen, !chosen.isEmpty { return (chosen, []) }
+        guard let e = find(name) else { return ([], []) }
+        return (e.primary, e.secondary)
+    }
+
+    /// Done sets per muscle: 1 for each primary muscle, ½ for each secondary one. Cardio isn't
+    /// counted (a run isn't a set). The same rule as the server's muscleSets.
+    func sets(in logs: [WorkoutLog]) -> [String: Double] {
+        var out: [String: Double] = [:]
+        for log in logs {
+            for e in log.exercises where e.kind != .cardio {
+                let done = Double(e.doneSets.count)
+                guard done > 0 else { continue }
+                if e.muscles?.isEmpty ?? true, find(e.name)?.kind == "cardio" { continue }
+                let m = muscles(for: e.name, chosen: e.muscles)
+                for id in m.primary { out[id, default: 0] += done }
+                for id in m.secondary { out[id, default: 0] += done * 0.5 }
+            }
+        }
+        return out
+    }
+
+    /// The muscles a routine works, weighted by its planned sets (as `sets(in:)`).
+    func sets(in routine: Routine) -> [String: Double] {
+        var out: [String: Double] = [:]
+        for e in routine.exercises where e.kind != .cardio {
+            let planned = Double(e.sets ?? 1)
+            let m = muscles(for: e.name, chosen: e.muscles)
+            for id in m.primary { out[id, default: 0] += planned }
+            for id in m.secondary { out[id, default: 0] += planned * 0.5 }
+        }
+        return out
+    }
+}
+
+struct MuscleInfo: Codable, Equatable, Identifiable, Hashable {
+    let id: String
+    let label: String
+    /// front, back or both: where the body map draws it.
+    let side: String
+}
+
+struct LibraryExercise: Codable, Equatable, Identifiable, Hashable {
+    let name: String
+    let aliases: [String]
+    let kind: String
+    let equipment: String
+    let primary: [String]
+    let secondary: [String]
+
+    var id: String { name }
+    var exerciseKind: ExerciseKind { ExerciseKind(rawValue: kind) ?? .other }
 }
 
 extension Array {

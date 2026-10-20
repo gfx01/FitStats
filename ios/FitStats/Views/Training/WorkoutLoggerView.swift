@@ -92,17 +92,18 @@ struct WorkoutLoggerView: View {
             }
         }
         .sheet(isPresented: $addingExercise) {
-            AddLoggedExerciseSheet { name, kind in
-                let last = WorkoutLog.lastSets(of: name, in: model.workoutLogs)
-                let count = kind.timed ? 1 : max(1, last?.count ?? 3)
-                let sets = (0..<count).map { i in
-                    LoggedSet(reps: last?[safe: i]?.reps, weightKg: last?[safe: i]?.weightKg,
-                              durationMin: last?[safe: i]?.durationMin, distanceKm: last?[safe: i]?.distanceKm)
+            NavigationStack {
+                ExerciseLibraryView { name, kind in
+                    let last = WorkoutLog.lastSets(of: name, in: model.workoutLogs)
+                    let count = kind.timed ? 1 : max(1, last?.count ?? 3)
+                    let sets = (0..<count).map { i in
+                        LoggedSet(reps: last?[safe: i]?.reps, weightKg: last?[safe: i]?.weightKg,
+                                  durationMin: last?[safe: i]?.durationMin, distanceKm: last?[safe: i]?.distanceKm)
+                    }
+                    log.wrappedValue.exercises.append(LoggedExercise(name: name, kind: kind, sets: sets, notes: nil))
                 }
-                log.wrappedValue.exercises.append(LoggedExercise(name: name, kind: kind, sets: sets, notes: nil))
             }
             .environmentObject(model)
-            .presentationDetents([.medium, .large])
         }
         .sheet(isPresented: $finishing) {
             FinishWorkoutSheet(log: log)
@@ -283,66 +284,6 @@ private struct SetRow: View {
             .padding(.vertical, 7)
             .frame(maxWidth: .infinity)
             .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.white.opacity(0.07)))
-    }
-}
-
-/// Picks an exercise to add: one done before, or a new name.
-private struct AddLoggedExerciseSheet: View {
-    let add: (String, ExerciseKind) -> Void
-    @EnvironmentObject private var model: AppModel
-    @Environment(\.dismiss) private var dismiss
-    @State private var name = ""
-    @State private var kind: ExerciseKind = .strength
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    TextField("Exercise, like Bench press", text: $name)
-                        .focused($focused)
-                        .autocorrectionDisabled()
-                        .submitLabel(.done)
-                        .onSubmit(addIt)
-                        .accessibilityIdentifier("add-exercise-name")
-                    ExerciseNameSuggestions(typed: name, names: knownExerciseNames(model)) { picked in
-                        name = picked
-                        kind = kindUsedBefore(picked) ?? kind
-                    }
-                    Picker("Type", selection: $kind) {
-                        ForEach(ExerciseKind.allCases) { Text($0.label).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                } footer: {
-                    Text("Use the same name as before to see last time's sets and follow your progress.")
-                }
-            }
-            .scrollContentBackground(.hidden)
-            .background(Theme.background.ignoresSafeArea())
-            .navigationTitle("Add exercise")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Add", action: addIt)
-                        .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
-                        .accessibilityIdentifier("add-exercise-confirm")
-                }
-            }
-            .onAppear { focused = true }
-        }
-    }
-
-    private func kindUsedBefore(_ name: String) -> ExerciseKind? {
-        let all = model.workoutLogs.flatMap { $0.exercises.map { ($0.name, $0.kind) } } + model.routines.flatMap { $0.exercises.map { ($0.name, $0.kind) } }
-        return all.first { $0.0.caseInsensitiveCompare(name) == .orderedSame }?.1
-    }
-
-    private func addIt() {
-        let n = name.trimmingCharacters(in: .whitespaces)
-        guard !n.isEmpty else { return }
-        add(n, kind)
-        dismiss()
     }
 }
 

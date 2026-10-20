@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftUI
 import UIKit
 
@@ -15,6 +16,11 @@ struct CoachView: View {
     @FocusState var inputFocused: Bool
     /// The text field and send button on screen: tapping anywhere else hides the keyboard.
     @State private var composerFrame: CGRect = .zero
+    @State private var choosingCoach = false
+    /// Screenshots to send with the next message.
+    @State private var attachments: [CoachImageUpload] = []
+    @State private var pickedItems: [PhotosPickerItem] = []
+    @State private var loadingImages = false
 
     private let bottomID = "coach-bottom"
 
@@ -61,6 +67,17 @@ struct CoachView: View {
                         .accessibilityLabel("Conversations")
                         .accessibilityIdentifier("coach-history")
                 }
+                ToolbarItem(placement: .principal) {
+                    Button { choosingCoach = true } label: {
+                        HStack(spacing: 6) {
+                            CoachCharacter(persona: coach.persona, size: 24, thinking: coach.isSending)
+                            Text(coach.persona.name).font(.headline).foregroundStyle(.white)
+                            Image(systemName: "chevron.down").font(.caption2.weight(.bold)).foregroundStyle(Theme.tertiary)
+                        }
+                    }
+                    .accessibilityLabel("Coach: \(coach.persona.name). Switch coach")
+                    .accessibilityIdentifier("coach-switch-bar")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { coach.newChat() } label: { Image(systemName: "square.and.pencil") }
                         .accessibilityLabel("New conversation")
@@ -68,6 +85,11 @@ struct CoachView: View {
                 }
             }
             .sheet(isPresented: $showHistory) { CoachHistoryView() }
+            .sheet(isPresented: $choosingCoach) { CoachPickerView() }
+            .onChange(of: pickedItems) { _, items in
+                guard !items.isEmpty else { return }
+                Task { await loadPicked(items) }
+            }
             .task { await coach.refresh() }
             .onAppear(perform: takeDraft)
             .onChange(of: model.coachDraft) { _, _ in takeDraft() }
@@ -89,15 +111,33 @@ struct CoachView: View {
     // MARK: home
 
     @ViewBuilder private var home: some View {
-        VStack(spacing: 8) {
-            CoachAvatar(size: 54)
-            Text("Your coach").font(.title3.bold())
-            Text("Ask about your recovery, sleep, training or trends. Every answer is based on your own data.")
+        VStack(spacing: 6) {
+            // Not a button: a tap here only hides the keyboard (see the Coach UI test).
+            CoachCharacter(persona: coach.persona, size: 92)
+                .padding(.bottom, 2)
+            Text(coach.persona.name).font(.title2.bold())
+            Text(coach.persona.tagline.uppercased())
+                .font(.caption.weight(.semibold))
+                .tracking(1.2)
+                .foregroundStyle(coach.persona.color)
+            Text(coach.persona.summary)
                 .font(.subheadline)
                 .foregroundStyle(Theme.secondary)
                 .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            Button { choosingCoach = true } label: {
+                Label("Switch coach", systemImage: "arrow.left.arrow.right")
+                    .font(.footnote.weight(.semibold))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 7)
+                    .background(Capsule().fill(coach.persona.color.opacity(0.16)))
+                    .foregroundStyle(coach.persona.color)
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 4)
+            .accessibilityIdentifier("coach-switch")
         }
-        .padding(.top, 12)
+        .padding(.top, 8)
         .padding(.bottom, 4)
 
         if let status = coach.status, !status.configured {
@@ -110,7 +150,7 @@ struct CoachView: View {
                     ForEach(Self.suggestions) { s in
                         Button { coach.send(s.text) } label: {
                             VStack(alignment: .leading, spacing: 8) {
-                                Image(systemName: s.icon).font(.subheadline).foregroundStyle(Theme.sleep)
+                                Image(systemName: s.icon).font(.subheadline).foregroundStyle(coach.persona.color)
                                 Text(s.text)
                                     .font(.footnote.weight(.medium))
                                     .foregroundStyle(.white)
@@ -135,7 +175,7 @@ struct CoachView: View {
         if let error = coach.error {
             Banner(icon: "exclamationmark.triangle.fill", text: error, color: Theme.recoveryYellow, actionTitle: "OK") { coach.error = nil }
         }
-        Text("The coach uses Claude by Anthropic: your question and a summary of your FitStats data are sent to Anthropic's API to answer it. It's an AI coach, not medical advice.")
+        Text("The coach uses Claude by Anthropic: your question, any screenshots you attach and a summary of your FitStats data are sent to Anthropic's API to answer it. Only small previews of screenshots are kept. It's an AI coach, not medical advice.")
             .font(.caption2)
             .foregroundStyle(Theme.tertiary)
             .multilineTextAlignment(.center)
@@ -157,12 +197,12 @@ struct CoachView: View {
 
     @ViewBuilder private var conversation: some View {
         ForEach(coach.messages) { message in
-            MessageRow(message: message)
+            MessageRow(message: message, current: coach.persona)
         }
         if coach.isSending {
             if coach.streamingText.isEmpty {
                 HStack(alignment: .top, spacing: 10) {
-                    CoachAvatar(size: 28)
+                    CoachCharacter(persona: coach.persona, size: 32, thinking: true)
                     HStack(spacing: 8) {
                         TypingDots()
                         Text(coach.toolStatus ?? "Thinking…")
@@ -176,7 +216,8 @@ struct CoachView: View {
                     Spacer(minLength: 24)
                 }
             } else {
-                MessageRow(message: CoachMessage(id: "streaming", role: "assistant", content: coach.streamingText, createdAt: nil), streaming: true)
+                MessageRow(message: CoachMessage(id: "streaming", role: "assistant", content: coach.streamingText, createdAt: nil, persona: coach.persona.rawValue),
+                           current: coach.persona, streaming: true)
             }
         }
         if let error = coach.error {
@@ -195,27 +236,71 @@ struct CoachView: View {
         }
     }
 
+    private var canSend: Bool {
+        coach.isConfigured && !coach.isSending && !loadingImages
+            && (!input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty)
+    }
+
     private var composer: some View {
-        let canSend = coach.isConfigured && !coach.isSending && !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return HStack(alignment: .bottom, spacing: 10) {
-            TextField(coach.isConfigured ? "Ask your coach…" : "Coach isn't set up yet", text: $input, axis: .vertical)
-                .lineLimit(1...5)
-                .focused($inputFocused)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Color.white.opacity(0.08)))
-                .disabled(!coach.isConfigured)
-                .accessibilityIdentifier("coach-input")
-            Button {
-                coach.send(input)
-                input = ""
-            } label: {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.system(size: 34))
-                    .foregroundStyle(canSend ? Theme.recoveryGreen : Color.white.opacity(0.2))
+        VStack(spacing: 8) {
+            if !attachments.isEmpty || loadingImages {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(attachments) { a in
+                            Image(uiImage: a.preview)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 54, height: 72)
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                .overlay(alignment: .topTrailing) {
+                                    Button { attachments.removeAll { $0.id == a.id } } label: {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .font(.system(size: 18))
+                                            .symbolRenderingMode(.palette)
+                                            .foregroundStyle(.white, Color.black.opacity(0.7))
+                                    }
+                                    .offset(x: 6, y: -6)
+                                    .accessibilityLabel("Remove screenshot")
+                                }
+                        }
+                        if loadingImages { ProgressView().frame(width: 54, height: 72) }
+                    }
+                    .padding(.top, 6)
+                    .padding(.horizontal, 2)
+                }
+                .accessibilityIdentifier("coach-attachment-strip")
             }
-            .disabled(!canSend)
-            .accessibilityLabel("Send")
+            HStack(alignment: .bottom, spacing: 8) {
+                PhotosPicker(selection: $pickedItems, maxSelectionCount: max(1, 3 - attachments.count), matching: .images) {
+                    Image(systemName: "photo.badge.plus")
+                        .font(.system(size: 21, weight: .medium))
+                        .foregroundStyle(attachments.count < 3 && coach.isConfigured ? coach.persona.color : Color.white.opacity(0.2))
+                        .frame(width: 34, height: 40)
+                }
+                .disabled(!coach.isConfigured || coach.isSending || attachments.count >= 3)
+                .accessibilityLabel("Attach screenshots")
+                .accessibilityIdentifier("coach-attach")
+                TextField(coach.isConfigured ? "Ask \(coach.persona.name)…" : "Coach isn't set up yet", text: $input, axis: .vertical)
+                    .lineLimit(1...5)
+                    .focused($inputFocused)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Color.white.opacity(0.08)))
+                    .disabled(!coach.isConfigured)
+                    .accessibilityIdentifier("coach-input")
+                Button {
+                    coach.send(input, images: attachments)
+                    input = ""
+                    attachments = []
+                } label: {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 34))
+                        .foregroundStyle(canSend ? coach.persona.color : Color.white.opacity(0.2))
+                }
+                .disabled(!canSend)
+                .accessibilityLabel("Send")
+                .accessibilityIdentifier("coach-send")
+            }
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)
@@ -229,52 +314,62 @@ struct CoachView: View {
             }
         }
     }
+
+    /// Picked photos, scaled down for sending (at most three).
+    private func loadPicked(_ items: [PhotosPickerItem]) async {
+        loadingImages = true
+        defer {
+            loadingImages = false
+            pickedItems = []
+        }
+        for item in items where attachments.count < 3 {
+            if let data = try? await item.loadTransferable(type: Data.self), let upload = CoachImageUpload(imageData: data) {
+                attachments.append(upload)
+            }
+        }
+    }
 }
 
 // MARK: - Pieces
 
-struct CoachAvatar: View {
-    var size: CGFloat
-
-    var body: some View {
-        Image(systemName: "sparkles")
-            .font(.system(size: size * 0.46, weight: .semibold))
-            .foregroundStyle(.white)
-            .frame(width: size, height: size)
-            .background(
-                Circle().fill(LinearGradient(colors: [Theme.sleep, Theme.strain], startPoint: .topLeading, endPoint: .bottomTrailing))
-            )
-            .shadow(color: Theme.sleep.opacity(0.35), radius: size * 0.18)
-    }
-}
-
 private struct MessageRow: View {
     let message: CoachMessage
+    /// The coach chosen now, for replies that don't say who wrote them.
+    let current: CoachPersona
     var streaming = false
 
     var body: some View {
         if message.isUser {
-            HStack {
-                Spacer(minLength: 48)
-                Text(message.content)
-                    .font(.subheadline)
-                    .padding(.vertical, 10)
-                    .padding(.horizontal, 14)
-                    .background(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .fill(LinearGradient(colors: [Theme.strain.opacity(0.55), Theme.strainEnd.opacity(0.45)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                    )
-                    .textSelection(.enabled)
+            VStack(alignment: .trailing, spacing: 6) {
+                if let attachments = message.attachments, !attachments.isEmpty {
+                    AttachmentThumbs(attachments: attachments)
+                }
+                if !message.content.isEmpty {
+                    Text(message.content)
+                        .font(.subheadline)
+                        .padding(.vertical, 10)
+                        .padding(.horizontal, 14)
+                        .background(
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .fill(LinearGradient(colors: [Theme.strain.opacity(0.55), Theme.strainEnd.opacity(0.45)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        )
+                        .textSelection(.enabled)
+                }
             }
+            .padding(.leading, 48)
+            .frame(maxWidth: .infinity, alignment: .trailing)
         } else {
+            let persona = message.coach ?? current
             HStack(alignment: .top, spacing: 10) {
-                CoachAvatar(size: 28)
+                // Only the reply being written moves; the rest stay still.
+                CoachCharacter(persona: persona, size: 32, thinking: false, animated: streaming)
                 CoachMarkdown(text: message.content)
                     .font(.subheadline)
                     .padding(.vertical, 12)
                     .padding(.horizontal, 14)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Theme.card))
+                    .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(persona.color.opacity(0.22), lineWidth: 1))
                     .overlay(alignment: .bottomTrailing) {
                         if streaming { TypingDots().padding(8) }
                     }

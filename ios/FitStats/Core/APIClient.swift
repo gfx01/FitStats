@@ -27,6 +27,12 @@ enum APIError: LocalizedError {
 }
 
 extension Error {
+    /// The server no longer accepts the app key.
+    var isUnauthorized: Bool {
+        if case .unauthorized? = self as? APIError { return true }
+        return false
+    }
+
     /// The app abandoned the request itself: a screen closed, a newer load replaced it, or a
     /// pull to refresh ended. Nothing failed, so it is never shown as an error.
     var isCancellation: Bool {

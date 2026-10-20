@@ -684,11 +684,25 @@ final class ScreenshotTests: XCTestCase {
         }
         name.tap()
         name.typeText("Push day")
+        // Add exercise opens the library: find Dips, then its targets.
         app.buttons["routine-add-exercise"].tap()
+        let search = app.searchFields.firstMatch
+        if search.waitForExistence(timeout: 5) {
+            search.tap()
+            search.typeText("Dips")
+            let dips = app.buttons["library-Dips"]
+            if dips.waitForExistence(timeout: 5) {
+                shot("100-exercise-picker")
+                dips.tap()
+            } else {
+                XCTFail("Dips is not in the library search")
+            }
+        } else {
+            XCTFail("the exercise library did not open")
+        }
         let exercise = app.textFields["exercise-name"]
         if exercise.waitForExistence(timeout: 5) {
-            exercise.tap()
-            exercise.typeText("Dips")
+            XCTAssertEqual(exercise.value as? String, "Dips")
             shot("100-exercise-editor")
             // The sheet's own back button (the Training screen's bar is still there under the sheet).
             app.navigationBars["Dips"].buttons.element(boundBy: 0).tap()
@@ -708,6 +722,99 @@ final class ScreenshotTests: XCTestCase {
         sleep(1)
         shot("102-ask-coach")
         XCTAssertTrue((input.value as? String ?? "").hasPrefix("Make me a routine"), "the question is not in the Coach's field: \(input.value ?? "nil")")
+        app.terminate()
+    }
+
+    /// The three coaches and their picker, a screenshot in a conversation, the muscles card,
+    /// the exercise library and an exercise's page, and a routine's muscles.
+    func test08CoachesAndMuscles() {
+        let fixtures = ProcessInfo.processInfo.environment["FITSTATS_FIXTURES"] ?? ""
+        XCTAssertFalse(fixtures.isEmpty, "FITSTATS_FIXTURES is not set")
+        let app = XCUIApplication()
+        app.launchEnvironment["FITSTATS_FIXTURES"] = fixtures
+        app.launch()
+        XCTAssertTrue(app.buttons["ring-recovery"].waitForExistence(timeout: 15), "Today screen did not load")
+
+        app.tabBars.buttons["Coach"].tap()
+        let switchCoach = app.buttons["coach-switch"]
+        guard switchCoach.waitForExistence(timeout: 5) else {
+            XCTFail("missing coach-switch")
+            return
+        }
+        switchCoach.tap()
+        let ace = app.buttons["coach-pick-ace"]
+        if ace.waitForExistence(timeout: 5) {
+            shot("103-coach-picker")
+            ace.tap()
+            XCTAssertTrue(app.staticTexts["Ace"].waitForExistence(timeout: 5), "picking Ace didn't change the coach")
+            shot("104-coach-ace")
+            switchCoach.tap()
+            let kai = app.buttons["coach-pick-kai"]
+            if kai.waitForExistence(timeout: 5) {
+                kai.tap()
+                XCTAssertTrue(app.staticTexts["Kai"].waitForExistence(timeout: 5))
+                shot("105-coach-kai")
+            }
+            // Back to Nova for the other tests.
+            switchCoach.tap()
+            if app.buttons["coach-pick-nova"].waitForExistence(timeout: 5) { app.buttons["coach-pick-nova"].tap() }
+        } else {
+            XCTFail("the coach picker did not open")
+        }
+
+        // The fixture conversation has a screenshot in it.
+        app.buttons["coach-history"].tap()
+        let thread = app.buttons["coach-thread"].firstMatch
+        if thread.waitForExistence(timeout: 5) {
+            thread.tap()
+            let thumbs = element(app, "coach-attachments")
+            XCTAssertTrue(thumbs.waitForExistence(timeout: 5), "the screenshot isn't in the conversation")
+            scrollTo(app, thumbs)
+            shot("106-coach-screenshot")
+            app.buttons["New conversation"].tap()
+        } else {
+            XCTFail("no coach conversation in the history sheet")
+        }
+
+        // Training: muscles of the last 7 days, the library, an exercise.
+        app.tabBars.buttons["Training"].tap()
+        let card = element(app, "muscles-week")
+        guard card.waitForExistence(timeout: 5) else {
+            XCTFail("missing the muscles card")
+            return
+        }
+        reveal(app, card)
+        shot("107-muscles-week")
+        let library = app.buttons["training-library"]
+        if library.exists {
+            library.tap()
+            let squat = app.buttons["library-Squat"]
+            if squat.waitForExistence(timeout: 5) {
+                shot("108-library")
+                squat.tap()
+                XCTAssertTrue(element(app, "body-map").waitForExistence(timeout: 5))
+                shot("109-exercise-squat")
+                app.swipeUp()
+                shot("110-exercise-squat-2")
+                back(app)
+            } else {
+                XCTFail("Squat is not in the library")
+            }
+            back(app)
+        } else {
+            XCTFail("missing the library link")
+        }
+        for _ in 0..<6 { app.swipeDown() }
+        let legs = app.buttons["routine-Legs"]
+        scrollTo(app, legs)
+        legs.tap()
+        let muscles = element(app, "workout-muscles")
+        if muscles.waitForExistence(timeout: 5) {
+            reveal(app, muscles)
+            shot("111-routine-muscles")
+        } else {
+            XCTFail("the routine has no muscles card")
+        }
         app.terminate()
     }
 

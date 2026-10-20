@@ -17,6 +17,7 @@ struct WorkoutLogDetailView: View {
                     header(log)
                     totals(log)
                     if let band = bandMatch(log) { bandCard(band) }
+                    WorkoutMusclesCard(title: "Muscles worked", sets: model.library.sets(in: [log]), library: model.library)
                     ForEach(log.exercises) { exerciseCard($0) }
                     if let notes = log.notes, !notes.isEmpty {
                         Card {

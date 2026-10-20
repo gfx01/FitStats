@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 /// Coach conversations, the daily briefing and model/usage info. Replies stream in
 /// from the server, which holds the Claude API key and looks up your data.
@@ -13,6 +14,10 @@ final class CoachStore: ObservableObject {
     @Published private(set) var isSending = false
     @Published private(set) var failedQuestion: String?
     @Published var error: String?
+    /// The coach you talk to (Coach → switch coach); kept on the phone.
+    @Published var persona: CoachPersona = .saved {
+        didSet { UserDefaults.standard.set(persona.rawValue, forKey: CoachPersona.storageKey) }
+    }
 
     @Published private(set) var brief: CoachBrief?
     @Published private(set) var briefStreaming = ""
@@ -27,6 +32,8 @@ final class CoachStore: ObservableObject {
     private var fixtureDir: URL?
     private var fixtureMessages: [CoachMessage] = []
     private var sendTask: Task<Void, Never>?
+    /// The screenshots of the question that failed, sent again with "Try again".
+    private var failedImages: [CoachImageUpload] = []
 
     var isConfigured: Bool { status?.configured ?? false }
 
@@ -118,40 +125,57 @@ final class CoachStore: ObservableObject {
         }
     }
 
-    func send(_ text: String) {
+    func send(_ text: String, images: [CoachImageUpload] = []) {
         let question = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !question.isEmpty, !isSending else { return }
+        guard !question.isEmpty || !images.isEmpty, !isSending else { return }
         error = nil
         failedQuestion = nil
-        messages.append(CoachMessage(id: "local-\(UUID().uuidString)", role: "user", content: question, createdAt: nil))
+        failedImages = []
+        messages.append(CoachMessage(id: "local-\(UUID().uuidString)", role: "user", content: question, createdAt: nil,
+                                     attachments: images.isEmpty ? nil : images.map(\.attachment)))
         streamingText = ""
         toolStatus = nil
         isSending = true
         let thread = threadId
-        sendTask = Task { await stream(question, thread: thread) }
+        sendTask = Task { await stream(question, images: images, thread: thread) }
     }
 
     func retry() {
         guard let question = failedQuestion else { return }
+        let images = failedImages
         if let i = messages.lastIndex(where: { $0.isUser && $0.content == question }) {
             messages.removeSubrange(i...)
         }
         failedQuestion = nil
-        send(question)
+        send(question, images: images)
     }
 
-    private func stream(_ question: String, thread: String?) async {
+    private func stream(_ question: String, images: [CoachImageUpload], thread: String?) async {
         defer {
             isSending = false
             toolStatus = nil
         }
         guard fixtureDir == nil, let api = apiProvider() else { return }
-        var body = ["message": question]
+        // A little time to finish if the app is left mid-answer; past that the server finishes
+        // the answer on its own and it is read from the thread when the app is back.
+        let background = BackgroundTime("coach-answer")
+        defer { background.end() }
+        var body: [String: Any] = ["message": question, "persona": persona.rawValue]
         if let thread { body["thread_id"] = thread }
+        if !images.isEmpty {
+            body["images"] = images.map { ["media_type": "image/jpeg", "data": $0.data, "thumb": $0.thumb] }
+        }
+        var started: (thread: String, question: String)?
+        var finished = false
         do {
-            let data = try JSONEncoder().encode(body)
+            let data = try JSONSerialization.data(withJSONObject: body)
             for try await event in api.events("coach", body: data) {
                 switch event.type {
+                case "started":
+                    if let t = event.threadId, let q = event.messageId {
+                        started = (thread: t, question: q)
+                        threadId = t
+                    }
                 case "status":
                     toolStatus = event.text
                 case "text":
@@ -160,8 +184,10 @@ final class CoachStore: ObservableObject {
                 case "changed":
                     onTrainingChanged()
                 case "done":
+                    finished = true
                     let reply = streamingText.trimmingCharacters(in: .whitespacesAndNewlines)
-                    messages.append(CoachMessage(id: event.messageId ?? UUID().uuidString, role: "assistant", content: reply, createdAt: nil))
+                    messages.append(CoachMessage(id: event.messageId ?? UUID().uuidString, role: "assistant", content: reply, createdAt: nil,
+                                                 persona: event.persona ?? persona.rawValue))
                     streamingText = ""
                     if let id = event.threadId { threadId = id }
                     await refreshStatusAndThreads()
@@ -171,17 +197,68 @@ final class CoachStore: ObservableObject {
                     break
                 }
             }
-        } catch let e where e.isCancellation {
-            streamingText = ""
-        } catch {
-            // Keep whatever arrived; the question can be sent again (nothing was saved).
-            if !streamingText.isEmpty {
-                messages.append(CoachMessage(id: UUID().uuidString, role: "assistant", content: streamingText + "\n\n_(interrupted)_", createdAt: nil))
-                streamingText = ""
+            if !finished, let started {
+                // The connection ended before the answer did: the server is still on it.
+                await pickUp(started, question: question, images: images)
             }
-            failedQuestion = question
-            handle(error)
+        } catch let e as CoachFailure {
+            // The server said the answer failed; it kept nothing, so it can be sent again.
+            fail(question, images: images, e)
+        } catch {
+            if Task.isCancelled {
+                // A new conversation was started: drop this one.
+                streamingText = ""
+            } else if let started, !error.isUnauthorized {
+                // Backgrounded or the network dropped: the server finishes and saves the answer.
+                await pickUp(started, question: question, images: images)
+            } else {
+                fail(question, images: images, error)
+            }
         }
+    }
+
+    /// Waits for an answer the server is finishing after the connection was lost, reading the
+    /// thread every few seconds (for up to three minutes, also after the app was in the
+    /// background). The answer replaces the partial text; a failed one can be sent again.
+    private func pickUp(_ started: (thread: String, question: String), question: String, images: [CoachImageUpload]) async {
+        toolStatus = "Finishing your answer…"
+        let deadline = Date().addingTimeInterval(180)
+        while Date() < deadline, !Task.isCancelled {
+            guard let api = apiProvider() else { break }
+            do {
+                let thread = try await api.fetch(CoachThreadResponse.self, "coach_thread", query: ["id": started.thread]).0
+                guard let q = thread.messages.firstIndex(where: { $0.id == started.question }) else {
+                    // The question was taken back: the answer failed.
+                    return fail(question, images: images, CoachFailure(message: "The coach couldn't finish that answer."))
+                }
+                if thread.messages[q...].contains(where: { !$0.isUser }) {
+                    messages = thread.messages
+                    streamingText = ""
+                    await refreshStatusAndThreads()
+                    return
+                }
+            } catch APIError.server(404, _) {
+                return fail(question, images: images, CoachFailure(message: "The coach couldn't finish that answer."))
+            } catch {
+                // Offline for now, or still waking up from the background: try again.
+            }
+            try? await Task.sleep(for: .seconds(2.5))
+        }
+        if !Task.isCancelled {
+            fail(question, images: images, CoachFailure(message: "The answer is taking too long. Open the conversation again in a minute, or try again."))
+        }
+    }
+
+    private func fail(_ question: String, images: [CoachImageUpload], _ error: Error) {
+        // Keep whatever arrived, marked as cut off; the question can be sent again.
+        if !streamingText.isEmpty {
+            messages.append(CoachMessage(id: UUID().uuidString, role: "assistant", content: streamingText + "\n\n_(interrupted)_", createdAt: nil,
+                                         persona: persona.rawValue))
+            streamingText = ""
+        }
+        failedQuestion = question
+        failedImages = images
+        handle(error.isCancellation ? CoachFailure(message: "The connection was interrupted. Try again.") : error)
     }
 
     // MARK: briefing
@@ -193,8 +270,11 @@ final class CoachStore: ObservableObject {
         isBriefing = true
         briefStreaming = ""
         briefError = nil
+        let before = brief?.createdAt
         Task {
             defer { isBriefing = false }
+            let background = BackgroundTime("coach-brief")
+            defer { background.end() }
             do {
                 for try await event in api.events("coach", body: Data(#"{"kind":"brief"}"#.utf8)) {
                     switch event.type {
@@ -210,14 +290,31 @@ final class CoachStore: ObservableObject {
                         break
                     }
                 }
-            } catch let e where e.isCancellation {
+            } catch let e as CoachFailure {
                 briefStreaming = ""
+                briefError = e.localizedDescription
             } catch {
                 briefStreaming = ""
-                if case APIError.unauthorized = error { onUnauthorized() }
-                briefError = error.localizedDescription
+                if error.isUnauthorized {
+                    onUnauthorized()
+                } else if !(await pickUpBrief(newerThan: before)) {
+                    briefError = error.isCancellation ? "The connection was interrupted. Try again." : error.localizedDescription
+                }
             }
         }
+    }
+
+    /// The server finishes a briefing the app stopped listening to; read it once it's saved.
+    private func pickUpBrief(newerThan before: String?) async -> Bool {
+        let deadline = Date().addingTimeInterval(120)
+        while Date() < deadline {
+            if let api = apiProvider(), let b = try? await api.fetch(CoachBriefResponse.self, "coach_brief").0.brief, b.createdAt != before {
+                brief = b
+                return true
+            }
+            try? await Task.sleep(for: .seconds(2.5))
+        }
+        return false
     }
 
     // MARK: settings
@@ -240,5 +337,25 @@ final class CoachStore: ObservableObject {
         } else {
             self.error = error.localizedDescription
         }
+    }
+}
+
+/// Extra time from iOS to finish a request after the app is left (about 30 seconds). Ends
+/// itself when that time runs out, as iOS requires.
+final class BackgroundTime: @unchecked Sendable {
+    private var id: UIBackgroundTaskIdentifier = .invalid
+
+    @MainActor
+    init(_ name: String) {
+        id = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
+            MainActor.assumeIsolated { self?.end() }
+        }
+    }
+
+    @MainActor
+    func end() {
+        guard id != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(id)
+        id = .invalid
     }
 }

@@ -62,13 +62,30 @@ struct CoachMessage: Codable, Identifiable, Equatable {
     let role: String
     let content: String
     let createdAt: String?
+    /// Which coach wrote a reply (CoachPersona's raw value); nil on questions and older replies.
+    var persona: String? = nil
+    /// Previews of the screenshots sent with a question.
+    var attachments: [CoachAttachment]? = nil
 
     enum CodingKeys: String, CodingKey {
-        case id, role, content
+        case id, role, content, persona, attachments
         case createdAt = "created_at"
     }
 
     var isUser: Bool { role == "user" }
+
+    var coach: CoachPersona? { persona.flatMap(CoachPersona.init(rawValue:)) }
+}
+
+/// A screenshot sent with a question: its small preview (base64), kept with the message.
+struct CoachAttachment: Codable, Equatable {
+    let mediaType: String
+    let thumb: String?
+
+    enum CodingKeys: String, CodingKey {
+        case thumb
+        case mediaType = "media_type"
+    }
 }
 
 struct CoachThreadResponse: Codable {
@@ -102,9 +119,10 @@ struct CoachEvent: Decodable {
     let messageId: String?
     let brief: CoachBrief?
     let usage: CoachUsage?
+    let persona: String?
 
     enum CodingKeys: String, CodingKey {
-        case type, text, message, code, brief, usage
+        case type, text, message, code, brief, usage, persona
         case threadId = "thread_id"
         case messageId = "message_id"
     }

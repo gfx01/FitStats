@@ -10,6 +10,7 @@ struct RoutineEditorView: View {
     @State private var saving = false
     @State private var confirmDelete = false
     @State private var error: String?
+    @State private var choosingExercise = false
 
     init(draft: Routine) {
         _routine = State(initialValue: draft)
@@ -45,9 +46,7 @@ struct RoutineEditorView: View {
                     .onDelete { routine.exercises.remove(atOffsets: $0) }
                     .onMove { routine.exercises.move(fromOffsets: $0, toOffset: $1) }
                     Button {
-                        let e = RoutineExercise(name: "", sets: 3, reps: "8-10")
-                        routine.exercises.append(e)
-                        path.append(e.id)
+                        choosingExercise = true
                     } label: {
                         Label("Add exercise", systemImage: "plus.circle.fill")
                     }
@@ -102,6 +101,20 @@ struct RoutineEditorView: View {
             .navigationDestination(for: UUID.self) { id in
                 ExerciseEditorView(exercise: exerciseBinding(id), knownNames: knownExerciseNames(model))
             }
+            .sheet(isPresented: $choosingExercise) {
+                NavigationStack {
+                    ExerciseLibraryView { name, kind in
+                        let e = RoutineExercise(name: name, kind: kind, sets: kind.timed ? 1 : 3, reps: kind.timed ? nil : "8-10")
+                        routine.exercises.append(e)
+                        // Its targets next, once the library has closed.
+                        Task {
+                            try? await Task.sleep(for: .milliseconds(350))
+                            path.append(e.id)
+                        }
+                    }
+                }
+                .environmentObject(model)
+            }
             .confirmationDialog("Delete \(routine.name)?", isPresented: $confirmDelete, titleVisibility: .visible) {
                 Button("Delete routine", role: .destructive) {
                     Task {
@@ -145,6 +158,7 @@ struct ExerciseEditorView: View {
     @Binding var exercise: RoutineExercise
     let knownNames: [String]
     @FocusState private var nameFocused: Bool
+    @EnvironmentObject private var model: AppModel
 
     private static let rests: [Int?] = [nil, 30, 45, 60, 90, 120, 150, 180, 240, 300]
 
@@ -195,6 +209,7 @@ struct ExerciseEditorView: View {
                 TextField("Form cues, tempo, machine settings…", text: Binding(get: { exercise.notes ?? "" }, set: { exercise.notes = $0.isEmpty ? nil : $0 }), axis: .vertical)
                     .lineLimit(1...4)
             }
+            musclesSection
         }
         .scrollContentBackground(.hidden)
         .background(Theme.background.ignoresSafeArea())
@@ -207,6 +222,50 @@ struct ExerciseEditorView: View {
             }
         }
         .onAppear { if exercise.name.isEmpty { nameFocused = true } }
+    }
+
+    /// The library's muscles for a known exercise; for your own, the muscles you choose.
+    @ViewBuilder private var musclesSection: some View {
+        let library = model.library
+        if !library.muscles.isEmpty {
+            if let known = library.find(exercise.name) {
+                Section {
+                    MuscleChips(primary: known.primary, secondary: known.secondary, library: library)
+                        .padding(.vertical, 4)
+                } header: {
+                    Text("Muscles")
+                } footer: {
+                    Text("From the exercise library: filled are the main muscles, outlined the ones that help.")
+                }
+            } else if !exercise.name.trimmingCharacters(in: .whitespaces).isEmpty {
+                Section {
+                    FlowLayout(spacing: 6) {
+                        ForEach(library.muscles) { m in
+                            let on = exercise.muscles?.contains(m.id) ?? false
+                            Button {
+                                var chosen = exercise.muscles ?? []
+                                if on { chosen.removeAll { $0 == m.id } } else if chosen.count < 6 { chosen.append(m.id) }
+                                exercise.muscles = chosen.isEmpty ? nil : chosen
+                            } label: {
+                                Text(m.label)
+                                    .font(.caption.weight(.semibold))
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                                    .background(Capsule().fill(on ? Theme.muscle.opacity(0.25) : Color.white.opacity(0.07)))
+                                    .foregroundStyle(on ? Theme.muscle : Theme.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityAddTraits(on ? .isSelected : [])
+                        }
+                    }
+                    .padding(.vertical, 4)
+                } header: {
+                    Text("Muscles it works")
+                } footer: {
+                    Text("Not in the exercise library: choose up to six, so it counts on the body map.")
+                }
+            }
+        }
     }
 
     static func restLabel(_ s: Int?) -> String {

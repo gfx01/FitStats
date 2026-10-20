@@ -3,6 +3,9 @@ import SwiftUI
 enum TrainingRoute: Hashable {
     case routine(String)
     case log(String)
+    case library
+    /// An exercise's muscles and your sessions of it, by name.
+    case exercise(String)
 }
 
 /// The Training tab: start a workout from a routine (or an empty one), the routines you keep
@@ -29,6 +32,7 @@ struct TrainingView: View {
                         ("checklist", "Review my last workout", "Review my last workout and tell me what to change next time."),
                         ("arrow.up.right", "How can I progress?", "How can I improve my training from here?"),
                     ])
+                    if !model.library.exercises.isEmpty { MusclesWeekCard() }
                     routinesSection
                     historySection
                     if let stats = model.stats {
@@ -53,6 +57,8 @@ struct TrainingView: View {
                 switch route {
                 case .routine(let id): RoutineDetailView(routineID: id)
                 case .log(let id): WorkoutLogDetailView(logID: id)
+                case .library: ExerciseLibraryView()
+                case .exercise(let name): ExerciseInfoView(name: name)
                 }
             }
             .navigationDestination(for: DetailRoute.self) { DetailDestination(route: $0) }

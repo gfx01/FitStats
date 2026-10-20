@@ -17,6 +17,7 @@ struct RoutineDetailView: View {
                     header(routine)
                     startButton(routine)
                     exercisesCard(routine)
+                    WorkoutMusclesCard(title: "Muscles it works", sets: model.library.sets(in: routine), library: model.library)
                     AskCoachRow(prompts: [
                         ("wand.and.stars", "Improve this routine", "About my routine “\(routine.name)”: how would you improve it?"),
                         ("arrow.up.right", "What weights next time?", "About my routine “\(routine.name)”: what should I lift next time, set by set?"),
@@ -117,6 +118,8 @@ struct RoutineDetailView: View {
     }
 
     private func exerciseRow(_ e: RoutineExercise) -> some View {
+        let muscles = model.library.muscles(for: e.name, chosen: e.muscles)
+        return NavigationLink(value: TrainingRoute.exercise(e.name)) {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: e.kind.icon)
                 .font(.subheadline)
@@ -127,6 +130,11 @@ struct RoutineDetailView: View {
                 Text(e.name).font(.subheadline.weight(.semibold))
                 if !e.plan.isEmpty {
                     Text(e.plan).font(.caption).foregroundStyle(Theme.secondary)
+                }
+                if !muscles.primary.isEmpty {
+                    Text(muscleLine(muscles.primary, muscles.secondary))
+                        .font(.caption)
+                        .foregroundStyle(Theme.muscle)
                 }
                 if let last = WorkoutLog.lastSets(of: e.name, in: model.workoutLogs) {
                     Text("Last time: \(LoggedSet.compact(last))")
@@ -139,7 +147,19 @@ struct RoutineDetailView: View {
                 }
             }
             Spacer(minLength: 0)
+            Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).foregroundStyle(Theme.tertiary)
         }
+        .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("routine-exercise-\(e.name)")
+    }
+
+    /// "Quads, glutes · helps hamstrings".
+    private func muscleLine(_ primary: [String], _ secondary: [String]) -> String {
+        let main = primary.map { model.library.label($0) }.joined(separator: ", ")
+        guard !secondary.isEmpty else { return main }
+        return "\(main) · helps \(secondary.map { model.library.label($0).lowercased() }.joined(separator: ", "))"
     }
 
     @ViewBuilder private func recentCard(_ routine: Routine) -> some View {
