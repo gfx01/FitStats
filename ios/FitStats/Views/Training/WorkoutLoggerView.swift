@@ -23,7 +23,10 @@ struct WorkoutLoggerView: View {
     /// redraw while they close: they read a blank workout then, and their writes are dropped.
     private var logBinding: Binding<WorkoutLog> {
         let w = workout
-        return Binding(get: { w.log ?? Self.blank }, set: { if w.log != nil { w.log = $0 } })
+        return Binding(get: { w.log ?? Self.blank }, set: { new in
+            DebugLog.note("logger: workout saved locally, \(new.doneSetCount) sets done, \(Int(new.volumeKg ?? 0)) kg\(w.log == nil ? " (dropped: no workout)" : "")")
+            if w.log != nil { w.log = new }
+        })
     }
 
     private static let blank = WorkoutLog(id: "", date: "", startedAt: nil, endedAt: nil, routineId: nil, name: "",
@@ -225,7 +228,9 @@ private struct LoggedExerciseCard: View {
         let exercise = $exercise
         return Binding(get: { exercise.wrappedValue.sets.first { $0.id == id } ?? LoggedSet() },
                        set: { new in
-                           if let i = exercise.wrappedValue.sets.firstIndex(where: { $0.id == id }) { exercise.wrappedValue.sets[i] = new }
+                           let i = exercise.wrappedValue.sets.firstIndex(where: { $0.id == id })
+                           DebugLog.note("logger: set \(i.map { "\($0 + 1)" } ?? "not found") of \(exercise.wrappedValue.name) -> \(new.summary)\(new.done ? " done" : "")")
+                           if let i { exercise.wrappedValue.sets[i] = new }
                        })
     }
 

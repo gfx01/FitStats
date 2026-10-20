@@ -599,6 +599,7 @@ final class ScreenshotTests: XCTestCase {
         XCTAssertFalse(fixtures.isEmpty, "FITSTATS_FIXTURES is not set")
         let app = XCUIApplication()
         app.launchEnvironment["FITSTATS_FIXTURES"] = fixtures
+        if let outDir { app.launchEnvironment["FITSTATS_DEBUG_LOG"] = outDir.appendingPathComponent("app-log.txt").path }
         app.launch()
         XCTAssertTrue(app.buttons["ring-recovery"].waitForExistence(timeout: 15), "Today screen did not load")
 
@@ -645,6 +646,8 @@ final class ScreenshotTests: XCTestCase {
         }
         app.buttons["set-2-done"].firstMatch.tap()
         shot("95-logger-sets")
+        // The weight typed counts, not only shows: 5 × 80 + 5 × 85.
+        XCTAssertTrue(app.staticTexts["825 kg"].waitForExistence(timeout: 3), "the typed weight didn't reach the workout (no 825 kg)")
 
         app.buttons["logger-finish"].tap()
         let effort = app.buttons["effort-7"]
@@ -788,9 +791,17 @@ final class ScreenshotTests: XCTestCase {
         let library = app.buttons["training-library"]
         if library.exists {
             library.tap()
+            sleep(1)
+            shot("108-library")
+            // The list only builds rows near the screen: find Squat by searching.
+            let search = app.searchFields.firstMatch
+            if search.waitForExistence(timeout: 5) {
+                search.tap()
+                search.typeText("Squat")
+            }
             let squat = app.buttons["library-Squat"]
             if squat.waitForExistence(timeout: 5) {
-                shot("108-library")
+                shot("108-library-search")
                 squat.tap()
                 XCTAssertTrue(element(app, "body-map").waitForExistence(timeout: 5))
                 shot("109-exercise-squat")
