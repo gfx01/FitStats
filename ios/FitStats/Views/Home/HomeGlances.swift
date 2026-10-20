@@ -167,17 +167,17 @@ struct GlanceValue: View {
 
 struct GlanceStat: View {
     let title: String
+    /// Used when the title doesn't fit.
+    var shortTitle: String? = nil
     let value: String
     var color: Color = .white
     var size: CGFloat = 20
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(title)
+            FittingText(title, short: shortTitle ?? title)
                 .font(.caption2)
                 .foregroundStyle(Theme.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
             Text(value)
                 .font(Theme.number(size))
                 .foregroundStyle(color)
@@ -743,10 +743,9 @@ struct VitalsGlance: View {
     private func cell(_ def: MetricDef, _ day: DayRecord) -> some View {
         NavigationLink(value: DetailRoute.metric(def.key)) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(def.shortLabel)
+                FittingText(def.shortLabel, short: def.compactLabel)
                     .font(.caption2)
                     .foregroundStyle(Theme.secondary)
-                    .lineLimit(1)
                 HStack(spacing: 3) {
                     Text(def.formatted(def.value(day)))
                         .font(Theme.number(16, weight: .semibold))
@@ -821,7 +820,7 @@ struct ActivityGlance: View {
                             VStack(alignment: .leading, spacing: 6) {
                                 ForEach(keys, id: \.self) { key in
                                     if let def = MetricCatalog.def(key), let day {
-                                        GlanceStat(title: def.shortLabel, value: def.formatted(def.value(day)), size: 15)
+                                        GlanceStat(title: def.shortLabel, shortTitle: def.compactLabel, value: def.formatted(def.value(day)), size: 15)
                                     }
                                 }
                             }
@@ -892,9 +891,12 @@ struct HeartRateGlance: View {
                     .foregroundStyle(Theme.secondary)
                     .lineLimit(1)
                 }
-                if series.contains(where: { $0 != nil }) {
+                if series.compactMap({ $0 }).count >= 2 {
                     MiniLine(values: series, color: Theme.heart, baseline: rhr)
                         .frame(maxHeight: .infinity)
+                } else if series.contains(where: { $0 != nil }) {
+                    // One quarter-hour so far draws as a lone dot.
+                    GlanceMessage(text: "The line fills in as your band syncs.")
                 } else if detail == nil && !model.failedDays.contains(date) {
                     ProgressView()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)

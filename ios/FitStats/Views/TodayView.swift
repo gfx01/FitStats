@@ -1052,7 +1052,7 @@ struct HomeLargeCard: View {
         let avg = base.map { "30d avg \(def.formatted($0, withUnit: false))" }
         // "So far" is said once, in the Activity header.
         return NavigationLink(value: DetailRoute.metric(key)) {
-            MetricTile(title: def.shortLabel, value: def.formatted(value),
+            MetricTile(title: def.shortLabel, shortTitle: def.compactLabel, value: def.formatted(value),
                        sub: soFar ? nil : estimated ? ["estimated", avg].compactMap { $0 }.joined(separator: " · ") : avg,
                        icon: def.icon, color: def.category.color, change: change, better: def.better)
         }

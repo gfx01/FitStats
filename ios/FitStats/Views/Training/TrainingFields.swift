@@ -101,9 +101,15 @@ struct AskCoachButton: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        Button { model.askCoach(text) } label: { Image(systemName: "sparkles") }
-            .accessibilityLabel("Ask coach")
-            .accessibilityIdentifier("ask-coach")
+        // Named, not just a sparkle: on its own the icon didn't say what it does.
+        Button { model.askCoach(text) } label: {
+            Label("Ask", systemImage: "sparkles")
+                .labelStyle(.titleAndIcon)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Theme.sleep)
+        }
+        .accessibilityLabel("Ask coach")
+        .accessibilityIdentifier("ask-coach")
     }
 }
 

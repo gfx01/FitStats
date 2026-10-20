@@ -41,6 +41,7 @@ struct BodyCard: View {
             NavigationLink(value: DetailRoute.metric(key)) {
                 MetricTile(
                     title: def.shortLabel,
+                    shortTitle: def.compactLabel,
                     value: latest.map { def.formatted($0.value) } ?? "–",
                     sub: latest.map { dayLabel($0.day) } ?? "No reading yet",
                     icon: def.icon,

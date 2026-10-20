@@ -41,6 +41,25 @@ struct ScoreWhyLine: View {
     }
 }
 
+/// One line of text that switches to a shorter wording when the full one doesn't fit, instead of
+/// cutting it off ("Resting heart rate" → "Resting HR").
+struct FittingText: View {
+    let full: String
+    let short: String
+
+    init(_ full: String, short: String) {
+        self.full = full
+        self.short = short
+    }
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            Text(full).lineLimit(1)
+            Text(short).lineLimit(1).minimumScaleFactor(0.8)
+        }
+    }
+}
+
 struct SectionHeader: View {
     let title: String
     var subtitle: String? = nil
@@ -174,6 +193,8 @@ struct DeltaBadge: View {
 
 struct MetricTile: View {
     let title: String
+    /// Used when the title doesn't fit.
+    var shortTitle: String? = nil
     let value: String
     var sub: String? = nil
     var icon: String
@@ -191,7 +212,7 @@ struct MetricTile: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Image(systemName: icon).font(.caption).foregroundStyle(color)
-                Text(title).font(.caption).foregroundStyle(Theme.secondary).lineLimit(1)
+                FittingText(title, short: shortTitle ?? title).font(.caption).foregroundStyle(Theme.secondary)
                 Spacer(minLength: 0)
             }
             // A fixed line height, so a value shrunk to fit is as tall as its neighbours.

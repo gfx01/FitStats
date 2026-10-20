@@ -107,6 +107,7 @@ struct TrainingView: View {
                 .disabled(workout.log != nil)
                 .accessibilityIdentifier("training-start-empty")
             }
+            weekStrip(monday: monday)
             HStack(alignment: .top) {
                 stat("Logged", "\(logs.count)", logs.count == 1 ? "workout" : "workouts")
                 Spacer()
@@ -117,6 +118,45 @@ struct TrainingView: View {
                 stat("Avg strain", strain.isEmpty ? "–" : Format.number(strain.reduce(0, +) / Double(strain.count)), "a day")
             }
         }
+    }
+
+    /// Monday to Sunday: a filled dot on days with a workout logged here, the sport's icon on days
+    /// only the band recorded one, today ringed.
+    private func weekStrip(monday: String) -> some View {
+        HStack(spacing: 0) {
+            ForEach(0..<7, id: \.self) { i in
+                let day = Format.addDays(monday, i)
+                let logged = model.workoutLogs.contains { $0.date == day }
+                let band = model.bandWorkouts.first { $0.date == day }
+                VStack(spacing: 5) {
+                    Text(Format.weekdayLetter(day))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(day == model.today ? .white : Theme.tertiary)
+                    ZStack {
+                        if logged {
+                            Circle().fill(Theme.strain)
+                            Image(systemName: "dumbbell.fill").font(.system(size: 11, weight: .bold)).foregroundStyle(.white)
+                        } else if let band {
+                            Circle().fill(Theme.heart.opacity(0.2))
+                            Image(systemName: band.symbol).font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.heart)
+                        } else {
+                            Circle().strokeBorder(day > model.today ? Theme.track : Color.white.opacity(0.16), lineWidth: 1.5)
+                        }
+                    }
+                    .frame(width: 30, height: 30)
+                    .overlay {
+                        if day == model.today {
+                            Circle().strokeBorder(Color.white.opacity(0.8), lineWidth: 1.5).padding(-4)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(Format.longDay(day)): \(logged ? "workout logged" : band != nil ? "band workout" : "no workout")")
+            }
+        }
+        .padding(.vertical, 2)
+        .accessibilityIdentifier("training-week-strip")
     }
 
     private func stat(_ title: String, _ value: String, _ unit: String) -> some View {
@@ -173,11 +213,17 @@ struct TrainingView: View {
                                    message: "Workouts you log here and the ones your band records show up here.")
                 }
             } else {
-                Card(padding: 0) {
-                    VStack(spacing: 0) {
-                        ForEach(Array(shown.enumerated()), id: \.element.id) { item in
-                            if item.offset > 0 { Divider().overlay(Theme.track).padding(.leading, 56) }
-                            historyRow(item.element)
+                ForEach(HistoryWeek.group(shown)) { week in
+                    Text(weekTitle(week.monday))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Theme.secondary)
+                        .padding(.top, 4)
+                    Card(padding: 0) {
+                        VStack(spacing: 0) {
+                            ForEach(Array(week.entries.enumerated()), id: \.element.id) { item in
+                                if item.offset > 0 { Divider().overlay(Theme.track).padding(.leading, 56) }
+                                historyRow(item.element)
+                            }
                         }
                     }
                 }
@@ -204,13 +250,24 @@ struct TrainingView: View {
             .accessibilityIdentifier("history-log")
         case .band(let x):
             NavigationLink(value: DetailRoute.workout(x.date, x.id)) {
-                HistoryRow(icon: "applewatch", tint: Theme.heart, title: x.displayName, date: x.date,
+                HistoryRow(icon: x.symbol, tint: Theme.heart, title: x.displayName, date: x.date,
                            detail: [x.durationS.map { Format.duration($0 / 60) }, x.avgHr.map { "\(Int($0.rounded())) bpm" },
                                     x.strain.map { "strain \(Format.number($0))" }].compactMap { $0 }.joined(separator: " · "),
                            badge: "Band")
             }
             .buttonStyle(.plain)
         }
+    }
+
+    /// "This week", "Last week", "Oct 5–11", "Sep 28 – Oct 4".
+    private func weekTitle(_ monday: String) -> String {
+        let thisWeek = Self.monday(of: model.today)
+        if monday == thisWeek { return "This week" }
+        if monday == Format.addDays(thisWeek, -7) { return "Last week" }
+        let sunday = Format.addDays(monday, 6)
+        return monday.prefix(7) == sunday.prefix(7)
+            ? "\(Format.monthDay(monday))–\(Format.dayNumber(sunday))"
+            : "\(Format.monthDay(monday)) – \(Format.monthDay(sunday))"
     }
 
     /// Monday of the week `ymd` is in.
@@ -226,6 +283,13 @@ struct TrainingView: View {
 enum HistoryEntry: Identifiable {
     case log(WorkoutLog)
     case band(Exercise)
+
+    var date: String {
+        switch self {
+        case .log(let l): return l.date
+        case .band(let x): return x.date
+        }
+    }
 
     var id: String {
         switch self {
@@ -243,6 +307,27 @@ enum HistoryEntry: Identifiable {
 
     static func merged(logs: [WorkoutLog], band: [Exercise]) -> [HistoryEntry] {
         (logs.map(HistoryEntry.log) + band.map(HistoryEntry.band)).sorted { $0.sortKey > $1.sortKey }
+    }
+}
+
+/// History entries of one week (Monday on), newest first like the entries.
+struct HistoryWeek: Identifiable {
+    let monday: String
+    var entries: [HistoryEntry]
+    var id: String { monday }
+
+    @MainActor
+    static func group(_ entries: [HistoryEntry]) -> [HistoryWeek] {
+        var weeks: [HistoryWeek] = []
+        for entry in entries {
+            let monday = TrainingView.monday(of: entry.date)
+            if weeks.last?.monday == monday {
+                weeks[weeks.count - 1].entries.append(entry)
+            } else {
+                weeks.append(HistoryWeek(monday: monday, entries: [entry]))
+            }
+        }
+        return weeks
     }
 }
 

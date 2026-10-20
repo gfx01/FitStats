@@ -113,8 +113,11 @@ private struct HeatmapScale {
 struct CalendarHeatmapView: View {
     @EnvironmentObject var model: AppModel
     @State private var metric: HeatmapMetric = .recovery
+    /// The card's inner width, for sizing the cells.
+    @State private var gridWidth: CGFloat = 0
 
-    private static let cellSize: CGFloat = 16
+    private static let minCell: CGFloat = 16
+    private static let maxCell: CGFloat = 30
     private static let gap: CGFloat = 3
     private static let monthRow: CGFloat = 14
 
@@ -146,7 +149,14 @@ struct CalendarHeatmapView: View {
                             .font(.footnote)
                             .foregroundStyle(Theme.secondary)
                     } else {
-                        grid(weeks, scale: scale)
+                        grid(weeks, scale: scale, cell: Self.cellSize(width: gridWidth, weeks: weeks.count))
+                            .background {
+                                GeometryReader { geo in
+                                    Color.clear
+                                        .onAppear { gridWidth = geo.size.width }
+                                        .onChange(of: geo.size.width) { _, w in gridWidth = w }
+                                }
+                            }
                         legend(scale)
                     }
                 }
@@ -167,14 +177,23 @@ struct CalendarHeatmapView: View {
 
     // MARK: grid
 
-    private func grid(_ weeks: [HeatmapWeek], scale: HeatmapScale) -> some View {
+    /// With a few months of data the cells grow to fill the card (up to 30 points); with more
+    /// than 16 weeks they stay at 16 and the grid scrolls.
+    static func cellSize(width: CGFloat, weeks: Int) -> CGFloat {
+        guard width > 0, weeks > 0 else { return minCell }
+        let columns = CGFloat(min(weeks, 16))
+        let room = width - 10 - 6 - 24 // the weekday letters, their gap, the last month label
+        return min(maxCell, max(minCell, ((room - gap * (columns - 1)) / columns).rounded(.down)))
+    }
+
+    private func grid(_ weeks: [HeatmapWeek], scale: HeatmapScale, cell size: CGFloat) -> some View {
         HStack(alignment: .top, spacing: 6) {
-            weekdayLabels
+            weekdayLabels(size)
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(alignment: .top, spacing: Self.gap) {
                         ForEach(weeks) { week in
-                            column(week, weeks: weeks, scale: scale)
+                            column(week, weeks: weeks, scale: scale, size: size)
                         }
                     }
                     .padding(.trailing, 24) // room for a month label in the last column
@@ -187,7 +206,7 @@ struct CalendarHeatmapView: View {
         }
     }
 
-    private var weekdayLabels: some View {
+    private func weekdayLabels(_ size: CGFloat) -> some View {
         let letters = ["M", "T", "W", "T", "F", "S", "S"]
         return VStack(alignment: .leading, spacing: Self.gap) {
             Color.clear.frame(width: 10, height: Self.monthRow)
@@ -195,16 +214,16 @@ struct CalendarHeatmapView: View {
                 Text(letters[i])
                     .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(Theme.tertiary)
-                    .frame(width: 10, height: Self.cellSize)
+                    .frame(width: 10, height: size)
             }
         }
         .accessibilityHidden(true)
     }
 
-    private func column(_ week: HeatmapWeek, weeks: [HeatmapWeek], scale: HeatmapScale) -> some View {
+    private func column(_ week: HeatmapWeek, weeks: [HeatmapWeek], scale: HeatmapScale, size: CGFloat) -> some View {
         VStack(spacing: Self.gap) {
             Color.clear
-                .frame(width: Self.cellSize, height: Self.monthRow)
+                .frame(width: size, height: Self.monthRow)
                 .overlay(alignment: .leading) {
                     if let month = monthLabel(week, weeks: weeks) {
                         Text(month)
@@ -214,16 +233,16 @@ struct CalendarHeatmapView: View {
                     }
                 }
             ForEach(week.days) { day in
-                cell(day, scale: scale)
+                cell(day, scale: scale, size: size)
             }
         }
         .id(week.id)
     }
 
-    @ViewBuilder private func cell(_ day: HeatmapDay, scale: HeatmapScale) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 3, style: .continuous)
+    @ViewBuilder private func cell(_ day: HeatmapDay, scale: HeatmapScale, size: CGFloat) -> some View {
+        let shape = RoundedRectangle(cornerRadius: size * 0.2, style: .continuous)
         if !day.inRange {
-            Color.clear.frame(width: Self.cellSize, height: Self.cellSize)
+            Color.clear.frame(width: size, height: size)
         } else if let value = day.value {
             NavigationLink(value: metric.route(day.date)) {
                 Group {
@@ -233,14 +252,14 @@ struct CalendarHeatmapView: View {
                         shape.strokeBorder(metric.color.opacity(0.8), lineWidth: 1.5)
                     }
                 }
-                .frame(width: Self.cellSize, height: Self.cellSize)
+                .frame(width: size, height: size)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel(spoken(day, value: value))
         } else {
             shape.fill(Theme.track)
-                .frame(width: Self.cellSize, height: Self.cellSize)
+                .frame(width: size, height: size)
                 .accessibilityLabel("\(Format.longDay(day.date)): no data")
         }
     }

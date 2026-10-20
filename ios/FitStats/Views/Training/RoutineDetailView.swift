@@ -53,12 +53,24 @@ struct RoutineDetailView: View {
                 Spacer()
             }
             let sets = routine.exercises.reduce(0) { $0 + ($1.sets ?? 0) }
-            Text("\(routine.exercises.count) \(routine.exercises.count == 1 ? "exercise" : "exercises")\(sets > 0 ? " · \(sets) sets" : "")")
-                .font(.footnote)
-                .foregroundStyle(Theme.secondary)
+            let logs = model.workoutLogs.filter { $0.routineId == routine.id }
+            let minutes = logs.compactMap(\.minutes)
+            HStack(spacing: 18) {
+                fact("\(routine.exercises.count)", routine.exercises.count == 1 ? "exercise" : "exercises")
+                if sets > 0 { fact("\(sets)", "sets") }
+                if !minutes.isEmpty { fact(Format.duration(minutes.reduce(0, +) / Double(minutes.count)), "usually") }
+                fact(logs.first.map { Format.prettyDay($0.date, today: model.today) } ?? "Not yet", "last done")
+            }
             if let notes = routine.notes, !notes.isEmpty {
                 Text(notes).font(.footnote).foregroundStyle(.white).fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
+
+    private func fact(_ value: String, _ label: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(value).font(.subheadline.weight(.semibold)).lineLimit(1).minimumScaleFactor(0.8)
+            Text(label).font(.caption2).foregroundStyle(Theme.tertiary)
         }
     }
 

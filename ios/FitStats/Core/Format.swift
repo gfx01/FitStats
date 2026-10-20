@@ -86,6 +86,19 @@ enum Format {
         return dayNumberFormatter.string(from: d)
     }
 
+    private static let monthDayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.timeZone = utc
+        f.dateFormat = "MMM d"
+        return f
+    }()
+
+    /// "Oct 5".
+    static func monthDay(_ ymd: String) -> String {
+        guard let d = date(ymd) else { return ymd }
+        return monthDayFormatter.string(from: d)
+    }
+
     static func prettyDay(_ ymd: String, today: String) -> String {
         if ymd == today { return "Today" }
         if ymd == addDays(today, -1) { return "Yesterday" }

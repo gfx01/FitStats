@@ -130,7 +130,7 @@ private struct MetricRow: View {
                 .background(Circle().fill(def.category.color.opacity(0.16)))
                 .foregroundStyle(def.category.color)
             VStack(alignment: .leading, spacing: 2) {
-                Text(def.shortLabel).font(.subheadline.weight(.medium)).lineLimit(1)
+                FittingText(def.shortLabel, short: def.compactLabel).font(.subheadline.weight(.medium))
                 HStack(spacing: 6) {
                     Text(def.formatted(stats?.ranges["30"]?.mean))
                         .font(.caption)

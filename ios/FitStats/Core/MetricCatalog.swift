@@ -57,6 +57,18 @@ struct MetricDef: Identifiable, Hashable {
 
     func value(_ day: DayRecord) -> Double? { extract(day) }
 
+    /// Shorter still, for where even the short label doesn't fit (FittingText falls back to it,
+    /// e.g. with large text): "Resting HR", "Calories".
+    var compactLabel: String { Self.compactLabels[key] ?? shortLabel }
+
+    private static let compactLabels = [
+        "rhr": "Resting HR", "hrv_rmssd": "HRV", "hrv_deep_rmssd": "Deep HRV", "non_rem_hr": "Non-REM HR",
+        "hr_avg": "Average HR", "hr_max": "Max HR", "calories_total": "Calories", "calories_active": "Active kcal",
+        "azm_total": "Zone min", "active_min_total": "Active min", "active_vigorous_min": "Vigorous min",
+        "sedentary_h": "Sedentary", "spo2_avg": "SpO₂", "resp_rate": "Breathing", "vo2max": "VO₂ max",
+        "sleep_asleep_min": "Asleep", "sleep_in_bed_min": "In bed", "sleep_efficiency": "Efficiency",
+    ]
+
     /// Clock times and the skin temperature deviation sit around an arbitrary zero, so a percent
     /// change means nothing: they are compared by the absolute change (the server sends no changePct).
     var comparesAbsolute: Bool { format == .clock || key == "skin_temp_dev" }

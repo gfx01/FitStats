@@ -175,8 +175,23 @@ struct HeartRateDayChart: View {
         return out
     }
 
+    /// Under half an hour measured (just after midnight, or before the band's first sync of the
+    /// day) draws as a lone dot on an empty day, which looks broken: a note instead.
+    static let minimumBuckets = 6
+
     var body: some View {
         let data = buckets
+        if data.count < Self.minimumBuckets {
+            Label("The line fills in as your band syncs through the day.", systemImage: "waveform.path.ecg")
+                .font(.footnote)
+                .foregroundStyle(Theme.tertiary)
+                .frame(maxWidth: .infinity, minHeight: 80)
+        } else {
+            chart(data)
+        }
+    }
+
+    private func chart(_ data: [MinuteValue]) -> some View {
         Chart {
             ForEach(data) { p in
                 LineMark(x: .value("Time", p.minute), y: .value("BPM", p.value))
