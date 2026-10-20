@@ -101,13 +101,16 @@ struct AskCoachButton: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        // Named, not just a sparkle: on its own the icon didn't say what it does.
+        // Named, not just a sparkle: on its own the icon didn't say what it does. An HStack, as a
+        // navigation bar shows a Label as its icon only.
         Button { model.askCoach(text) } label: {
-            Label("Ask", systemImage: "sparkles")
-                .labelStyle(.titleAndIcon)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(Theme.sleep)
+            HStack(spacing: 4) {
+                Image(systemName: "sparkles")
+                Text("Ask")
+            }
+            .font(.subheadline.weight(.semibold))
         }
+        .tint(Theme.sleep)
         .accessibilityLabel("Ask coach")
         .accessibilityIdentifier("ask-coach")
     }
