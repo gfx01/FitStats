@@ -32,7 +32,8 @@ struct SettingsView: View {
             .navigationTitle("Settings")
             .swipeBackFromAnywhere()
             .onAppear(perform: loadDraft)
-            .onChange(of: model.status?.settings) { _, _ in loadDraft() }
+            // Saving the wake-up times (their own screen) leaves unsaved preferences alone.
+            .onChange(of: model.status.map(\.settings.withoutWakeTimes)) { _, _ in loadDraft() }
             .task { if coach.status == nil { await coach.refresh() } }
             .onChange(of: coach.status?.model) { _, new in coachModel = new ?? "" }
             .confirmationDialog("Disconnect Google?", isPresented: $confirmDisconnect, titleVisibility: .visible) {
@@ -243,6 +244,17 @@ struct SettingsView: View {
                 Text("Female").tag("female")
             }
             Stepper("Sleep need: \(Format.duration(Double(draft.sleepNeedMin)))", value: $draft.sleepNeedMin, in: 300...720, step: 15)
+            NavigationLink {
+                WakeTimesView()
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Wake-up times")
+                    Text(WakeTimesView.summary(model.wakeTimes) ?? "Not set: the times you usually wake up")
+                        .font(.caption)
+                        .foregroundStyle(Theme.secondary)
+                }
+            }
+            .accessibilityIdentifier("settings-wake-times")
             Stepper("Step goal: \(Format.number(Double(draft.stepGoal)))", value: $draft.stepGoal, in: 1000...50000, step: 500)
             Toggle("Set max heart rate manually", isOn: $useMaxHr)
             if useMaxHr {

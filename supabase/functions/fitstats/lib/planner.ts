@@ -7,7 +7,8 @@
 //              days before today count as sleep)
 //            − today's naps (at most 60 min)
 //   in bed   = need ÷ your typical sleep efficiency (median of the last 14 nights, else 90 %)
-//   bedtime  = your usual wake time for tomorrow's kind of day (weekday or weekend,
+//   bedtime  = the wake-up time you set for tomorrow (Settings → Wake-up times), else
+//              your usual wake time for tomorrow's kind of day (weekday or weekend,
 //              median of the last 28 nights) − time in bed
 //
 // Extras, time in bed and bedtime are rounded to 5 minutes.
@@ -27,7 +28,26 @@ export interface SleepPlan {
   wakeMin: number | null;
   /** Minutes from local midnight of tomorrow (negative = this evening). */
   bedtimeMin: number | null;
-  wakeBasis: "weekday" | "weekend" | "all" | null;
+  /** "set": the wake-up time set for tomorrow by hand; otherwise which nights the usual one is from. */
+  wakeBasis: "set" | "weekday" | "weekend" | "all" | null;
+}
+
+/** Wake-up times set by hand, Monday first: minutes from midnight, or null for a day without one. */
+export type WakeTimes = (number | null)[];
+
+/**
+ * Seven wake-up times (Monday … Sunday, each 0–1439 minutes or null) from a request or the
+ * settings row; null when there are none. Throws on anything else.
+ */
+export function wakeTimesFrom(v: unknown): WakeTimes | null {
+  if (v === null || v === undefined) return null;
+  if (!Array.isArray(v) || v.length !== 7) throw new Error("wake_times must be 7 entries, Monday first");
+  const out = v.map((x) => {
+    if (x === null) return null;
+    if (typeof x !== "number" || !Number.isInteger(x) || x < 0 || x > 1439) throw new Error("each wake time is minutes from midnight (0–1439) or null");
+    return x;
+  });
+  return out.some((x) => x !== null) ? out : null;
 }
 
 const MIN_NIGHTS = 3;
@@ -38,7 +58,7 @@ function num(v: unknown): number | null {
 
 const to5 = (v: number) => Math.round(v / 5) * 5;
 
-export function sleepPlan(days: DayRow[], today: Ymd, sleepNeedMin: number): SleepPlan {
+export function sleepPlan(days: DayRow[], today: Ymd, sleepNeedMin: number, wakeTimes: WakeTimes | null = null): SleepPlan {
   const byDate = new Map(days.map((d) => [d.date, d]));
   const todayRow = byDate.get(today);
 
@@ -66,23 +86,17 @@ export function sleepPlan(days: DayRow[], today: Ymd, sleepNeedMin: number): Sle
   const efficiency = clamp(efficiencies.length >= MIN_NIGHTS ? median(efficiencies)! : 0.9, 0.7, 1);
   const inBedMin = to5(needMin / efficiency);
 
-  const weekend = (d: Ymd) => weekdayIndex(d) >= 5;
-  const tomorrowWeekend = weekend(addDays(today, 1));
-  const sameKind: number[] = [], all: number[] = [];
-  for (let d = addDays(today, -27); d <= today; d = addDays(d, 1)) {
-    const wake = num(byDate.get(d)?.sleep_waketime_min);
-    if (wake === null) continue;
-    all.push(wake);
-    if (weekend(d) === tomorrowWeekend) sameKind.push(wake);
-  }
+  const tomorrow = addDays(today, 1);
+  const set = wakeTimes?.[weekdayIndex(tomorrow)] ?? null;
+  const usual = usualWake(days, today, weekdayIndex(tomorrow) >= 5);
   let wakeMin: number | null = null;
   let wakeBasis: SleepPlan["wakeBasis"] = null;
-  if (sameKind.length >= MIN_NIGHTS) {
-    wakeMin = median(sameKind);
-    wakeBasis = tomorrowWeekend ? "weekend" : "weekday";
-  } else if (all.length >= MIN_NIGHTS) {
-    wakeMin = median(all);
-    wakeBasis = "all";
+  if (set !== null) {
+    wakeMin = set;
+    wakeBasis = "set";
+  } else if (usual) {
+    wakeMin = usual.wakeMin;
+    wakeBasis = usual.basis;
   }
   return {
     needMin,
@@ -97,3 +111,23 @@ export function sleepPlan(days: DayRow[], today: Ymd, sleepNeedMin: number): Sle
     wakeBasis,
   };
 }
+
+/**
+ * The usual wake time from the band for a weekday or a weekend morning: the median of that kind
+ * of the last 28 mornings up to `today`, else of all of them; null under 3 mornings.
+ */
+export function usualWake(days: DayRow[], today: Ymd, weekendMorning: boolean): { wakeMin: number; basis: "weekday" | "weekend" | "all" } | null {
+  const byDate = new Map(days.map((d) => [d.date, d]));
+  const weekend = (d: Ymd) => weekdayIndex(d) >= 5;
+  const sameKind: number[] = [], all: number[] = [];
+  for (let d = addDays(today, -27); d <= today; d = addDays(d, 1)) {
+    const wake = num(byDate.get(d)?.sleep_waketime_min);
+    if (wake === null) continue;
+    all.push(wake);
+    if (weekend(d) === weekendMorning) sameKind.push(wake);
+  }
+  if (sameKind.length >= MIN_NIGHTS) return { wakeMin: median(sameKind)!, basis: weekendMorning ? "weekend" : "weekday" };
+  if (all.length >= MIN_NIGHTS) return { wakeMin: median(all)!, basis: "all" };
+  return null;
+}
+

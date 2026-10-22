@@ -16,7 +16,6 @@ struct NumberField: View {
             .onAppear { text = Self.text(value) }
             .onChange(of: text) { _, new in
                 let parsed = Self.parse(new)
-                DebugLog.note("number field: text '\(new)' -> \(parsed.map { "\($0)" } ?? "nil") (was \(value.map { "\($0)" } ?? "nil"))")
                 if parsed != value { value = parsed }
             }
             .onChange(of: value) { _, new in

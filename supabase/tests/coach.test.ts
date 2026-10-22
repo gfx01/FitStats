@@ -158,11 +158,24 @@ test("context: journal entries, tag effects and tonight's sleep plan", async () 
   assert.match(text, /Tonight's sleep plan \(FitStats' rule, shown in the app\): need tonight \d+h \d+m \(base 8h 0m/);
   assert.doesNotMatch(text, /sleep need \d+h \d+m \(/, "the plan's total is never called the sleep need");
   assert.match(text, /in bed by \d\d:\d\d to wake at \d\d:\d\d/);
+  assert.match(text, /\nWake-up times: none set by hand \(Settings → Wake-up times\), so the sleep plan uses the band's\. From the band, they usually wake at (\d\d:\d\d|not known yet) on weekdays/);
   assert.match(text, /\nTraining load \(shown in the app\) up to \d{4}-\d{2}-\d{2}: fitness [\d.]+, fatigue [\d.]+, form [+−]?[\d.]+, so (fresh|neutral|productive|overreaching); load ratio [\d.]+\./);
   assert.match(text, /\nBedtime vs sleep \(shown in the app; last \d+ scored nights\): best \d\d:\d\d–\d\d:\d\d, sleep score [+−][\d.]+ vs all other nights \((clear|not clear)\)\. By bedtime: .*\d+ nights \(sleep score \d+, asleep \d+h \d+m, recovery \d+\)/);
   const instructions = String((claudeRequests[before].system as Row[])[0].text);
   assert.match(instructions, /- Training load \(shown in the app\): fitness is the 42-day/);
   assert.match(instructions, /- Heart-rate recovery \(per workout\)/);
+});
+
+test("context: wake-up times set by hand set tonight's bedtime and are listed", async () => {
+  // 2026-10-18 is a Sunday: tonight's plan is for Monday morning.
+  const settings = { ...(tables.fs_user_settings[0] as Row), wake_times: [360, 360, 360, 360, 360, 540, null] };
+  const ctx = { acc: tables.fs_account[0] as never, settings: settings as never, today: "2026-10-18", tz: "Europe/Budapest" };
+  const text = await coach.buildContext(ctx, null);
+  assert.match(text, /in bed by \d\d:\d\d to wake at 06:00 \(the wake-up time they set for Mon\)/);
+  assert.match(text, /\nWake-up times they set by hand \(the morning of each day; Settings → Wake-up times\): Mon 06:00, Tue 06:00, Wed 06:00, Thu 06:00, Fri 06:00, Sat 09:00, Sun none \(no fixed time: a morning they can sleep in\)\. From the band/);
+  // Not a list of 7: ignored, as if none were set.
+  const broken = await coach.buildContext({ ...ctx, settings: { ...settings, wake_times: [360] } as never }, null);
+  assert.match(broken, /\nWake-up times: none set by hand/);
 });
 
 test("training: the app saves routines and workouts, the coach reads them and saves a routine", async () => {

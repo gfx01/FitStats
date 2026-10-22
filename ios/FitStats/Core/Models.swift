@@ -11,7 +11,8 @@ struct StatusResponse: Codable {
     let sync: SyncInfo
     let devices: [Device]
     let profile: Profile
-    let settings: UserSettings
+    /// `var`: saving the wake-up times updates it on the phone at once (AppModel.saveWakeTimes).
+    var settings: UserSettings
     /// The max heart rate strain, stress and zones were computed with (server 1.4.1+).
     let maxHr: MaxHrInfo?
 
@@ -62,6 +63,9 @@ struct UserSettings: Codable, Equatable {
     var stepGoal: Int
     var backfillDays: Int
     var coachModel: String?
+    /// Wake-up times set by hand, Monday first: minutes from midnight, nil for a morning without
+    /// one (server 1.9.0+). Saved on its own (AppModel.saveWakeTimes), never with the rest.
+    var wakeTimes: [Int?]? = nil
 
     enum CodingKeys: String, CodingKey {
         case sex
@@ -70,9 +74,17 @@ struct UserSettings: Codable, Equatable {
         case stepGoal = "step_goal"
         case backfillDays = "backfill_days"
         case coachModel = "coach_model"
+        case wakeTimes = "wake_times"
     }
 
     static let defaults = UserSettings(sex: "unspecified", maxHrOverride: nil, sleepNeedMin: 480, stepGoal: 10000, backfillDays: 730)
+
+    /// Everything the Preferences form edits (the wake-up times have their own screen).
+    var withoutWakeTimes: UserSettings {
+        var s = self
+        s.wakeTimes = nil
+        return s
+    }
 
     // Encode nil explicitly so clearing the max-HR override reaches the server.
     func encode(to encoder: Encoder) throws {

@@ -71,6 +71,8 @@ export interface UserSettings {
   step_goal: number;
   backfill_days: number;
   coach_model?: string | null;
+  /** Wake-up times set by hand (lib/planner.ts WakeTimes); missing before the column existed. */
+  wake_times?: unknown;
 }
 
 interface SyncState {

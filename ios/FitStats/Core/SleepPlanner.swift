@@ -9,12 +9,15 @@ import Foundation
 ///               days before today count as sleep)
 ///             − today's naps (at most 60 min)
 ///     in bed  = need ÷ your typical sleep efficiency (median of the last 14 nights, else 90 %)
-///     bedtime = your usual wake time for tomorrow's kind of day (weekday or weekend,
+///     bedtime = the wake-up time you set for tomorrow (Settings → Wake-up times), else
+///               your usual wake time for tomorrow's kind of day (weekday or weekend,
 ///               median of the last 28 nights) − time in bed
 ///
 /// Extras, time in bed and bedtime are rounded to 5 minutes.
 struct SleepPlan: Equatable {
     enum WakeBasis: String {
+        /// The wake-up time set by hand for tomorrow.
+        case set
         case weekday, weekend, all
     }
 
@@ -45,14 +48,15 @@ struct SleepPlan: Equatable {
     }
 
     /// Monday = 0 … Sunday = 6, like the server.
-    private static func weekdayIndex(_ ymd: String) -> Int {
+    static func weekdayIndex(_ ymd: String) -> Int {
         guard let d = Format.date(ymd) else { return 0 }
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = Format.utc
         return (cal.component(.weekday, from: d) + 5) % 7
     }
 
-    static func plan(days: [String: DayRecord], today: String, sleepNeedMin: Double) -> SleepPlan {
+    /// `wakeTimes`: the ones set by hand, Monday first (see UserSettings.wakeTimes).
+    static func plan(days: [String: DayRecord], today: String, sleepNeedMin: Double, wakeTimes: [Int?]? = nil) -> SleepPlan {
         let todayRow = days[today]
         let strain = todayRow?.double("strain") ?? 0
         let strainMin = to5(45 * min(1, max(0, (strain - 35) / 50)))
@@ -74,28 +78,35 @@ struct SleepPlan: Equatable {
         let efficiency = min(1, max(0.7, efficiencies.count >= minNights ? median(efficiencies)! : 0.9))
         let inBedMin = to5(needMin / efficiency)
 
-        let weekend: (String) -> Bool = { weekdayIndex($0) >= 5 }
-        let tomorrowWeekend = weekend(Format.addDays(today, 1))
-        var sameKind: [Double] = [], all: [Double] = []
-        for offset in 0...27 {
-            let date = Format.addDays(today, -offset)
-            guard let wake = days[date]?.double("sleep_waketime_min") else { continue }
-            all.append(wake)
-            if weekend(date) == tomorrowWeekend { sameKind.append(wake) }
-        }
+        let tomorrow = weekdayIndex(Format.addDays(today, 1))
         var wake: Double?
         var basis: WakeBasis?
-        if sameKind.count >= minNights {
-            wake = median(sameKind)
-            basis = tomorrowWeekend ? .weekend : .weekday
-        } else if all.count >= minNights {
-            wake = median(all)
-            basis = .all
+        if let times = wakeTimes, times.count == 7, let set = times[tomorrow] {
+            wake = Double(set)
+            basis = .set
+        } else if let usual = usualWake(days: days, today: today, weekendMorning: tomorrow >= 5) {
+            wake = usual.wakeMin
+            basis = usual.basis
         }
         return SleepPlan(
             needMin: needMin, baseMin: sleepNeedMin, strainMin: strainMin, debtMin: debtMin, napMin: napMin,
             efficiency: efficiency, inBedMin: inBedMin,
             wakeMin: wake.map(jsRound), bedtimeMin: wake.map { to5($0 - inBedMin) }, wakeBasis: basis
         )
+    }
+
+    /// The usual wake time from the band for a weekday or a weekend morning: the median of that
+    /// kind of the last 28 mornings up to `today`, else of all of them; nil under 3 mornings.
+    static func usualWake(days: [String: DayRecord], today: String, weekendMorning: Bool) -> (wakeMin: Double, basis: WakeBasis)? {
+        var sameKind: [Double] = [], all: [Double] = []
+        for offset in 0...27 {
+            let date = Format.addDays(today, -offset)
+            guard let wake = days[date]?.double("sleep_waketime_min") else { continue }
+            all.append(wake)
+            if (weekdayIndex(date) >= 5) == weekendMorning { sameKind.append(wake) }
+        }
+        if sameKind.count >= minNights { return (median(sameKind)!, weekendMorning ? .weekend : .weekday) }
+        if all.count >= minNights { return (median(all)!, .all) }
+        return nil
     }
 }

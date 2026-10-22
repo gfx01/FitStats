@@ -58,7 +58,7 @@ import {
   trainingLoad,
 } from "../functions/fitstats/lib/stats.ts";
 import { normalizeTags } from "../functions/fitstats/lib/journal.ts";
-import { sleepPlan } from "../functions/fitstats/lib/planner.ts";
+import { sleepPlan, usualWake, wakeTimesFrom } from "../functions/fitstats/lib/planner.ts";
 import { lowWear, workoutRecovery } from "../functions/fitstats/lib/sync.ts";
 
 const budapest = new LocalClock("Europe/Budapest");
@@ -697,6 +697,32 @@ test("sleep plan: need from strain, debt and naps; bedtime from the usual wake t
   assert.equal(few.efficiency, 0.9);
   assert.equal(few.wakeMin, null);
   assert.equal(few.bedtimeMin, null);
+});
+
+test("sleep plan: a wake-up time set by hand for tomorrow wins over the usual one", () => {
+  const today = "2026-10-18"; // a Sunday: tomorrow is Monday (index 0)
+  const rows = Array.from({ length: 28 }, (_, i) => {
+    const date = addDays(today, -27 + i);
+    return day(date, { sleep_asleep_min: 480, sleep_efficiency: 0.9, sleep_waketime_min: weekdayIndex(date) >= 5 ? 540 : 400 });
+  });
+  const set = sleepPlan(rows, today, 480, [360, 360, 360, 360, 360, null, null]);
+  assert.equal(set.wakeBasis, "set");
+  assert.equal(set.wakeMin, 360);
+  assert.equal(set.bedtimeMin, 360 - 535, "06:00 − 8h 55m = 21:05 the evening before");
+  // Friday night: Saturday has no time set, so the usual weekend one is used.
+  const friday = "2026-10-16";
+  const free = sleepPlan(rows, friday, 480, [360, 360, 360, 360, 360, null, null]);
+  assert.equal(free.wakeBasis, "weekend");
+  assert.equal(free.wakeMin, 540);
+  assert.deepEqual(usualWake(rows, today, false), { wakeMin: 400, basis: "weekday" });
+  assert.equal(usualWake([], today, true), null);
+
+  assert.equal(wakeTimesFrom(null), null);
+  assert.equal(wakeTimesFrom([null, null, null, null, null, null, null]), null, "all empty = none set");
+  assert.deepEqual(wakeTimesFrom([390, 390, 390, 390, 390, 480, null]), [390, 390, 390, 390, 390, 480, null]);
+  assert.throws(() => wakeTimesFrom([390, 390]));
+  assert.throws(() => wakeTimesFrom([390, 390, 390, 390, 390, 1440, null]));
+  assert.throws(() => wakeTimesFrom([390, 390, 390, 390, 390, "7:00", null]));
 });
 
 test("sleep: time to fall asleep from the stages when Google reports 0", () => {

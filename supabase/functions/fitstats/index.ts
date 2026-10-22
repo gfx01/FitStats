@@ -14,6 +14,7 @@ import { coachBrief, coachDelete, coachStatus, coachThread, coachThreads, handle
 import * as db from "./lib/db.ts";
 import { decodeIdToken, exchangeCode, GOOGLE_AUTH_URL, HEALTH_SCOPES, HealthClient, OAUTH_SCOPES } from "./lib/google.ts";
 import { JOURNAL_TAGS, journalEntries, JournalInputError, saveJournalEntry } from "./lib/journal.ts";
+import { wakeTimesFrom } from "./lib/planner.ts";
 import {
   clockFor,
   loadAccount,
@@ -338,6 +339,13 @@ async function saveSettings(req: Request): Promise<Response> {
   for (const k of ["sleep_need_min", "step_goal", "backfill_days"]) {
     const v = intOrNull(body[k]);
     if (v !== null) patch[k] = v;
+  }
+  if ("wake_times" in body) {
+    try {
+      patch.wake_times = wakeTimesFrom(body.wake_times);
+    } catch (e) {
+      return json({ error: "invalid settings", detail: (e as Error).message }, 400);
+    }
   }
   try {
     await db.update("fs_user_settings", "id=eq.1", patch);

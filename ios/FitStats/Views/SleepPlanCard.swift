@@ -6,6 +6,7 @@ struct SleepPlanCard: View {
     @EnvironmentObject private var model: AppModel
     @AppStorage(Reminders.bedtimeKey) private var reminderOn = false
     @State private var denied = false
+    @State private var editingWakeTimes = false
 
     var body: some View {
         Card {
@@ -30,6 +31,13 @@ struct SleepPlanCard: View {
             Text(explanation)
                 .font(.caption)
                 .foregroundStyle(Theme.tertiary)
+            Button { editingWakeTimes = true } label: {
+                Label(model.wakeTimes == nil ? "Set your wake-up times" : "Wake-up times", systemImage: "alarm")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Theme.sleep)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("tonight-wake-times")
             if denied {
                 Button("Notifications are off for FitStats. Open Settings") { Reminders.openSystemSettings() }
                     .font(.caption.weight(.semibold))
@@ -37,6 +45,16 @@ struct SleepPlanCard: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("sleep-plan")
+        .sheet(isPresented: $editingWakeTimes) {
+            NavigationStack {
+                WakeTimesView(closesOnSave: true)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) { Button("Close") { editingWakeTimes = false } }
+                    }
+            }
+            .environmentObject(model)
+            .preferredColorScheme(.dark)
+        }
     }
 
     /// Turns the bedtime reminder on or off (Settings has its lead time).
@@ -66,9 +84,14 @@ struct SleepPlanCard: View {
     private var explanation: String {
         let inBed = "\(Format.duration(plan.inBedMin)) in bed at your \(Int((plan.efficiency * 100).rounded()))% sleep efficiency"
         guard plan.bedtimeMin != nil, let basis = plan.wakeBasis else {
-            return "\(inBed). A bedtime appears once 3 recent nights have a wake time."
+            return "\(inBed). A bedtime appears once 3 recent nights have a wake time, or set your wake-up times."
         }
-        let usual = basis == .all ? "your usual wake time" : "your usual \(basis.rawValue) wake time"
+        let usual: String
+        switch basis {
+        case .set: usual = "the time you set for \(WakeTimesView.dayNames[SleepPlan.weekdayIndex(Format.addDays(model.today, 1))])"
+        case .all: usual = "your usual wake time"
+        default: usual = "your usual \(basis.rawValue) wake time"
+        }
         return "\(inBed), to wake at \(usual). Today's strain and a quarter of the last week's sleep debt (up to 1h) add to your base need; today's naps take some off."
     }
 

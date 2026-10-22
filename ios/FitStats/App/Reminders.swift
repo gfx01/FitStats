@@ -56,20 +56,24 @@ enum Reminders {
     /// One reminder a night, `lead` minutes before the plan's bedtime, for tonight and the six
     /// nights after (estimated). Nights without a bedtime yet (fewer than 3 recent wake times) and
     /// times already past are left out.
-    static func bedtimes(days: [String: DayRecord], today: String, sleepNeedMin: Double, zone: TimeZone,
-                         lead: Int, now: Date) -> [Planned] {
+    static func bedtimes(days: [String: DayRecord], today: String, sleepNeedMin: Double, wakeTimes: [Int?]? = nil,
+                         zone: TimeZone, lead: Int, now: Date) -> [Planned] {
         (0..<nights).compactMap { offset -> Planned? in
             let night = Format.addDays(today, offset)
-            let plan = SleepPlan.plan(days: days, today: night, sleepNeedMin: sleepNeedMin)
+            // Each night uses the wake-up time set for its own next morning.
+            let plan = SleepPlan.plan(days: days, today: night, sleepNeedMin: sleepNeedMin, wakeTimes: wakeTimes)
             guard let bedtime = plan.bedtimeMin, let base = midnight(Format.addDays(night, 1), zone) else { return nil }
             let fire = base.addingTimeInterval((bedtime - Double(lead)) * 60)
             guard fire > now.addingTimeInterval(60) else { return nil }
             let clock = Format.clock(bedtime)
             let need = Format.duration(plan.needMin)
             let body: String
+            let wake = plan.wakeMin.map { Format.clock($0) } ?? ""
             if offset == 0 {
-                let wake = plan.wakeMin.map { " before your usual \(Format.clock($0)) wake-up" } ?? ""
-                body = "Lights out by \(clock) for \(need) of sleep\(wake)."
+                let usual = plan.wakeBasis == .set ? " before your \(wake) wake-up" : " before your usual \(wake) wake-up"
+                body = "Lights out by \(clock) for \(need) of sleep\(plan.wakeMin == nil ? "" : usual)."
+            } else if plan.wakeBasis == .set {
+                body = "Lights out around \(clock) for about \(need) of sleep before your \(wake) wake-up. Open FitStats for tonight's exact plan."
             } else {
                 body = "Lights out around \(clock) for about \(need) of sleep. Open FitStats for tonight's exact plan."
             }
@@ -104,7 +108,7 @@ enum Reminders {
         if defaults.bool(forKey: bedtimeKey) {
             planned += bedtimes(days: model.daysByDate, today: model.today,
                                 sleepNeedMin: Double(model.status?.settings.sleepNeedMin ?? 480),
-                                zone: zone, lead: lead, now: now)
+                                wakeTimes: model.wakeTimes, zone: zone, lead: lead, now: now)
         }
         if defaults.bool(forKey: journalKey) {
             let logged = Set(model.journal.keys)

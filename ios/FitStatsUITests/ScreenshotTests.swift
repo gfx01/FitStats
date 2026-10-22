@@ -811,6 +811,9 @@ final class ScreenshotTests: XCTestCase {
             } else {
                 XCTFail("Squat is not in the library")
             }
+            // The open search hides the back button: close it first.
+            let cancel = app.navigationBars.buttons["Cancel"]
+            if cancel.waitForExistence(timeout: 2) { cancel.tap() }
             back(app)
         } else {
             XCTFail("missing the library link")
@@ -826,6 +829,52 @@ final class ScreenshotTests: XCTestCase {
         } else {
             XCTFail("the routine has no muscles card")
         }
+        app.terminate()
+    }
+
+    /// Wake-up times set by hand: Monday on and copied to the other weekdays, Saturday later,
+    /// Sunday free; saved, they show in Settings.
+    func test09WakeTimes() {
+        let fixtures = ProcessInfo.processInfo.environment["FITSTATS_FIXTURES"] ?? ""
+        XCTAssertFalse(fixtures.isEmpty, "FITSTATS_FIXTURES is not set")
+        let app = XCUIApplication()
+        app.launchEnvironment["FITSTATS_FIXTURES"] = fixtures
+        app.launch()
+        XCTAssertTrue(app.buttons["ring-recovery"].waitForExistence(timeout: 15), "Today screen did not load")
+
+        app.tabBars.buttons["Settings"].tap()
+        let row = app.buttons["settings-wake-times"]
+        for _ in 0..<8 where !(row.exists && row.isHittable) { app.swipeUp() }
+        guard row.exists, row.isHittable else {
+            XCTFail("missing the wake-up times row in Settings")
+            return
+        }
+        row.tap()
+        let monday = app.switches["wake-toggle-0"]
+        guard monday.waitForExistence(timeout: 5) else {
+            XCTFail("the wake-up times screen did not open")
+            return
+        }
+        shot("112-wake-times-empty")
+        // On the switch itself (see test05's reminder switch).
+        func flip(_ toggle: XCUIElement) { toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap() }
+        flip(monday)
+        XCTAssertEqual(monday.value as? String, "1", "Monday's wake-up time did not switch on")
+        XCTAssertTrue(element(app, "wake-time-0").waitForExistence(timeout: 3), "no time to set for Monday")
+        app.buttons["wake-copy-weekdays"].tap()
+        flip(app.switches["wake-toggle-5"])
+        XCTAssertEqual(app.switches["wake-toggle-4"].value as? String, "1", "Monday's time wasn't copied to Friday")
+        shot("113-wake-times-set")
+        let save = app.buttons["wake-save"]
+        for _ in 0..<4 where !(save.exists && save.isHittable) { app.swipeUp() }
+        shot("114-wake-times-saving")
+        save.tap()
+        sleep(1)
+        back(app)
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        let summary = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Mon–")).firstMatch
+        XCTAssertTrue(row.label.contains("Mon–") || summary.waitForExistence(timeout: 3), "the saved wake-up times aren't in Settings: \(row.label)")
+        shot("115-settings-wake-times")
         app.terminate()
     }
 

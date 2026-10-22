@@ -32,6 +32,10 @@ final class CoachStore: ObservableObject {
     private var fixtureDir: URL?
     private var fixtureMessages: [CoachMessage] = []
     private var sendTask: Task<Void, Never>?
+    /// The current question and briefing: a stream that ends after a newer one started (or after
+    /// a new conversation) leaves the newer one's state alone.
+    private var sendGeneration = 0
+    private var briefGeneration = 0
     /// The screenshots of the question that failed, sent again with "Try again".
     private var failedImages: [CoachImageUpload] = []
 
@@ -90,6 +94,7 @@ final class CoachStore: ObservableObject {
     func newChat() {
         sendTask?.cancel()
         sendTask = nil
+        sendGeneration += 1
         threadId = nil
         messages = []
         streamingText = ""
@@ -136,8 +141,17 @@ final class CoachStore: ObservableObject {
         streamingText = ""
         toolStatus = nil
         isSending = true
+        sendGeneration += 1
+        let generation = sendGeneration
         let thread = threadId
-        sendTask = Task { await stream(question, images: images, thread: thread) }
+        sendTask = Task { await stream(question, images: images, thread: thread, generation: generation) }
+    }
+
+    /// The answer is in (or failed): the composer opens again and no "Thinking…" row is left.
+    private func endSending(_ generation: Int) {
+        guard generation == sendGeneration else { return }
+        isSending = false
+        toolStatus = nil
     }
 
     func retry() {
@@ -150,11 +164,8 @@ final class CoachStore: ObservableObject {
         send(question, images: images)
     }
 
-    private func stream(_ question: String, images: [CoachImageUpload], thread: String?) async {
-        defer {
-            isSending = false
-            toolStatus = nil
-        }
+    private func stream(_ question: String, images: [CoachImageUpload], thread: String?, generation: Int) async {
+        defer { endSending(generation) }
         guard fixtureDir == nil, let api = apiProvider() else { return }
         // A little time to finish if the app is left mid-answer; past that the server finishes
         // the answer on its own and it is read from the thread when the app is back.
@@ -190,16 +201,20 @@ final class CoachStore: ObservableObject {
                                                  persona: event.persona ?? persona.rawValue))
                     streamingText = ""
                     if let id = event.threadId { threadId = id }
-                    await refreshStatusAndThreads()
+                    // In the same update as the reply, so nothing else shows up for a moment
+                    // while the conversation list refreshes below.
+                    endSending(generation)
                 case "error":
                     throw CoachFailure(message: event.message ?? "The coach couldn't answer.")
                 default:
                     break
                 }
             }
-            if !finished, let started {
+            if finished {
+                await refreshStatusAndThreads()
+            } else if let started {
                 // The connection ended before the answer did: the server is still on it.
-                await pickUp(started, question: question, images: images)
+                await pickUp(started, question: question, images: images, generation: generation)
             }
         } catch let e as CoachFailure {
             // The server said the answer failed; it kept nothing, so it can be sent again.
@@ -210,7 +225,7 @@ final class CoachStore: ObservableObject {
                 streamingText = ""
             } else if let started, !error.isUnauthorized {
                 // Backgrounded or the network dropped: the server finishes and saves the answer.
-                await pickUp(started, question: question, images: images)
+                await pickUp(started, question: question, images: images, generation: generation)
             } else {
                 fail(question, images: images, error)
             }
@@ -220,7 +235,8 @@ final class CoachStore: ObservableObject {
     /// Waits for an answer the server is finishing after the connection was lost, reading the
     /// thread every few seconds (for up to three minutes, also after the app was in the
     /// background). The answer replaces the partial text; a failed one can be sent again.
-    private func pickUp(_ started: (thread: String, question: String), question: String, images: [CoachImageUpload]) async {
+    private func pickUp(_ started: (thread: String, question: String), question: String, images: [CoachImageUpload],
+                        generation: Int) async {
         toolStatus = "Finishing your answer…"
         let deadline = Date().addingTimeInterval(180)
         while Date() < deadline, !Task.isCancelled {
@@ -232,8 +248,10 @@ final class CoachStore: ObservableObject {
                     return fail(question, images: images, CoachFailure(message: "The coach couldn't finish that answer."))
                 }
                 if thread.messages[q...].contains(where: { !$0.isUser }) {
+                    guard generation == sendGeneration else { return }
                     messages = thread.messages
                     streamingText = ""
+                    endSending(generation)
                     await refreshStatusAndThreads()
                     return
                 }
@@ -270,46 +288,64 @@ final class CoachStore: ObservableObject {
         isBriefing = true
         briefStreaming = ""
         briefError = nil
+        briefGeneration += 1
+        let generation = briefGeneration
         let before = brief?.createdAt
         Task {
-            defer { isBriefing = false }
+            defer { endBriefing(generation) }
             let background = BackgroundTime("coach-brief")
             defer { background.end() }
+            var finished = false
             do {
                 for try await event in api.events("coach", body: Data(#"{"kind":"brief"}"#.utf8)) {
                     switch event.type {
                     case "text":
                         briefStreaming += event.text ?? ""
                     case "done":
+                        finished = true
+                        // The briefing replaces the streamed text in the same update, so the
+                        // card never shows the "Reading your night…" placeholder in between.
                         if let b = event.brief { brief = b }
-                        briefStreaming = ""
-                        await refreshStatusAndThreads()
+                        endBriefing(generation)
                     case "error":
                         throw CoachFailure(message: event.message ?? "The briefing couldn't be written.")
                     default:
                         break
                     }
                 }
+                if finished {
+                    await refreshStatusAndThreads()
+                } else if !(await pickUpBrief(newerThan: before, generation: generation)) {
+                    briefError = "The connection was interrupted. Try again."
+                }
             } catch let e as CoachFailure {
-                briefStreaming = ""
                 briefError = e.localizedDescription
             } catch {
-                briefStreaming = ""
                 if error.isUnauthorized {
                     onUnauthorized()
-                } else if !(await pickUpBrief(newerThan: before)) {
+                } else if !(await pickUpBrief(newerThan: before, generation: generation)) {
                     briefError = error.isCancellation ? "The connection was interrupted. Try again." : error.localizedDescription
                 }
             }
         }
     }
 
+    private func endBriefing(_ generation: Int) {
+        guard generation == briefGeneration else { return }
+        isBriefing = false
+        briefStreaming = ""
+    }
+
     /// The server finishes a briefing the app stopped listening to; read it once it's saved.
-    private func pickUpBrief(newerThan before: String?) async -> Bool {
+    /// What already streamed in stays on screen until then.
+    private func pickUpBrief(newerThan before: String?, generation: Int) async -> Bool {
         let deadline = Date().addingTimeInterval(120)
         while Date() < deadline {
             if let api = apiProvider(), let b = try? await api.fetch(CoachBriefResponse.self, "coach_brief").0.brief, b.createdAt != before {
-                brief = b
+                if generation == briefGeneration {
+                    brief = b
+                    endBriefing(generation)
+                }
                 return true
             }
             try? await Task.sleep(for: .seconds(2.5))

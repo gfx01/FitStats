@@ -6,7 +6,7 @@
 import * as db from "./db.ts";
 import { exerciseMuscles, LIBRARY, type MuscleId, MUSCLES } from "./exercises.ts";
 import { type JournalEntry, journalEntries, tagLabel } from "./journal.ts";
-import { sleepPlan } from "./planner.ts";
+import { sleepPlan, usualWake, wakeTimesFrom, type WakeTimes } from "./planner.ts";
 import type { DayRow } from "./scores.ts";
 import { fmtValue, lowerFirst, METRIC_BY_KEY, METRICS, type MetricDef } from "./stats.ts";
 import { type Account, clockFor, loadAccount, loadSettings, maxHrInUse, type UserSettings } from "./sync.ts";
@@ -157,6 +157,28 @@ function shortDate(ymd: unknown): string {
 
 function weekday(ymd: Ymd): string {
   return WEEKDAYS[new Date(`${ymd}T00:00:00Z`).getUTCDay()];
+}
+
+/** The wake-up times in the settings row; a malformed value counts as none. */
+function savedWakeTimes(v: unknown): WakeTimes | null {
+  try {
+    return wakeTimesFrom(v);
+  } catch {
+    return null;
+  }
+}
+
+/** Their wake-up times by day of the week, set by hand or not, with the band's usual times. */
+export function wakeTimesText(wakeTimes: WakeTimes | null, days: DayRow[], today: Ymd): string {
+  const usual = (weekend: boolean) => {
+    const u = usualWake(days, today, weekend);
+    return u ? clockText(u.wakeMin) : "not known yet";
+  };
+  const fromBand = `From the band, they usually wake at ${usual(false)} on weekdays and ${usual(true)} at weekends (median of the last 28 mornings).`;
+  if (!wakeTimes) return `Wake-up times: none set by hand (Settings → Wake-up times), so the sleep plan uses the band's. ${fromBand}`;
+  const names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const list = wakeTimes.map((t, i) => `${names[i]} ${t === null ? "none (no fixed time: a morning they can sleep in)" : clockText(t)}`).join(", ");
+  return `Wake-up times they set by hand (the morning of each day; Settings → Wake-up times): ${list}. ${fromBand}`;
 }
 
 function dur(min: number): string {
@@ -396,19 +418,24 @@ export async function buildContext(ctx: Ctx, stats: Json | null): Promise<string
     if (sl) lines.push(`How last night's sleep score was computed: ${sl}.`);
     if (Array.isArray(details.strainTarget)) lines.push(`Suggested strain for today: ${details.strainTarget[0]}–${details.strainTarget[1]}.`);
   }
-  const plan = sleepPlan(days as DayRow[], ctx.today, ctx.settings.sleep_need_min);
+  const wakeTimes = savedWakeTimes(ctx.settings.wake_times);
+  const plan = sleepPlan(days as DayRow[], ctx.today, ctx.settings.sleep_need_min, wakeTimes);
   const extras = [
     plan.strainMin ? `+ ${plan.strainMin} min for today's strain` : "",
     plan.debtMin ? `+ ${plan.debtMin} min to repay debt` : "",
     plan.napMin ? `− ${plan.napMin} min of naps today` : "",
   ].filter(Boolean).join(" ");
+  const wakeSource = plan.wakeBasis === "set"
+    ? `the wake-up time they set for ${weekday(addDays(ctx.today, 1))}`
+    : `their usual ${plan.wakeBasis === "all" ? "" : `${plan.wakeBasis} `}wake time`;
   const bedtime = plan.bedtimeMin !== null && plan.wakeMin !== null
-    ? `in bed by ${clockText(plan.bedtimeMin)} to wake at ${clockText(plan.wakeMin)} (their usual ${plan.wakeBasis === "all" ? "" : `${plan.wakeBasis} `}wake time)`
-    : "no bedtime yet (fewer than 3 recent wake times)";
+    ? `in bed by ${clockText(plan.bedtimeMin)} to wake at ${clockText(plan.wakeMin)} (${wakeSource})`
+    : "no bedtime yet (no wake-up time set for tomorrow and fewer than 3 recent wake times)";
   lines.push(
     `Tonight's sleep plan (FitStats' rule, shown in the app): need tonight ${dur(plan.needMin)} (base ${dur(plan.baseMin)}${extras ? ` ${extras}` : ""}); ` +
       `at ${Math.round(plan.efficiency * 100)}% sleep efficiency that is ${dur(plan.inBedMin)} in bed; ${bedtime}.`,
   );
+  lines.push(wakeTimesText(wakeTimes, days as DayRow[], ctx.today));
 
   const metrics = (stats?.metrics ?? null) as Record<string, Json> | null;
   if (!metrics) {
@@ -841,7 +868,8 @@ Score definitions
 - Bedtime vs sleep (shown in the app): the last 180 scored nights grouped by bedtime (before 22:30, half-hour windows to 01:00, after 01:00); the best window has the highest mean sleep score among windows with 3+ nights, compared with all other nights (clear = Welch t ≥ 2).
 - HRV is Fitbit's nightly RMSSD and resting heart rate is Fitbit's daily value.
 - Awakenings count only times awake after falling asleep and before the final wake-up; "awake after falling asleep" is the minutes of those. Fitbit's awake time also includes the stretch of falling asleep.
-- Sleep plan (shown in the app as "Tonight"): need tonight = their sleep need setting (the base) + 0–45 min for the day's strain (0 at 35 or less, 45 at 85 or more) + a quarter of the last 7 nights' sleep debt (at most 60 min; earlier days' naps count as sleep) − today's naps (at most 60 min); time in bed = need tonight ÷ their typical sleep efficiency; bedtime = their usual wake time for tomorrow's kind of day − time in bed. Use its numbers when suggesting a bedtime; call the plan's total "need tonight", not their sleep need.`;
+- Sleep plan (shown in the app as "Tonight"): need tonight = their sleep need setting (the base) + 0–45 min for the day's strain (0 at 35 or less, 45 at 85 or more) + a quarter of the last 7 nights' sleep debt (at most 60 min; earlier days' naps count as sleep) − today's naps (at most 60 min); time in bed = need tonight ÷ their typical sleep efficiency; bedtime = the wake-up time they set for tomorrow (else their usual wake time for tomorrow's kind of day) − time in bed. Use its numbers when suggesting a bedtime; call the plan's total "need tonight", not their sleep need.
+- Wake-up times they set by hand are when they have to be up. A morning with a later time, or with none, is one they can sleep in: when they are short of sleep, point those out as the chance to catch up, and keep the plan's bedtime for nights before an early morning.`;
 
 export const BRIEF_PROMPT = `Write my briefing for today. Three or four short lines, no greeting, each starting with a bold label: **Recovery**, **Today**, **Tonight**, and only if there is something worth saying, **Trend**. Recovery: today's score and its main drivers. Today: how hard to train (the strain range) and one concrete suggestion. Tonight: the bedtime and the need tonight from tonight's sleep plan. Trend: one notable change over the last weeks. Under 90 words. If today's recovery isn't available yet, say so and base the advice on the last few days.`;
 

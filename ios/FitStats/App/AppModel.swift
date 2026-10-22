@@ -413,7 +413,34 @@ final class AppModel: ObservableObject {
     }
 
     var sleepPlan: SleepPlan {
-        SleepPlan.plan(days: daysByDate, today: today, sleepNeedMin: Double(status?.settings.sleepNeedMin ?? 480))
+        SleepPlan.plan(days: daysByDate, today: today, sleepNeedMin: Double(status?.settings.sleepNeedMin ?? 480), wakeTimes: wakeTimes)
+    }
+
+    /// The wake-up times set by hand (Monday first), or nil when none are.
+    var wakeTimes: [Int?]? {
+        guard let times = status?.settings.wakeTimes, times.count == 7, times.contains(where: { $0 != nil }) else { return nil }
+        return times
+    }
+
+    /// Saves the wake-up times (all nil = none) and makes tonight's plan and the bedtime
+    /// reminders use them at once. With the screenshot fixtures they are kept on the phone only.
+    func saveWakeTimes(_ times: [Int?]) async -> Bool {
+        let any = times.contains(where: { $0 != nil })
+        var value: Any = NSNull()
+        if any { value = times.map { t -> Any in t.map { $0 as Any } ?? NSNull() } }
+        if !isFixture {
+            guard let api else { return false }
+            do {
+                let body = try JSONSerialization.data(withJSONObject: ["wake_times": value])
+                _ = try await api.post("settings", body: body)
+            } catch {
+                handle(error)
+                return false
+            }
+        }
+        status?.settings.wakeTimes = any ? times : nil
+        await Reminders.update(self)
+        return true
     }
 
     // MARK: - Home layout backup
