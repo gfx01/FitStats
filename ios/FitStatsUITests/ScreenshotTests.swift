@@ -716,15 +716,13 @@ final class ScreenshotTests: XCTestCase {
         app.buttons["routine-save"].tap()
         XCTAssertTrue(app.buttons["routine-Push day"].waitForExistence(timeout: 5), "the new routine is not in Training")
 
-        // "Make me a routine" opens the Coach with it typed in.
+        // "Make me a routine" opens the Coach and sends it at once.
         let ask = app.buttons["ask-coach-Make me a routine"]
         scrollTo(app, ask)
         ask.tap()
-        let input = element(app, "coach-input")
-        XCTAssertTrue(input.waitForExistence(timeout: 5), "the Coach did not open")
-        sleep(1)
+        let sent = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Make me a routine")).firstMatch
+        XCTAssertTrue(sent.waitForExistence(timeout: 5), "the question wasn't sent to the coach")
         shot("102-ask-coach")
-        XCTAssertTrue((input.value as? String ?? "").hasPrefix("Make me a routine"), "the question is not in the Coach's field: \(input.value ?? "nil")")
         app.terminate()
     }
 
@@ -738,32 +736,35 @@ final class ScreenshotTests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["ring-recovery"].waitForExistence(timeout: 15), "Today screen did not load")
 
-        app.tabBars.buttons["Coach"].tap()
-        let switchCoach = app.buttons["coach-switch"]
-        guard switchCoach.waitForExistence(timeout: 5) else {
-            XCTFail("missing coach-switch")
-            return
-        }
-        switchCoach.tap()
-        let ace = app.buttons["coach-pick-ace"]
-        if ace.waitForExistence(timeout: 5) {
-            shot("103-coach-picker")
-            ace.tap()
-            XCTAssertTrue(app.staticTexts["Ace"].waitForExistence(timeout: 5), "picking Ace didn't change the coach")
-            shot("104-coach-ace")
-            switchCoach.tap()
-            let kai = app.buttons["coach-pick-kai"]
-            if kai.waitForExistence(timeout: 5) {
-                kai.tap()
-                XCTAssertTrue(app.staticTexts["Kai"].waitForExistence(timeout: 5))
-                shot("105-coach-kai")
+        // The coach is chosen in Settings → Coach.
+        func pick(_ persona: String, shotName: String?) {
+            app.tabBars.buttons["Settings"].tap()
+            let row = app.buttons["settings-coach"]
+            for _ in 0..<8 where !(row.exists && row.isHittable) { app.swipeUp() }
+            guard row.exists, row.isHittable else {
+                XCTFail("missing the coach row in Settings")
+                return
             }
-            // Back to Nova for the other tests.
-            switchCoach.tap()
-            if app.buttons["coach-pick-nova"].waitForExistence(timeout: 5) { app.buttons["coach-pick-nova"].tap() }
-        } else {
-            XCTFail("the coach picker did not open")
+            row.tap()
+            let card = app.buttons["coach-pick-\(persona)"]
+            guard card.waitForExistence(timeout: 5) else {
+                XCTFail("the coach picker did not open")
+                return
+            }
+            if let shotName { shot(shotName) }
+            card.tap()
+            app.tabBars.buttons["Coach"].tap()
         }
+        pick("ace", shotName: "103-coach-picker")
+        XCTAssertTrue(app.staticTexts["Ace"].waitForExistence(timeout: 5), "picking Ace didn't change the coach")
+        XCTAssertFalse(app.buttons["coach-switch"].exists, "the Coach screen still has a switch button")
+        shot("104-coach-ace")
+        pick("kai", shotName: nil)
+        XCTAssertTrue(app.staticTexts["Kai"].waitForExistence(timeout: 5))
+        shot("105-coach-kai")
+        // Back to Nova for the other tests.
+        pick("nova", shotName: nil)
+        XCTAssertTrue(app.staticTexts["Nova"].waitForExistence(timeout: 5))
 
         // The fixture conversation has a screenshot in it.
         app.buttons["coach-history"].tap()
@@ -875,6 +876,49 @@ final class ScreenshotTests: XCTestCase {
         let summary = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Mon–")).firstMatch
         XCTAssertTrue(row.label.contains("Mon–") || summary.waitForExistence(timeout: 3), "the saved wake-up times aren't in Settings: \(row.label)")
         shot("115-settings-wake-times")
+        app.terminate()
+    }
+
+    /// A coach tab under a Home card sends its question at once: the coach thinks, then talks
+    /// while the (sample) answer streams in. A workout file in a conversation.
+    func test10CoachTabs() {
+        let fixtures = ProcessInfo.processInfo.environment["FITSTATS_FIXTURES"] ?? ""
+        XCTAssertFalse(fixtures.isEmpty, "FITSTATS_FIXTURES is not set")
+        let app = XCUIApplication()
+        app.launchEnvironment["FITSTATS_FIXTURES"] = fixtures
+        app.launch()
+        XCTAssertTrue(app.buttons["ring-recovery"].waitForExistence(timeout: 15), "Today screen did not load")
+
+        let tab = app.buttons["coach-tab"].firstMatch
+        guard tab.waitForExistence(timeout: 5) else {
+            XCTFail("no coach tab under a Home card")
+            return
+        }
+        scrollTo(app, tab, near: 0.6)
+        shot("116-home-coach-tab")
+        tab.tap()
+        let sent = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "About my scores")).firstMatch
+        XCTAssertTrue(sent.waitForExistence(timeout: 5), "the card's question wasn't sent")
+        shot("117-coach-thinking")
+        let answer = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "This is a sample answer")).firstMatch
+        XCTAssertTrue(answer.waitForExistence(timeout: 6), "no answer came in")
+        shot("118-coach-talking")
+        sleep(4)
+        shot("119-coach-answered")
+        XCTAssertFalse(app.staticTexts["Thinking…"].exists, "the thinking row is still there after the answer")
+
+        // The fixture conversation ends with a workout file.
+        app.buttons["coach-history"].tap()
+        let thread = app.buttons["coach-thread"].firstMatch
+        if thread.waitForExistence(timeout: 5) {
+            thread.tap()
+            sleep(1)
+            app.swipeUp()
+            shot("120-coach-file")
+        } else {
+            XCTFail("no coach conversation in the history sheet")
+        }
+        XCTAssertTrue(app.buttons["coach-attach-file"].exists, "no file button in the composer")
         app.terminate()
     }
 

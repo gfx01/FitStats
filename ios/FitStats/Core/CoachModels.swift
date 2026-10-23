@@ -78,14 +78,18 @@ struct CoachMessage: Codable, Identifiable, Equatable {
 }
 
 /// A screenshot sent with a question: its small preview (base64), kept with the message.
+/// A screenshot's preview, or an attached file by name (a workout CSV the server imported).
 struct CoachAttachment: Codable, Equatable {
     let mediaType: String
     let thumb: String?
+    var name: String? = nil
 
     enum CodingKeys: String, CodingKey {
-        case thumb
+        case thumb, name
         case mediaType = "media_type"
     }
+
+    var isFile: Bool { name != nil }
 }
 
 struct CoachThreadResponse: Codable {

@@ -230,6 +230,49 @@ test("training: the app saves routines and workouts, the coach reads them and sa
   assert.deepEqual((await training.loadRoutines()).map((r) => r.name), ["Upper body A"]);
 });
 
+test("chat: a workout CSV is saved to the Training log and the coach is told what was in it", async () => {
+  claudeRequests.length = 0;
+  const logsBefore = tables.fs_workout_logs.length;
+  const today = (await import("../functions/fitstats/lib/sync.ts")).clockFor(tables.fs_account[0] as never).today();
+  const day = (n: number) => new Date(Date.parse(`${today}T00:00:00Z`) - n * 86_400_000).toISOString().slice(0, 10);
+  const text = "Date,Workout Name,Duration,Exercise Name,Set Order,Weight,Reps,Distance,Seconds,Notes,Workout Notes,RPE\n" +
+    `${day(3)} 18:00:00,Push,1h,Bench Press (Barbell),1,80,5,0,0,,,\n${day(3)} 18:00:00,Push,1h,Bench Press (Barbell),2,80,5,0,0,,,\n` +
+    `${day(1)} 07:00:00,Legs,50m,Squat (Barbell),1,100,5,0,0,,,\n`;
+  const evs = await events(await coach.handleCoach(post({ message: "", files: [{ name: "strong.csv", text }] })));
+  const done = evs.at(-1)!;
+  assert.equal(done.type, "done", JSON.stringify(evs.filter((e) => e.type === "error")));
+  assert.deepEqual(evs.slice(0, 3).map((e) => e.type), ["status", "changed", "started"]);
+  assert.equal(evs[0].text, "Reading strong.csv");
+  assert.equal(tables.fs_workout_logs.length, logsBefore + 2);
+
+  const asked = String((claudeRequests[0].messages as Row[]).at(-1)!.content);
+  assert.match(asked, /^Here are my workouts\. Look at how much and how I've been training\.\n\n\[They attached strong\.csv\. FitStats read strong\.csv \(a Strong export\) and saved 2 workouts/);
+  assert.match(String((claudeRequests[0].system as Row[])[0].text), /- They can attach workout files \(CSV exports/);
+  const thread = tables.fs_coach_threads.find((t) => t.id === done.thread_id)!;
+  assert.equal(thread.title, "strong.csv");
+  const question = tables.fs_coach_messages.find((m) => m.thread_id === done.thread_id && m.role === "user")!;
+  const kept = (question.attachments as Row[])[0];
+  assert.deepEqual([kept.media_type, kept.name, kept.thumb], ["text/csv", "strong.csv", null]);
+
+  // Later in the conversation the coach still knows what the file held, without the file.
+  claudeRequests.length = 0;
+  await events(await coach.handleCoach(post({ message: "And this week?", thread_id: done.thread_id })));
+  const history = claudeRequests[0].messages as Row[];
+  assert.match(String(history[0].content), /^\[They attached strong\.csv\. FitStats read strong\.csv/);
+  assert.ok(!JSON.stringify(history).includes("Bench Press (Barbell),2,80"), "the file itself isn't sent again");
+
+  // A file that isn't workouts: nothing saved, the coach gets its first lines to explain.
+  claudeRequests.length = 0;
+  const bad = await events(await coach.handleCoach(post({ message: "Can you log these?", files: [{ name: "notes.csv", text: "foo,bar\n1,2\n" }] })));
+  assert.equal(bad.at(-1)!.type, "done");
+  assert.ok(!bad.some((e) => e.type === "changed"));
+  assert.match(String((claudeRequests[0].messages as Row[]).at(-1)!.content), /FitStats couldn't read workouts from notes\.csv/);
+  const tooMany = await coach.handleCoach(post({ message: "x", files: [1, 2, 3, 4].map((i) => ({ name: `${i}.csv`, text: "a" })) }));
+  assert.equal(tooMany.status, 400);
+  // Leave the Training log as the other tests expect it.
+  tables.fs_workout_logs.splice(logsBefore);
+});
+
 test("chat: the chosen coach's voice, and screenshots in, previews kept, not resent", async () => {
   claudeRequests.length = 0;
   const shot = PNG_SCREENSHOT;

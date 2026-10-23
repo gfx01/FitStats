@@ -59,6 +59,18 @@ struct SettingsView: View {
 
     @ViewBuilder private var coachSection: some View {
         Section("Coach") {
+            NavigationLink {
+                CoachPickerView()
+            } label: {
+                HStack(spacing: 12) {
+                    CoachCharacter(persona: coach.persona, size: 40, animated: false)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Your coach: \(coach.persona.name)")
+                        Text(coach.persona.tagline).font(.caption).foregroundStyle(coach.persona.color)
+                    }
+                }
+            }
+            .accessibilityIdentifier("settings-coach")
             if let status = coach.status {
                 KeyValueRow(key: "Claude API key", value: status.configured ? "Added" : "Missing",
                             color: status.configured ? Theme.recoveryGreen : Theme.recoveryYellow)

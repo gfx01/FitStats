@@ -36,8 +36,11 @@ final class CoachStore: ObservableObject {
     /// a new conversation) leaves the newer one's state alone.
     private var sendGeneration = 0
     private var briefGeneration = 0
-    /// The screenshots of the question that failed, sent again with "Try again".
+    /// The screenshots and files of the question that failed, sent again with "Try again".
     private var failedImages: [CoachImageUpload] = []
+    private var failedFiles: [CoachFileUpload] = []
+    /// The files of the question being answered (failedFiles if it fails).
+    private var sentFiles: [CoachFileUpload] = []
 
     var isConfigured: Bool { status?.configured ?? false }
 
@@ -130,21 +133,24 @@ final class CoachStore: ObservableObject {
         }
     }
 
-    func send(_ text: String, images: [CoachImageUpload] = []) {
+    func send(_ text: String, images: [CoachImageUpload] = [], files: [CoachFileUpload] = []) {
         let question = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !question.isEmpty || !images.isEmpty, !isSending else { return }
+        guard !question.isEmpty || !images.isEmpty || !files.isEmpty, !isSending else { return }
         error = nil
         failedQuestion = nil
         failedImages = []
+        failedFiles = []
+        sentFiles = files
+        let attachments = files.map(\.attachment) + images.map(\.attachment)
         messages.append(CoachMessage(id: "local-\(UUID().uuidString)", role: "user", content: question, createdAt: nil,
-                                     attachments: images.isEmpty ? nil : images.map(\.attachment)))
+                                     attachments: attachments.isEmpty ? nil : attachments))
         streamingText = ""
         toolStatus = nil
         isSending = true
         sendGeneration += 1
         let generation = sendGeneration
         let thread = threadId
-        sendTask = Task { await stream(question, images: images, thread: thread, generation: generation) }
+        sendTask = Task { await stream(question, images: images, files: files, thread: thread, generation: generation) }
     }
 
     /// The answer is in (or failed): the composer opens again and no "Thinking…" row is left.
@@ -157,16 +163,18 @@ final class CoachStore: ObservableObject {
     func retry() {
         guard let question = failedQuestion else { return }
         let images = failedImages
+        let files = failedFiles
         if let i = messages.lastIndex(where: { $0.isUser && $0.content == question }) {
             messages.removeSubrange(i...)
         }
         failedQuestion = nil
-        send(question, images: images)
+        send(question, images: images, files: files)
     }
 
-    private func stream(_ question: String, images: [CoachImageUpload], thread: String?, generation: Int) async {
+    private func stream(_ question: String, images: [CoachImageUpload], files: [CoachFileUpload], thread: String?, generation: Int) async {
         defer { endSending(generation) }
-        guard fixtureDir == nil, let api = apiProvider() else { return }
+        if fixtureDir != nil { return await fixtureAnswer(generation: generation) }
+        guard let api = apiProvider() else { return }
         // A little time to finish if the app is left mid-answer; past that the server finishes
         // the answer on its own and it is read from the thread when the app is back.
         let background = BackgroundTime("coach-answer")
@@ -175,6 +183,9 @@ final class CoachStore: ObservableObject {
         if let thread { body["thread_id"] = thread }
         if !images.isEmpty {
             body["images"] = images.map { ["media_type": "image/jpeg", "data": $0.data, "thumb": $0.thumb] }
+        }
+        if !files.isEmpty {
+            body["files"] = files.map { ["name": $0.name, "text": $0.text] }
         }
         var started: (thread: String, question: String)?
         var finished = false
@@ -232,6 +243,24 @@ final class CoachStore: ObservableObject {
         }
     }
 
+    /// Screenshots (no server): a sample answer written out word by word after a moment of
+    /// thinking, so the coach's thinking and talking and the end of an answer can be seen.
+    private func fixtureAnswer(generation: Int) async {
+        try? await Task.sleep(for: .seconds(1.5))
+        let sample = "This is a sample answer for the screenshots. With your server connected, \(persona.name) reads your recovery, sleep, " +
+            "training and journal and answers here.\n\n- It cites your own numbers and baselines\n- It can save routines to your Training tab"
+        for word in sample.split(separator: " ") {
+            guard generation == sendGeneration, !Task.isCancelled else { return }
+            streamingText += (streamingText.isEmpty ? "" : " ") + word
+            try? await Task.sleep(for: .milliseconds(70))
+        }
+        guard generation == sendGeneration else { return }
+        messages.append(CoachMessage(id: "sample-\(UUID().uuidString)", role: "assistant", content: streamingText, createdAt: nil,
+                                     persona: persona.rawValue))
+        streamingText = ""
+        endSending(generation)
+    }
+
     /// Waits for an answer the server is finishing after the connection was lost, reading the
     /// thread every few seconds (for up to three minutes, also after the app was in the
     /// background). The answer replaces the partial text; a failed one can be sent again.
@@ -276,6 +305,7 @@ final class CoachStore: ObservableObject {
         }
         failedQuestion = question
         failedImages = images
+        failedFiles = sentFiles
         handle(error.isCancellation ? CoachFailure(message: "The connection was interrupted. Try again.") : error)
     }
 

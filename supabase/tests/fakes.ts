@@ -597,6 +597,13 @@ function claudeFetch(init: RequestInit): Response {
       "If those are your weekly sets per muscle, the top one is doing most of the work.";
     return sseResponse(message(model, usage1, textEvents(0, text), "end_turn", 60));
   }
+  // A workout CSV: FitStats has imported it and says what it saved.
+  const fileNote = typeof last.content === "string" ? /\[They attached ([^\]]+?\.csv)\. FitStats read .*? and saved (\d+) workouts?.*?last 4 weeks (\d+) \(([\d.]+) a week\)/s.exec(last.content) : null;
+  if (!results.length && fileNote) {
+    const text = `I've added the **${fileNote[2]} workouts** from ${fileNote[1]} to your Training log. ` +
+      `Over the last 4 weeks that's ${fileNote[3]} sessions, about **${fileNote[4]} a week**.`;
+    return sseResponse(message(model, usage1, textEvents(0, text), "end_turn", 50));
+  }
   // "Make me a routine…": the coach saves one with save_routine, then says so.
   if (!results.length && typeof last.content === "string" && last.content.startsWith("Make me a routine")) {
     const input = JSON.stringify(FAKE_ROUTINE);

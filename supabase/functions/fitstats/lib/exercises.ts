@@ -365,10 +365,17 @@ for (const e of LIBRARY) {
   for (const n of [e.name, ...e.aliases]) BY_NAME.set(normalizeExerciseName(n), e);
 }
 
-/** The library entry for a name as written, also without a plural "s". */
+/** The library entry for a name as written, also without a plural "s" or with its equipment in brackets. */
 export function findExercise(name: string): LibraryExercise | null {
-  const n = normalizeExerciseName(name);
-  return BY_NAME.get(n) ?? (n.endsWith("s") ? BY_NAME.get(n.slice(0, -1)) ?? null : null);
+  const exact = (s: string) => {
+    const n = normalizeExerciseName(s);
+    return BY_NAME.get(n) ?? (n.endsWith("s") ? BY_NAME.get(n.slice(0, -1)) ?? null : null);
+  };
+  const found = exact(name);
+  if (found) return found;
+  // "Bench Press (Dumbbell)", as Strong and Hevy write them: the equipment in brackets.
+  const m = name.match(/^(.+?)\s*\(([^)]*)\)\s*$/);
+  return m ? exact(`${m[2]} ${m[1]}`) ?? exact(`${m[1]} ${m[2]}`) ?? exact(m[1]) : null;
 }
 
 /** Muscles chosen for an exercise outside the library: known ids only, at most six. */

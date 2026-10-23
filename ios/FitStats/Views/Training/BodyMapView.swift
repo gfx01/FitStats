@@ -1,18 +1,20 @@
 import SwiftUI
 
 /// A front and a back figure with each muscle shaded by how much it was worked: `levels` from
-/// 0 (not at all) to 1 (most). The shapes are simple, mannequin-like regions in a 100 × 210 box
-/// per figure, drawn in a Canvas; muscles with no level are drawn in the body's base colour.
+/// 0 (not at all) to 1 (most). The figures are anatomical outlines (BodyMapPaths, from
+/// react-native-body-highlighter, MIT); muscles with no level are drawn in the body's base
+/// colour, the head, hands, knees and feet in a darker one. Female figures with Sex set to female.
 struct BodyMapView: View {
     let levels: [String: Double]
     var color: Color = Theme.muscle
     var height: CGFloat = 230
     var showsLabels = true
+    @Environment(\.bodyFigure) private var figure
 
     var body: some View {
-        HStack(spacing: height * 0.09) {
-            figure(front: true)
-            figure(front: false)
+        HStack(spacing: height * 0.06) {
+            side(front: true)
+            side(front: false)
         }
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .ignore)
@@ -20,36 +22,15 @@ struct BodyMapView: View {
         .accessibilityIdentifier("body-map")
     }
 
-    private func figure(front: Bool) -> some View {
-        VStack(spacing: 4) {
+    private func side(front: Bool) -> some View {
+        let shapes = BodyShapes.figure(figure, front: front)
+        let levels = levels
+        let color = color
+        return VStack(spacing: 4) {
             Canvas { ctx, size in
-                let scale = size.height / 210
-                let dx = (size.width - 100 * scale) / 2
-                ctx.translateBy(x: dx, y: 0)
-                ctx.scaleBy(x: scale, y: scale)
-                let base = Color.white.opacity(0.09)
-                let skin = Color.white.opacity(0.05)
-                for part in BodyShapes.neutral(front: front) {
-                    ctx.fill(part, with: .color(skin))
-                }
-                for (muscle, path) in BodyShapes.muscles(front: front) {
-                    ctx.fill(path, with: .color(base))
-                    let level = levels[muscle] ?? 0
-                    if level > 0 { ctx.fill(path, with: .color(color.opacity(0.25 + 0.75 * min(1, level)))) }
-                }
-                // The lines between the abs, so they read as abs.
-                if front {
-                    var lines = Path()
-                    for y in [CGFloat(58.5), 66, 73.5] {
-                        lines.move(to: CGPoint(x: 43, y: y))
-                        lines.addLine(to: CGPoint(x: 57, y: y))
-                    }
-                    lines.move(to: CGPoint(x: 50, y: 51))
-                    lines.addLine(to: CGPoint(x: 50, y: 80))
-                    ctx.stroke(lines, with: .color(Theme.background.opacity(0.9)), lineWidth: 1.1)
-                }
+                BodyShapes.draw(shapes, levels: levels, color: color, in: ctx, size: size)
             }
-            .frame(width: height * 100 / 210, height: height)
+            .frame(width: height * shapes.aspect, height: height)
             if showsLabels {
                 Text(front ? "Front" : "Back").font(.caption2).foregroundStyle(Theme.tertiary)
             }
@@ -67,72 +48,98 @@ extension Theme {
     static let muscle = Color(red: 1.0, green: 0.47, blue: 0.32)
 }
 
-/// The figure's regions, in a 100 × 210 box.
+/// Which figures the body map draws (Settings → Sex; "not set" draws the male ones).
+enum BodyFigure {
+    case male, female
+}
+
+private struct BodyFigureKey: EnvironmentKey {
+    static let defaultValue = BodyFigure.male
+}
+
+extension EnvironmentValues {
+    var bodyFigure: BodyFigure {
+        get { self[BodyFigureKey.self] }
+        set { self[BodyFigureKey.self] = newValue }
+    }
+}
+
+/// The body map's figures, made once from BodyMapPaths.
 enum BodyShapes {
-    private static func ellipse(_ cx: CGFloat, _ cy: CGFloat, _ rx: CGFloat, _ ry: CGFloat) -> Path {
-        Path(ellipseIn: CGRect(x: cx - rx, y: cy - ry, width: rx * 2, height: ry * 2))
+    struct Figure {
+        /// Muscle id → its outline; "" is the body around the muscles.
+        let regions: [(muscle: String, path: Path)]
+        /// The part of the 724 × 1448 box the figure covers.
+        let bounds: CGRect
+        var aspect: CGFloat { bounds.width / bounds.height }
     }
 
-    private static func box(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat, _ r: CGFloat) -> Path {
-        Path(roundedRect: CGRect(x: x, y: y, width: w, height: h), cornerRadius: r, style: .continuous)
-    }
+    private static let maleFront = make(BodyMapPaths.maleFront)
+    private static let maleBack = make(BodyMapPaths.maleBack)
+    private static let femaleFront = make(BodyMapPaths.femaleFront)
+    private static let femaleBack = make(BodyMapPaths.femaleBack)
 
-    private static func polygon(_ points: [(CGFloat, CGFloat)]) -> Path {
-        var p = Path()
-        p.addLines(points.map { CGPoint(x: $0.0, y: $0.1) })
-        p.closeSubpath()
-        return p
-    }
-
-    /// A shape and its mirror image across the middle (x = 50).
-    private static func pair(_ make: (Bool) -> Path) -> Path {
-        var p = make(false)
-        p.addPath(make(true))
-        return p
-    }
-
-    private static func mx(_ x: CGFloat, _ mirrored: Bool) -> CGFloat { mirrored ? 100 - x : x }
-
-    /// Head, neck, hands, pelvis, knees and feet: not muscles.
-    static func neutral(front: Bool) -> [Path] {
-        var out = [
-            ellipse(50, 12.5, 9.5, 10.5),
-            box(45, 21, 10, 8, 3),
-            pair { m in ellipse(mx(16.5, m), 95, 4, 5) },
-            pair { m in ellipse(mx(40.5, m), 140, 5, 4.5) },
-            pair { m in box(m ? 53 : 34, 188, 13, 7, 3.5) },
-        ]
-        if front { out.append(polygon([(35, 80), (65, 80), (60, 92), (40, 92)])) }
-        return out
-    }
-
-    /// Muscle id → its region on this side, in drawing order.
-    static func muscles(front: Bool) -> [(String, Path)] {
-        let forearms = pair { m in ellipse(mx(19, m), 77, 4.6, 12) }
-        if front {
-            return [
-                ("chest", pair { m in box(m ? 50.5 : 35, 32, 14.5, 17, 6) }),
-                ("shoulders", pair { m in ellipse(mx(29, m), 37, 8.5, 8) }),
-                ("biceps", pair { m in ellipse(mx(23.5, m), 54, 5.5, 11) }),
-                ("forearms", forearms),
-                ("abs", box(42.5, 51, 15, 29, 4)),
-                ("obliques", pair { m in box(m ? 58 : 35, 52, 7, 26, 3.5) }),
-                ("quads", pair { m in box(m ? 51.5 : 33, 92, 15.5, 44, 8) }),
-                ("adductors", pair { m in box(m ? 50 : 45.5, 94, 4.5, 28, 2.2) }),
-                ("calves", pair { m in box(m ? 53.5 : 34.5, 146, 12, 40, 6) }),
-            ]
+    static func figure(_ figure: BodyFigure, front: Bool) -> Figure {
+        switch (figure, front) {
+        case (.male, true): return maleFront
+        case (.male, false): return maleBack
+        case (.female, true): return femaleFront
+        case (.female, false): return femaleBack
         }
-        return [
-            ("upper_back", polygon([(43, 24), (57, 24), (68, 33), (62, 52), (38, 52), (32, 33)])),
-            ("lats", pair { m in polygon([(mx(35, m), 47), (mx(44, m), 52), (mx(45, m), 72), (mx(38, m), 70), (mx(33, m), 58)]) }),
-            ("lower_back", box(43, 63, 14, 16, 4)),
-            ("shoulders", pair { m in ellipse(mx(29, m), 37, 8.5, 8) }),
-            ("triceps", pair { m in ellipse(mx(23.5, m), 54, 5.5, 11) }),
-            ("forearms", forearms),
-            ("glutes", pair { m in ellipse(mx(42.5, m), 88, 8.5, 9) }),
-            ("hamstrings", pair { m in box(m ? 51.5 : 33, 98, 15.5, 38, 8) }),
-            ("calves", pair { m in ellipse(mx(40.5, m), 158, 7, 16) }),
-        ]
+    }
+
+    private static func make(_ source: [(String, String)]) -> Figure {
+        let regions = source.map { (muscle: $0.0, path: path($0.1)) }
+        let bounds = regions.reduce(CGRect.null) { $0.union($1.path.boundingRect) }
+        return Figure(regions: regions, bounds: bounds.isNull ? CGRect(x: 0, y: 0, width: 724, height: 1448) : bounds)
+    }
+
+    /// "M x y L x y C x1 y1 x2 y2 x y Z", as body_map.py writes it.
+    static func path(_ commands: String) -> Path {
+        var p = Path()
+        let t = commands.split(separator: " ")
+        var i = 0
+        func n(_ k: Int) -> CGFloat { CGFloat(Double(t[i + k]) ?? 0) }
+        while i < t.count {
+            switch t[i] {
+            case "M" where i + 2 < t.count:
+                p.move(to: CGPoint(x: n(1), y: n(2)))
+                i += 3
+            case "L" where i + 2 < t.count:
+                p.addLine(to: CGPoint(x: n(1), y: n(2)))
+                i += 3
+            case "C" where i + 6 < t.count:
+                p.addCurve(to: CGPoint(x: n(5), y: n(6)), control1: CGPoint(x: n(1), y: n(2)), control2: CGPoint(x: n(3), y: n(4)))
+                i += 7
+            case "Z":
+                p.closeSubpath()
+                i += 1
+            default:
+                i += 1
+            }
+        }
+        return p
+    }
+
+    /// Fits the figure into `size` and fills each region: the body, the muscles in the base
+    /// colour, then the worked ones in `color` by level.
+    static func draw(_ figure: Figure, levels: [String: Double], color: Color, in ctx: GraphicsContext, size: CGSize) {
+        var ctx = ctx
+        let b = figure.bounds
+        let scale = min(size.width / b.width, size.height / b.height)
+        ctx.translateBy(x: (size.width - b.width * scale) / 2, y: (size.height - b.height * scale) / 2)
+        ctx.scaleBy(x: scale, y: scale)
+        ctx.translateBy(x: -b.minX, y: -b.minY)
+        let body = Color.white.opacity(0.06)
+        let base = Color.white.opacity(0.13)
+        for region in figure.regions {
+            guard !region.muscle.isEmpty else {
+                ctx.fill(region.path, with: .color(body))
+                continue
+            }
+            let level = levels[region.muscle] ?? 0
+            ctx.fill(region.path, with: .color(level > 0 ? color.opacity(0.3 + 0.7 * min(1, level)) : base))
+        }
     }
 }
 

@@ -6,6 +6,7 @@
 import * as db from "./db.ts";
 import { exerciseMuscles, LIBRARY, type MuscleId, MUSCLES } from "./exercises.ts";
 import { type JournalEntry, journalEntries, tagLabel } from "./journal.ts";
+import { type CsvFile, importSummary, importWorkoutCsv, parseFiles } from "./csvimport.ts";
 import { sleepPlan, usualWake, wakeTimesFrom, type WakeTimes } from "./planner.ts";
 import type { DayRow } from "./scores.ts";
 import { fmtValue, lowerFirst, METRIC_BY_KEY, METRICS, type MetricDef } from "./stats.ts";
@@ -109,13 +110,22 @@ export function parseImages(v: unknown): CoachImage[] | string {
   return out;
 }
 
-/** A stored message as history for the next request: earlier screenshots are named, not resent. */
+/**
+ * A stored message as history for the next request: earlier screenshots are named, not resent,
+ * and an imported file comes back as what FitStats made of it.
+ */
 function historyContent(r: Row): string {
-  const n = Array.isArray(r.attachments) ? r.attachments.length : 0;
-  if (!n) return String(r.content);
-  const note = `[They attached ${n === 1 ? "a screenshot" : `${n} screenshots`} to this message. You saw ${n === 1 ? "it" : "them"} then; ` +
-    `${n === 1 ? "it isn't" : "they aren't"} shown again.]`;
-  return r.content ? `${r.content}\n\n${note}` : note;
+  const all = Array.isArray(r.attachments) ? r.attachments as Row[] : [];
+  const files = all.filter((a) => typeof a.name === "string");
+  const n = all.length - files.length;
+  const notes: string[] = [];
+  if (n) {
+    notes.push(`[They attached ${n === 1 ? "a screenshot" : `${n} screenshots`} to this message. You saw ${n === 1 ? "it" : "them"} then; ` +
+      `${n === 1 ? "it isn't" : "they aren't"} shown again.]`);
+  }
+  for (const f of files) notes.push(`[They attached ${f.name}. ${String(f.note ?? "")}]`);
+  if (!notes.length) return String(r.content);
+  return [r.content ? String(r.content) : "", ...notes].filter(Boolean).join("\n\n");
 }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
@@ -847,6 +857,7 @@ Training
 - The app shows which muscles each exercise works (its exercise library) and done sets per muscle on a body map. get_training has the same numbers: use them to spot muscles trained much more or less than the rest, and keep routines balanced unless they want a focus.
 
 Screenshots
+- They can attach workout files (CSV exports from apps like Strong, Hevy or an Apple Health exporter). FitStats saves the workouts in them to their Training log before you answer and tells you what it saved, how often they trained and what it assumed (units, date order): say plainly what was imported and what was left out, then look at how much and how they train (get_training has the last year in detail). If a file couldn't be read, explain why from its first lines and what export would work.
 - They can attach screenshots to a message: from this app, another app (a workout, a nutrition label, a lab result) or anything else. Read them carefully and use what matters for their question; say plainly if something is unreadable or cut off. An earlier message's screenshots aren't shown again later in the conversation: rely on what you said about them then.
 
 How to answer
@@ -1114,6 +1125,7 @@ export async function coachBrief(): Promise<Row> {
 
 /**
  * POST {message, thread_id?, persona?, images?} for chat, or {kind: "brief"} for today's briefing.
+ * files: up to 3 workout CSVs, {name, text}: saved to the Training log first (lib/csvimport.ts).
  * persona: nova (default), ace or kai. images: up to 3 screenshots, {media_type, data (base64),
  * thumb (a small base64 JPEG kept with the message)}.
  * Streams `data: {...}` events: status (a tool is running), text (reply text as it
@@ -1128,8 +1140,10 @@ export async function handleCoach(req: Request): Promise<Response> {
   const persona = typeof body.persona === "string" && COACH_PERSONAS[body.persona] ? body.persona : DEFAULT_PERSONA;
   const images = kind === "chat" ? parseImages(body.images) : [];
   if (typeof images === "string") return jsonResponse({ error: "bad_request", message: images }, 400);
-  if (kind === "chat" && ((message.length === 0 && !images.length) || message.length > 4000)) {
-    return jsonResponse({ error: "bad_request", message: "A message of 1–4000 characters (or a screenshot) is needed." }, 400);
+  const files = kind === "chat" ? parseFiles(body.files) : [];
+  if (typeof files === "string") return jsonResponse({ error: "bad_request", message: files }, 400);
+  if (kind === "chat" && ((message.length === 0 && !images.length && !files.length) || message.length > 4000)) {
+    return jsonResponse({ error: "bad_request", message: "A message of 1–4000 characters (or a screenshot or file) is needed." }, 400);
   }
   const apiKey = db.optionalEnv("ANTHROPIC_API_KEY");
   if (!apiKey) {
@@ -1174,7 +1188,7 @@ export async function handleCoach(req: Request): Promise<Response> {
     // Claude can think for a while without output; SSE comments keep the connection open.
     const keepAlive = setInterval(() => write(": keep-alive\n\n"), 10_000);
     try {
-      await converse({ kind, message, images, persona, threadId, history, ctx, apiKey, signal: AbortSignal.timeout(ANSWER_TIMEOUT_MS), send });
+      await converse({ kind, message, images, files, persona, threadId, history, ctx, apiKey, signal: AbortSignal.timeout(ANSWER_TIMEOUT_MS), send });
     } catch (e) {
       console.error("coach", String(e));
       send({ type: "error", code: e instanceof CoachError ? e.code : "server_error", message: String((e as Error).message ?? e).slice(0, 400) });
@@ -1201,6 +1215,8 @@ async function converse(o: {
   kind: "chat" | "brief";
   message: string;
   images: CoachImage[];
+  /** Workout CSVs: imported to the Training log before Claude is asked. */
+  files: CsvFile[];
   persona: string;
   threadId: string | null;
   history: Json[];
@@ -1218,12 +1234,24 @@ async function converse(o: {
   ];
   // After the cached part, so switching coaches keeps the cache.
   if (o.kind === "chat") system.push({ type: "text", text: personaPrompt(o.persona) });
+  // Attached workout files go to the Training log first; Claude gets what was saved.
+  const imported: { name: string; note: string }[] = [];
+  for (const f of o.files) {
+    o.send({ type: "status", text: `Reading ${f.name}` });
+    const r = await importWorkoutCsv(f, o.ctx.tz, o.ctx.today);
+    imported.push({ name: f.name, note: importSummary(r, o.ctx.today) });
+    if (r.workouts.length) o.send({ type: "changed", what: "training" });
+  }
+  const asked = [
+    o.message || (imported.length ? "Here are my workouts. Look at how much and how I've been training." : ""),
+    ...imported.map((f) => `[They attached ${f.name}. ${f.note}]`),
+  ].filter(Boolean).join("\n\n");
   const question: Json[] | string = o.images.length
     ? [
       ...o.images.map((img) => ({ type: "image", source: { type: "base64", media_type: img.media_type, data: img.data } })),
-      ...(o.message ? [{ type: "text", text: o.message }] : []),
+      ...(asked ? [{ type: "text", text: asked }] : []),
     ]
-    : o.message;
+    : asked;
   const messages: Json[] = [...o.history, { role: "user", content: o.kind === "brief" ? BRIEF_PROMPT : question }];
   const usage = emptyUsage();
   let text = "";
@@ -1236,11 +1264,13 @@ async function converse(o: {
   if (o.kind === "chat") {
     if (!threadId) {
       threadId = crypto.randomUUID();
-      await db.insert("fs_coach_threads", [{ id: threadId, title: titleFrom(o.message || "Screenshot"), created_at: startedAt, updated_at: startedAt }]);
+      await db.insert("fs_coach_threads", [{ id: threadId, title: titleFrom(o.message || imported[0]?.name || "Screenshot"), created_at: startedAt, updated_at: startedAt }]);
     }
-    const attachments = o.images.length
-      ? o.images.map((img) => ({ media_type: img.thumb?.startsWith("iVBORw0KGgo") ? "image/png" : "image/jpeg", thumb: img.thumb }))
-      : null;
+    const kept = [
+      ...o.images.map((img) => ({ media_type: img.thumb?.startsWith("iVBORw0KGgo") ? "image/png" : "image/jpeg", thumb: img.thumb })),
+      ...imported.map((f) => ({ media_type: "text/csv", name: f.name, thumb: null, note: f.note.slice(0, 4000) })),
+    ];
+    const attachments = kept.length ? kept : null;
     await db.insert("fs_coach_messages", [
       { id: questionId, thread_id: threadId, role: "user", content: o.message, model: null, usage: null, persona: null, attachments, created_at: startedAt },
     ]);

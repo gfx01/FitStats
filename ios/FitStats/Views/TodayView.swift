@@ -397,13 +397,39 @@ struct TodayView: View {
             }
             .accessibilityIdentifier("home-card-\(item.id)")
         } else {
-            cellContent(item, size: item.size)
+            VStack(spacing: 0) {
+                cellContent(item, size: item.size)
+                if let question = coachQuestion(item) { CoachCardTab(question: question) }
+            }
                 .highPriorityGesture(
                     LongPressGesture(minimumDuration: 0.45).onEnded { _ in startEditing() }
                 )
                 .accessibilityElement(children: .contain)
                 .accessibilityAction(named: Text("Edit Home screen")) { startEditing() }
                 .accessibilityIdentifier("home-card-\(item.id)")
+        }
+    }
+
+    /// The question a card's coach tab sends, for the cards it is worth asking about; nil for
+    /// the others.
+    private func coachQuestion(_ item: HomeItem) -> String? {
+        let today = date == model.today
+        let day = today ? "today" : "on \(Format.longDay(date))"
+        switch item.card {
+        case .scores:
+            return "About my scores \(day): what's behind my recovery, sleep and strain, and what should I do about it?"
+        case .tonight:
+            return "About tonight's sleep plan: when should I go to bed, and why that time?"
+        case .lastNight:
+            return today ? "How did I sleep last night, and what affected it?" : "How did I sleep the night before \(Format.longDay(date)), and what affected it?"
+        case .stressDay:
+            return "About my stress \(day): why is it where it is, and what can I do about it?"
+        case .workouts:
+            return "About my workouts \(day): how hard were they, and how should I recover?"
+        case .trainingLoad:
+            return "About my training load: am I doing too much or too little right now?"
+        default:
+            return nil
         }
     }
 

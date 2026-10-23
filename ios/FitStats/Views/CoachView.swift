@@ -1,6 +1,7 @@
 import PhotosUI
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 private struct Suggestion: Identifiable {
     let icon: String
@@ -16,11 +17,14 @@ struct CoachView: View {
     @FocusState var inputFocused: Bool
     /// The text field and send button on screen: tapping anywhere else hides the keyboard.
     @State private var composerFrame: CGRect = .zero
-    @State private var choosingCoach = false
     /// Screenshots to send with the next message.
     @State private var attachments: [CoachImageUpload] = []
     @State private var pickedItems: [PhotosPickerItem] = []
     @State private var loadingImages = false
+    /// Workout CSVs to send with the next message.
+    @State private var files: [CoachFileUpload] = []
+    @State private var pickingFiles = false
+    @State private var fileProblem: String?
 
     private let bottomID = "coach-bottom"
 
@@ -67,16 +71,15 @@ struct CoachView: View {
                         .accessibilityLabel("Conversations")
                         .accessibilityIdentifier("coach-history")
                 }
+                // Who you're talking to (change it in Settings → Coach).
                 ToolbarItem(placement: .principal) {
-                    Button { choosingCoach = true } label: {
-                        HStack(spacing: 6) {
-                            CoachCharacter(persona: coach.persona, size: 24, thinking: coach.isSending)
-                            Text(coach.persona.name).font(.headline).foregroundStyle(.white)
-                            Image(systemName: "chevron.down").font(.caption2.weight(.bold)).foregroundStyle(Theme.tertiary)
-                        }
+                    HStack(spacing: 6) {
+                        CoachCharacter(persona: coach.persona, size: 26, thinking: coach.isSending && coach.streamingText.isEmpty,
+                                       talking: coach.isSending && !coach.streamingText.isEmpty)
+                        Text(coach.persona.name).font(.headline).foregroundStyle(.white)
                     }
-                    .accessibilityLabel("Coach: \(coach.persona.name). Switch coach")
-                    .accessibilityIdentifier("coach-switch-bar")
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("coach-name-bar")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { coach.newChat() } label: { Image(systemName: "square.and.pencil") }
@@ -85,7 +88,6 @@ struct CoachView: View {
                 }
             }
             .sheet(isPresented: $showHistory) { CoachHistoryView() }
-            .sheet(isPresented: $choosingCoach) { CoachPickerView() }
             .onChange(of: pickedItems) { _, items in
                 guard !items.isEmpty else { return }
                 Task { await loadPicked(items) }
@@ -96,16 +98,19 @@ struct CoachView: View {
         }
     }
 
-    /// A question from an "Ask coach" button elsewhere in the app: put in the message field with
-    /// the keyboard up, to finish or send as it is.
+    /// A question from an "Ask" button or a card's coach tab elsewhere in the app: sent at once
+    /// in a new conversation. While an answer is still being written it waits in the message
+    /// field instead.
     private func takeDraft() {
         guard let draft = model.coachDraft else { return }
         model.coachDraft = nil
-        input = draft
-        Task {
-            try? await Task.sleep(for: .milliseconds(450))
-            inputFocused = true
+        guard !coach.isSending, coach.isConfigured || coach.status == nil else {
+            input = draft
+            return
         }
+        inputFocused = false
+        coach.newChat()
+        coach.send(draft)
     }
 
     // MARK: home
@@ -113,8 +118,8 @@ struct CoachView: View {
     @ViewBuilder private var home: some View {
         VStack(spacing: 6) {
             // Not a button: a tap here only hides the keyboard (see the Coach UI test).
-            CoachCharacter(persona: coach.persona, size: 92)
-                .padding(.bottom, 2)
+            CoachCharacter(persona: coach.persona, size: 128)
+                .padding(.bottom, -4)
             Text(coach.persona.name).font(.title2.bold())
             Text(coach.persona.tagline.uppercased())
                 .font(.caption.weight(.semibold))
@@ -125,17 +130,6 @@ struct CoachView: View {
                 .foregroundStyle(Theme.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
-            Button { choosingCoach = true } label: {
-                Label("Switch coach", systemImage: "arrow.left.arrow.right")
-                    .font(.footnote.weight(.semibold))
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 7)
-                    .background(Capsule().fill(coach.persona.color.opacity(0.16)))
-                    .foregroundStyle(coach.persona.color)
-            }
-            .buttonStyle(.plain)
-            .padding(.top, 4)
-            .accessibilityIdentifier("coach-switch")
         }
         .padding(.top, 8)
         .padding(.bottom, 4)
@@ -175,7 +169,7 @@ struct CoachView: View {
         if let error = coach.error {
             Banner(icon: "exclamationmark.triangle.fill", text: error, color: Theme.recoveryYellow, actionTitle: "OK") { coach.error = nil }
         }
-        Text("The coach uses Claude by Anthropic: your question, any screenshots you attach and a summary of your FitStats data are sent to Anthropic's API to answer it. Only small previews of screenshots are kept. It's an AI coach, not medical advice.")
+        Text("The coach uses Claude by Anthropic: your question, any screenshots you attach and a summary of your FitStats data are sent to Anthropic's API to answer it. Only small previews of screenshots are kept. Workout files (CSV) are read by your own server, which saves their workouts to Training and sends the coach a summary. It's an AI coach, not medical advice.")
             .font(.caption2)
             .foregroundStyle(Theme.tertiary)
             .multilineTextAlignment(.center)
@@ -202,7 +196,7 @@ struct CoachView: View {
         if coach.isSending {
             if coach.streamingText.isEmpty {
                 HStack(alignment: .top, spacing: 10) {
-                    CoachCharacter(persona: coach.persona, size: 32, thinking: true)
+                    CoachCharacter(persona: coach.persona, size: 34, thinking: true)
                     HStack(spacing: 8) {
                         TypingDots()
                         Text(coach.toolStatus ?? "Thinking…")
@@ -238,14 +232,24 @@ struct CoachView: View {
 
     private var canSend: Bool {
         coach.isConfigured && !coach.isSending && !loadingImages
-            && (!input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty)
+            && (!input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty || !files.isEmpty)
     }
 
     private var composer: some View {
         VStack(spacing: 8) {
-            if !attachments.isEmpty || loadingImages {
+            if let fileProblem {
+                Label(fileProblem, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(Theme.recoveryYellow)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .onTapGesture { self.fileProblem = nil }
+            }
+            if !attachments.isEmpty || loadingImages || !files.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
+                        ForEach(files) { f in
+                            FileChip(name: f.name) { files.removeAll { $0.id == f.id } }
+                        }
                         ForEach(attachments) { a in
                             Image(uiImage: a.preview)
                                 .resizable()
@@ -280,6 +284,15 @@ struct CoachView: View {
                 .disabled(!coach.isConfigured || coach.isSending || attachments.count >= 3)
                 .accessibilityLabel("Attach screenshots")
                 .accessibilityIdentifier("coach-attach")
+                Button { pickingFiles = true } label: {
+                    Image(systemName: "doc.badge.plus")
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundStyle(files.count < 3 && coach.isConfigured ? coach.persona.color : Color.white.opacity(0.2))
+                        .frame(width: 30, height: 40)
+                }
+                .disabled(!coach.isConfigured || coach.isSending || files.count >= 3)
+                .accessibilityLabel("Attach a workout file (CSV)")
+                .accessibilityIdentifier("coach-attach-file")
                 TextField(coach.isConfigured ? "Ask \(coach.persona.name)…" : "Coach isn't set up yet", text: $input, axis: .vertical)
                     .lineLimit(1...5)
                     .focused($inputFocused)
@@ -289,9 +302,11 @@ struct CoachView: View {
                     .disabled(!coach.isConfigured)
                     .accessibilityIdentifier("coach-input")
                 Button {
-                    coach.send(input, images: attachments)
+                    coach.send(input, images: attachments, files: files)
                     input = ""
                     attachments = []
+                    files = []
+                    fileProblem = nil
                 } label: {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.system(size: 34))
@@ -306,11 +321,32 @@ struct CoachView: View {
         .padding(.top, 8)
         .padding(.bottom, 8)
         .background(.bar)
+        .fileImporter(isPresented: $pickingFiles, allowedContentTypes: [.commaSeparatedText, .tabSeparatedText, .plainText, .text],
+                      allowsMultipleSelection: true) { result in
+            takeFiles(result)
+        }
         .background {
             GeometryReader { geo in
                 Color.clear
                     .onAppear { composerFrame = geo.frame(in: .global) }
                     .onChange(of: geo.frame(in: .global)) { _, frame in composerFrame = frame }
+            }
+        }
+    }
+
+    /// Workout files picked in Files (at most three). The server reads them when the message is sent.
+    private func takeFiles(_ result: Result<[URL], Error>) {
+        guard case .success(let urls) = result else {
+            fileProblem = "Couldn't open that file."
+            return
+        }
+        fileProblem = nil
+        for url in urls where files.count < 3 {
+            switch CoachFileUpload.read(url) {
+            case .success(let file): files.append(file)
+            case .failure(.tooLarge): fileProblem = "\(url.lastPathComponent) is too large (at most 5 MB)."
+            case .failure(.notText): fileProblem = "\(url.lastPathComponent) isn't a text or CSV file."
+            case .failure(.unreadable): fileProblem = "Couldn't read \(url.lastPathComponent)."
             }
         }
     }
@@ -362,7 +398,7 @@ private struct MessageRow: View {
             let persona = message.coach ?? current
             HStack(alignment: .top, spacing: 10) {
                 // Only the reply being written moves; the rest stay still.
-                CoachCharacter(persona: persona, size: 32, thinking: false, animated: streaming)
+                CoachCharacter(persona: persona, size: 34, talking: streaming, animated: streaming)
                 CoachMarkdown(text: message.content)
                     .font(.subheadline)
                     .padding(.vertical, 12)

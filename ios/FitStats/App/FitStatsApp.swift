@@ -50,6 +50,8 @@ struct RootView: View {
             }
         }
         .background(Theme.background.ignoresSafeArea())
+        // The body map's figures follow Settings → Sex.
+        .environment(\.bodyFigure, model.status?.settings.sex == "female" ? .female : .male)
     }
 }
 

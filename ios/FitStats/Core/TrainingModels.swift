@@ -267,12 +267,22 @@ struct ExerciseLibrary: Codable, Equatable {
     }
 
     func find(_ name: String) -> LibraryExercise? {
-        let n = Self.normalize(name)
-        guard !n.isEmpty else { return nil }
-        func matches(_ key: String) -> LibraryExercise? {
-            exercises.first { e in ([e.name] + e.aliases).contains { Self.normalize($0) == key } }
+        func exact(_ s: String) -> LibraryExercise? {
+            let n = Self.normalize(s)
+            guard !n.isEmpty else { return nil }
+            func matches(_ key: String) -> LibraryExercise? {
+                exercises.first { e in ([e.name] + e.aliases).contains { Self.normalize($0) == key } }
+            }
+            return matches(n) ?? (n.hasSuffix("s") ? matches(String(n.dropLast())) : nil)
         }
-        return matches(n) ?? (n.hasSuffix("s") ? matches(String(n.dropLast())) : nil)
+        if let found = exact(name) { return found }
+        // "Bench Press (Dumbbell)", as Strong and Hevy write them (lib/exercises.ts findExercise).
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasSuffix(")"), let open = trimmed.lastIndex(of: "(") else { return nil }
+        let base = trimmed[..<open].trimmingCharacters(in: .whitespaces)
+        let equipment = trimmed[trimmed.index(after: open)..<trimmed.index(before: trimmed.endIndex)].trimmingCharacters(in: .whitespaces)
+        guard !base.isEmpty else { return nil }
+        return exact("\(equipment) \(base)") ?? exact("\(base) \(equipment)") ?? exact(base)
     }
 
     /// What an exercise works: the muscles chosen for it, or the library's.

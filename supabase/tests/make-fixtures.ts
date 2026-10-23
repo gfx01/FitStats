@@ -198,6 +198,10 @@ await ask({
   message: "Here's my week from another app. Anything stand out?", thread_id: tables.fs_coach_threads[0].id, persona: "nova",
   images: [{ media_type: "image/png", data: PNG_SCREENSHOT, thumb: PNG_SCREENSHOT }],
 });
+// And a workout file from another app, saved to the Training log.
+const strongCsv = "Date,Workout Name,Duration,Exercise Name,Set Order,Weight,Reps,Distance,Seconds,Notes,Workout Notes,RPE\n" +
+  [5, 3, 1].flatMap((n) => [1, 2, 3].map((set) => `${addDays(today, -n)} 18:00:00,Push,1h,Bench Press (Barbell),${set},80,5,0,0,,,`)).join("\n") + "\n";
+await ask({ message: "My workouts from Strong", thread_id: tables.fs_coach_threads[0].id, persona: "nova", files: [{ name: "strong_workouts.csv", text: strongCsv }] });
 await ask({ kind: "brief" });
 write("coach-status.json", await coach.coachStatus());
 write("coach-threads.json", await coach.coachThreads());

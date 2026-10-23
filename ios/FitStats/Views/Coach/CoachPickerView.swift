@@ -1,49 +1,41 @@
 import SwiftUI
 
-/// Choose who coaches you: the three characters with how each one talks. The choice applies
-/// to the next message (also in an open conversation) and stays on the phone.
+/// Settings → Coach: choose who coaches you, the three characters with how each one talks. The
+/// choice applies to the next message (also in an open conversation) and stays on the phone.
 struct CoachPickerView: View {
     @EnvironmentObject private var coach: CoachStore
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 12) {
-                    Text("Every coach reads the same data and follows the same rules. Only how they talk to you differs.")
-                        .font(.footnote)
-                        .foregroundStyle(Theme.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 8)
-                    ForEach(CoachPersona.allCases) { persona in
-                        Button {
-                            coach.persona = persona
-                            dismiss()
-                        } label: {
-                            card(persona)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("coach-pick-\(persona.rawValue)")
+        ScrollView {
+            VStack(spacing: 12) {
+                Text("Every coach reads the same data and follows the same rules. Only how they talk to you differs.")
+                    .font(.footnote)
+                    .foregroundStyle(Theme.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 8)
+                ForEach(CoachPersona.allCases) { persona in
+                    Button {
+                        coach.persona = persona
+                        dismiss()
+                    } label: {
+                        card(persona)
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("coach-pick-\(persona.rawValue)")
                 }
-                .padding(16)
             }
-            .scrollContentBackground(.hidden)
-            .background(Theme.background.ignoresSafeArea())
-            .navigationTitle("Choose your coach")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
-            }
+            .padding(16)
         }
-        .presentationDetents([.large])
-        .preferredColorScheme(.dark)
+        .screenBackground()
+        .navigationTitle("Choose your coach")
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     private func card(_ persona: CoachPersona) -> some View {
         let selected = coach.persona == persona
         return HStack(alignment: .top, spacing: 14) {
-            CoachCharacter(persona: persona, size: 64)
+            CoachCharacter(persona: persona, size: 72)
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline) {
                     Text(persona.name).font(.title3.weight(.bold)).foregroundStyle(.white)
