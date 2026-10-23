@@ -73,9 +73,9 @@ export const LIBRARY: LibraryExercise[] = [
     ["Chest fly", "Dumbbells", ["chest"], ["shoulders"], ["Dumbbell fly", "Pec fly", "Flyes", "Flat fly"]],
     ["Incline dumbbell fly", "Dumbbells", ["chest"], ["shoulders"], ["Incline fly"]],
     ["Pec deck", "Machine", ["chest"], ["shoulders"], ["Pec deck fly", "Machine fly", "Butterfly"]],
-    ["Cable crossover", "Cable", ["chest"], ["shoulders"], ["Cable fly"]],
-    ["Low-to-high cable fly", "Cable", ["chest"], ["shoulders"], ["Low cable fly"]],
-    ["High-to-low cable fly", "Cable", ["chest"], ["shoulders"], ["High cable fly"]],
+    ["Cable crossover", "Cable", ["chest"], ["shoulders"], ["Cable fly", "Cable fly crossovers", "Cable crossovers"]],
+    ["Low-to-high cable fly", "Cable", ["chest"], ["shoulders"], ["Low cable fly", "Low cable fly crossovers"]],
+    ["High-to-low cable fly", "Cable", ["chest"], ["shoulders"], ["High cable fly", "High to low chest fly", "High to low cable fly"]],
     ["Incline cable fly", "Cable", ["chest"], ["shoulders"]],
     ["Dumbbell pullover", "Dumbbell", ["chest", "lats"], ["triceps"], ["Pullover"]],
     ["Svend press", "Plate", ["chest"], ["shoulders"], ["Plate press"]],
@@ -85,7 +85,7 @@ export const LIBRARY: LibraryExercise[] = [
     ["Wide push-up", "Bodyweight", ["chest"], ["shoulders", "triceps"], ["Wide-grip push-up"]],
     ["Diamond push-up", "Bodyweight", ["triceps", "chest"], ["shoulders"], ["Close-grip push-up", "Triangle push-up"]],
     ["Archer push-up", "Bodyweight", ["chest"], ["triceps", "shoulders"]],
-    ["Dips", "Bodyweight", ["triceps", "chest"], ["shoulders"], ["Dip", "Chest dips", "Parallel bar dips", "Weighted dips"]],
+    ["Dips", "Bodyweight", ["triceps", "chest"], ["shoulders"], ["Dip", "Chest dips", "Parallel bar dips", "Weighted dips", "Triceps dip"]],
   ]),
   ...group("Back", "strength", [
     ["Deadlift", "Barbell", ["hamstrings", "glutes", "lower_back"], ["quads", "upper_back", "lats", "forearms"], ["Conventional deadlift"]],
@@ -99,7 +99,7 @@ export const LIBRARY: LibraryExercise[] = [
     ["Neutral-grip pull-up", "Bodyweight", ["lats", "biceps"], ["upper_back", "forearms"], ["Hammer-grip pull-up"]],
     ["Assisted pull-up", "Machine or band", ["lats"], ["biceps", "upper_back"], ["Assisted pull-up machine", "Band-assisted pull-up"]],
     ["Scapular pull-up", "Bar", ["lats", "upper_back"], [], ["Scap pull-up"]],
-    ["Lat pulldown", "Cable", ["lats"], ["biceps", "upper_back"], ["Lat pull-down", "Pulldown", "Pull-down", "Wide-grip lat pulldown"]],
+    ["Lat pulldown", "Cable", ["lats"], ["biceps", "upper_back"], ["Lat pull-down", "Pulldown", "Pull-down", "Wide-grip lat pulldown", "Reverse grip lat pulldown", "Underhand lat pulldown"]],
     ["Close-grip lat pulldown", "Cable", ["lats"], ["biceps", "upper_back"], ["V-bar pulldown"]],
     ["Single-arm lat pulldown", "Cable", ["lats"], ["biceps"], ["One-arm pulldown"]],
     ["Straight-arm pulldown", "Cable", ["lats"], ["triceps"], ["Straight-arm lat pulldown", "Cable pullover"]],
@@ -140,9 +140,9 @@ export const LIBRARY: LibraryExercise[] = [
     ["Machine lateral raise", "Machine", ["shoulders"], []],
     ["Lean-away lateral raise", "Dumbbell", ["shoulders"], []],
     ["Front raise", "Dumbbells or plate", ["shoulders"], [], ["Front raises", "Plate front raise", "Cable front raise"]],
-    ["Rear delt fly", "Dumbbells", ["shoulders"], ["upper_back"], ["Reverse fly", "Rear delt raise", "Bent-over lateral raise"]],
+    ["Rear delt fly", "Dumbbells", ["shoulders"], ["upper_back"], ["Reverse fly", "Rear delt raise", "Bent-over lateral raise", "Rear delt reverse fly"]],
     ["Reverse pec deck", "Machine", ["shoulders"], ["upper_back"], ["Machine rear delt fly", "Rear delt machine"]],
-    ["Cable rear delt fly", "Cable", ["shoulders"], ["upper_back"], ["Reverse cable fly", "Cable reverse fly"]],
+    ["Cable rear delt fly", "Cable", ["shoulders"], ["upper_back"], ["Reverse cable fly", "Cable reverse fly", "Reverse fly single arm", "Single-arm cable reverse fly"]],
     ["Upright row", "Barbell or cable", ["shoulders", "upper_back"], ["biceps"], ["Cable upright row"]],
     ["Cuban press", "Dumbbells", ["shoulders"], ["upper_back"]],
     ["External rotation", "Cable or band", ["shoulders"], [], ["Cable external rotation", "Band external rotation"]],
@@ -151,16 +151,16 @@ export const LIBRARY: LibraryExercise[] = [
     ["Overhead carry", "Dumbbells or kettlebells", ["shoulders", "abs"], ["upper_back", "triceps"], ["Waiter carry"]],
   ]),
   ...group("Arms", "strength", [
-    ["Barbell curl", "Barbell", ["biceps"], ["forearms"], ["Biceps curl", "Bicep curl", "EZ-bar curl", "Standing curl"]],
+    ["Barbell curl", "Barbell", ["biceps"], ["forearms"], ["Biceps curl", "Bicep curl", "EZ-bar curl", "Standing curl", "21s bicep curl", "21s"]],
     ["Dumbbell curl", "Dumbbells", ["biceps"], ["forearms"], ["DB curl", "Alternating curl", "Alternating dumbbell curl"]],
-    ["Hammer curl", "Dumbbells", ["biceps", "forearms"], [], ["Hammer curls", "Cross-body hammer curl"]],
+    ["Hammer curl", "Dumbbells", ["biceps", "forearms"], [], ["Hammer curls", "Cross-body hammer curl", "Incline hammer curl"]],
     ["Rope hammer curl", "Cable", ["biceps", "forearms"], [], ["Cable hammer curl"]],
     ["Incline dumbbell curl", "Dumbbells", ["biceps"], ["forearms"], ["Incline curl"]],
     ["Preacher curl", "Barbell or machine", ["biceps"], [], ["EZ-bar preacher curl", "Machine preacher curl"]],
     ["Concentration curl", "Dumbbell", ["biceps"], []],
     ["Spider curl", "Dumbbells or barbell", ["biceps"], []],
     ["Cable curl", "Cable", ["biceps"], ["forearms"], ["Cable biceps curl"]],
-    ["Bayesian curl", "Cable", ["biceps"], [], ["Behind-the-body cable curl"]],
+    ["Bayesian curl", "Cable", ["biceps"], [], ["Behind-the-body cable curl", "Behind the back curl", "Behind-the-back cable curl"]],
     ["Drag curl", "Barbell", ["biceps"], ["forearms"]],
     ["21s", "Barbell", ["biceps"], ["forearms"], ["Bicep 21s", "Biceps 21s"]],
     ["Machine curl", "Machine", ["biceps"], [], ["Biceps machine"]],
@@ -171,14 +171,14 @@ export const LIBRARY: LibraryExercise[] = [
     ["Wrist roller", "Wrist roller", ["forearms"], []],
     ["Plate pinch", "Plates", ["forearms"], [], ["Pinch grip hold"]],
     ["Dead hang", "Bar", ["forearms"], ["lats", "shoulders"], ["Bar hang"]],
-    ["Triceps pushdown", "Cable", ["triceps"], [], ["Tricep pushdown", "Rope pushdown", "Triceps pressdown", "Cable pushdown"]],
+    ["Triceps pushdown", "Cable", ["triceps"], [], ["Tricep pushdown", "Rope pushdown", "Triceps pressdown", "Cable pushdown", "Triceps rope pushdown", "Rope triceps pushdown"]],
     ["Single-arm cable pushdown", "Cable", ["triceps"], [], ["One-arm pushdown"]],
-    ["Overhead triceps extension", "Dumbbell or cable", ["triceps"], [], ["Overhead tricep extension", "Triceps extension", "Cable overhead extension", "French press"]],
+    ["Overhead triceps extension", "Dumbbell or cable", ["triceps"], [], ["Overhead tricep extension", "Triceps extension", "Cable overhead extension", "French press", "Seated triceps press"]],
     ["Skull crusher", "Barbell or dumbbells", ["triceps"], [], ["Skullcrusher", "Lying triceps extension", "EZ-bar skull crusher"]],
     ["JM press", "Barbell", ["triceps"], ["chest"]],
     ["Tate press", "Dumbbells", ["triceps"], []],
     ["Triceps kickback", "Dumbbell or cable", ["triceps"], [], ["Tricep kickback", "Kickback"]],
-    ["Bench dip", "Bench", ["triceps"], ["chest", "shoulders"], ["Bench dips", "Tricep dips"]],
+    ["Bench dip", "Bench", ["triceps"], ["chest", "shoulders"], ["Bench dips", "Tricep dips", "Seated dip machine", "Dip machine", "Triceps dip machine"]],
   ]),
   ...group("Legs", "strength", [
     ["Squat", "Barbell", ["quads", "glutes"], ["adductors", "hamstrings", "lower_back"], ["Back squat", "Barbell squat", "High-bar squat", "Low-bar squat"]],
@@ -216,7 +216,7 @@ export const LIBRARY: LibraryExercise[] = [
     ["Leg curl", "Machine", ["hamstrings"], ["calves"], ["Hamstring curl", "Lying leg curl", "Seated leg curl", "Standing leg curl"]],
     ["Nordic hamstring curl", "Bodyweight", ["hamstrings"], ["glutes", "calves"], ["Nordic curl", "Nordics"]],
     ["Glute-ham raise", "GHD", ["hamstrings", "glutes"], ["calves", "lower_back"], ["GHR"]],
-    ["Calf raise", "Machine or dumbbells", ["calves"], [], ["Standing calf raise", "Calf raises", "Smith machine calf raise"]],
+    ["Calf raise", "Machine or dumbbells", ["calves"], [], ["Standing calf raise", "Calf raises", "Smith machine calf raise", "Calf extension", "Machine calf raise"]],
     ["Seated calf raise", "Machine", ["calves"], []],
     ["Single-leg calf raise", "Dumbbell or bodyweight", ["calves"], []],
     ["Leg press calf raise", "Machine", ["calves"], [], ["Calf press"]],
@@ -257,7 +257,7 @@ export const LIBRARY: LibraryExercise[] = [
     ["Hollow hold", "Bodyweight", ["abs"], [], ["Hollow body hold", "Hollow rock"]],
     ["Lying leg raise", "Bodyweight", ["abs"], [], ["Leg raises", "Lying leg raises"]],
     ["Hanging leg raise", "Bar", ["abs"], ["obliques", "forearms"], ["Leg raise", "Hanging knee raise", "Knee raise"]],
-    ["Captain's chair leg raise", "Captain's chair", ["abs"], ["obliques"], ["Captain's chair", "Roman chair leg raise"]],
+    ["Captain's chair leg raise", "Captain's chair", ["abs"], ["obliques"], ["Captain's chair", "Roman chair leg raise", "Knee raise parallel bars", "Leg raise parallel bars"]],
     ["Toes to bar", "Bar", ["abs"], ["obliques", "lats", "forearms"], ["Toes-to-bar", "T2B"]],
     ["Flutter kicks", "Bodyweight", ["abs"], [], ["Flutter kick"]],
     ["Dead bug", "Bodyweight", ["abs"], [], ["Dead bugs"]],
@@ -313,7 +313,7 @@ export const LIBRARY: LibraryExercise[] = [
     ["Rowing machine", "Rower", ["lats", "upper_back", "quads"], ["glutes", "hamstrings", "biceps"], ["Rowing", "Erg", "Indoor rowing", "Concept2"]],
     ["Ski erg", "Ski erg", ["lats", "triceps"], ["abs", "shoulders"], ["SkiErg"]],
     ["Elliptical", "Machine", ["quads", "glutes"], ["hamstrings", "calves"], ["Cross trainer"]],
-    ["Stair climber", "Machine", ["quads", "glutes"], ["calves", "hamstrings"], ["Stairmaster", "Stairs", "Stair climbing", "Stepmill"]],
+    ["Stair climber", "Machine", ["quads", "glutes"], ["calves", "hamstrings"], ["Stairmaster", "Stairs", "Stair climbing", "Stepmill", "Stair machine", "Stair machine floors"]],
     ["Swim", "Pool", ["lats", "shoulders"], ["triceps", "upper_back"], ["Swimming", "Freestyle", "Laps"]],
     ["Jump rope", "Rope", ["calves"], ["quads", "shoulders"], ["Skipping", "Skipping rope", "Double unders"]],
     ["Jumping jacks", "Bodyweight", ["calves", "shoulders"], ["quads"], ["Star jumps"]],
@@ -365,17 +365,41 @@ for (const e of LIBRARY) {
   for (const n of [e.name, ...e.aliases]) BY_NAME.set(normalizeExerciseName(n), e);
 }
 
-/** The library entry for a name as written, also without a plural "s" or with its equipment in brackets. */
+/**
+ * Names to try for an exercise as other apps write it, most specific first: "Lat Pulldown - Close
+ * Grip (Cable)" (Strong, Hevy) is also tried as "Cable Close Grip Lat Pulldown", "Close Grip Lat
+ * Pulldown", "Lat Pulldown"…, and "Seated", "Standing", "Iso-Lateral" and "Single Arm" in front
+ * are dropped when nothing else matches.
+ */
+export function nameVariants(name: string): string[] {
+  const out = [name];
+  let base = name.trim(), equipment = "", grip = "";
+  const bracket = base.match(/^(.+?)\s*\(([^)]*)\)\s*$/);
+  if (bracket) [base, equipment] = [bracket[1], bracket[2]];
+  const dash = base.match(/^(.+?)\s+-\s+(.+)$/);
+  if (dash) [base, grip] = [dash[1], dash[2]];
+  const plain = base.replace(/^((seated|standing|iso-lateral|single[- ]arm|one[- ]arm)\s+)+/i, "");
+  for (const b of new Set([base, plain])) {
+    for (const g of new Set([grip, ""])) {
+      const core = g ? `${g} ${b}` : b;
+      if (equipment) out.push(`${equipment} ${core}`, `${core} ${equipment}`);
+      out.push(core);
+    }
+  }
+  return [...new Set(out)];
+}
+
+/** The library entry for a name as written, also without a plural "s" or in other apps' styles (nameVariants). */
 export function findExercise(name: string): LibraryExercise | null {
   const exact = (s: string) => {
     const n = normalizeExerciseName(s);
     return BY_NAME.get(n) ?? (n.endsWith("s") ? BY_NAME.get(n.slice(0, -1)) ?? null : null);
   };
-  const found = exact(name);
-  if (found) return found;
-  // "Bench Press (Dumbbell)", as Strong and Hevy write them: the equipment in brackets.
-  const m = name.match(/^(.+?)\s*\(([^)]*)\)\s*$/);
-  return m ? exact(`${m[2]} ${m[1]}`) ?? exact(`${m[1]} ${m[2]}`) ?? exact(m[1]) : null;
+  for (const v of nameVariants(name)) {
+    const found = exact(v);
+    if (found) return found;
+  }
+  return null;
 }
 
 /** Muscles chosen for an exercise outside the library: known ids only, at most six. */

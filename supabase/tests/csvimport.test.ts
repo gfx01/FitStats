@@ -75,6 +75,41 @@ test("csv: one row per workout, semicolons, durations and notes", async () => {
   assert.equal(lift.exercises[0].sets[0].duration_min, 60);
 });
 
+// The newer Strong export: ISO times, a Weight Unit column and each set's time in Duration (seconds).
+const STRONG_NEW = `"Date","Workout Name","Exercise Name","Set Order","Weight","Weight Unit","Reps","Distance","Duration","RPE","Notes"
+"2026-10-14T16:05:00+00:00","Hétfő (Push)","Chest Fly (Machine)","1","75","kg","6","","","",""
+"2026-10-14T16:05:00+00:00","Hétfő (Push)","Chest Fly (Machine)","2","75","kg","6","","","",""
+"2026-10-14T16:05:00+00:00","Hétfő (Push)","Lat Pulldown - Close Grip (Cable)","1","52","kg","10","","","",""
+"2026-10-14T16:05:00+00:00","Hétfő (Push)","Knee Raise Parallel Bars","1","","kg","10","","","",""
+"2026-10-14T16:05:00+00:00","Hétfő (Push)","Stair Machine (Floors)","1","","kg","","","900","",""
+"2026-10-16T11:18:11.439+00:00","Leg day","Squat (Barbell)","1","50","kg","6","","0","",""
+`;
+
+test("csv: the newer Strong export, and other apps' exercise names in the library", async () => {
+  const r = await csv.readWorkoutCsv({ name: "strong.csv", text: STRONG_NEW }, TZ, TODAY);
+  assert.equal(r.format, "a Strong export");
+  assert.deepEqual(r.assumed, ["weights in kg as the file says"]);
+  assert.equal(r.workouts.length, 2);
+  const [push, legs] = r.workouts;
+  assert.deepEqual([push.name, push.started_at, push.ended_at], ["Hétfő (Push)", "2026-10-14T16:05:00.000Z", null], "Duration is the set's time, not the workout's");
+  const stairs = push.exercises.find((e) => e.name === "Stair Machine (Floors)")!;
+  assert.deepEqual([stairs.kind, stairs.sets[0].duration_min], ["cardio", 15]);
+  assert.equal(push.exercises.find((e) => e.name === "Knee Raise Parallel Bars")!.sets[0].reps, 10);
+  assert.deepEqual([legs.started_at, legs.exercises[0].sets[0].duration_min], ["2026-10-16T11:18:11.439Z", null]);
+
+  const { findExercise, nameVariants } = await import("../functions/fitstats/lib/exercises.ts");
+  assert.deepEqual(nameVariants("Lat Pulldown - Close Grip (Cable)").slice(0, 4),
+    ["Lat Pulldown - Close Grip (Cable)", "Cable Close Grip Lat Pulldown", "Close Grip Lat Pulldown Cable", "Close Grip Lat Pulldown"]);
+  for (const [name, entry] of [
+    ["Lat Pulldown - Close Grip (Cable)", "Close-grip lat pulldown"], ["Iso-Lateral Row (Machine)", "Machine row"],
+    ["Single Arm Lateral Raise (Cable)", "Cable lateral raise"], ["Seated Cable Row - V Grip (Cable)", "Seated cable row"],
+    ["Knee Raise Parallel Bars", "Captain's chair leg raise"], ["Triceps Rope Pushdown (Cable)", "Triceps pushdown"],
+    ["Stair Machine (Floors)", "Stair climber"], ["Seated Incline Curl (Dumbbell)", "Incline dumbbell curl"],
+  ]) {
+    assert.equal(findExercise(name)?.name, entry, name);
+  }
+});
+
 test("csv: dates, durations and files that can't be read", () => {
   assert.deepEqual(csv.parseWhen("2024. 01. 15. 7:30:00", "UTC", true), { date: "2024-01-15", iso: "2024-01-15T07:30:00.000Z" });
   assert.deepEqual(csv.parseWhen("Jan 15, 2024 at 7:30 PM", "UTC", true), { date: "2024-01-15", iso: "2024-01-15T19:30:00.000Z" });

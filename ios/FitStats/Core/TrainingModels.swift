@@ -275,14 +275,44 @@ struct ExerciseLibrary: Codable, Equatable {
             }
             return matches(n) ?? (n.hasSuffix("s") ? matches(String(n.dropLast())) : nil)
         }
-        if let found = exact(name) { return found }
-        // "Bench Press (Dumbbell)", as Strong and Hevy write them (lib/exercises.ts findExercise).
-        let trimmed = name.trimmingCharacters(in: .whitespaces)
-        guard trimmed.hasSuffix(")"), let open = trimmed.lastIndex(of: "(") else { return nil }
-        let base = trimmed[..<open].trimmingCharacters(in: .whitespaces)
-        let equipment = trimmed[trimmed.index(after: open)..<trimmed.index(before: trimmed.endIndex)].trimmingCharacters(in: .whitespaces)
-        guard !base.isEmpty else { return nil }
-        return exact("\(equipment) \(base)") ?? exact("\(base) \(equipment)") ?? exact(base)
+        for variant in Self.nameVariants(name) {
+            if let found = exact(variant) { return found }
+        }
+        return nil
+    }
+
+    /// Names to try for an exercise as other apps write it (lib/exercises.ts nameVariants): "Lat
+    /// Pulldown - Close Grip (Cable)" is also tried as "Cable Close Grip Lat Pulldown", "Close Grip
+    /// Lat Pulldown", "Lat Pulldown"…, and "Seated", "Standing", "Iso-Lateral" and "Single Arm" in
+    /// front are dropped when nothing else matches.
+    static func nameVariants(_ name: String) -> [String] {
+        var out = [name]
+        var base = name.trimmingCharacters(in: .whitespaces)
+        var equipment = "", grip = ""
+        if base.hasSuffix(")"), let open = base.lastIndex(of: "("), open > base.startIndex {
+            equipment = base[base.index(after: open)..<base.index(before: base.endIndex)].trimmingCharacters(in: .whitespaces)
+            base = base[..<open].trimmingCharacters(in: .whitespaces)
+        }
+        if let dash = base.range(of: " - "), dash.lowerBound > base.startIndex {
+            grip = base[dash.upperBound...].trimmingCharacters(in: .whitespaces)
+            base = base[..<dash.lowerBound].trimmingCharacters(in: .whitespaces)
+        }
+        var plain = base
+        let prefixes = ["seated ", "standing ", "iso-lateral ", "single arm ", "single-arm ", "one arm ", "one-arm "]
+        while let p = prefixes.first(where: { plain.lowercased().hasPrefix($0) }) {
+            plain = String(plain.dropFirst(p.count))
+        }
+        var bases = [base]
+        if plain != base { bases.append(plain) }
+        for b in bases {
+            for g in grip.isEmpty ? [""] : [grip, ""] {
+                let core = g.isEmpty ? b : "\(g) \(b)"
+                if !equipment.isEmpty { out += ["\(equipment) \(core)", "\(core) \(equipment)"] }
+                out.append(core)
+            }
+        }
+        var seen = Set<String>()
+        return out.filter { seen.insert($0).inserted }
     }
 
     /// What an exercise works: the muscles chosen for it, or the library's.

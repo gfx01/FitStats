@@ -289,6 +289,16 @@ export async function readWorkoutCsv(file: CsvFile, tz: string | null, today: Ym
     : "one row per workout";
 
   const data = rows.slice(1);
+  // Newer Strong exports have no Seconds column: their Duration is each set's time in seconds
+  // (900 for 15 minutes on a machine). Older ones have Seconds per set and the workout's length
+  // in Duration ("1h 5m"). A Duration of plain numbers in a set-by-set file is the set's time.
+  if (perSet && c.seconds < 0 && c.duration >= 0) {
+    const values = data.map((r) => (r[c.duration] ?? "").trim()).filter(Boolean);
+    if (values.length && values.every((v) => /^\d+(?:[.,]\d+)?$/.test(v))) {
+      c.seconds = c.duration;
+      c.duration = -1;
+    }
+  }
   const order = dayFirstIn(data.map((r) => r[c.start] ?? ""));
   if (!order.known) out.assumed.push("dates written like 03/04/2025 are day first (3 April)");
   const weightHeader = c.weight >= 0 ? headers[c.weight] : "";
