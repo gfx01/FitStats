@@ -161,7 +161,7 @@ struct WorkoutDetailView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 if let exercise {
-                    AskCoachButton(text: "About my band workout “\(exercise.displayName)” on \(Format.longDay(date)): ")
+                    AskCoachButton(text: "About my band workout “\(exercise.displayName)” on \(Format.longDay(date)): how hard was it, and how should I recover?")
                 }
             }
         }

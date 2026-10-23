@@ -28,7 +28,7 @@ struct TrainingView: View {
                     if let active = workout.log, !workout.presented { resumeCard(active) }
                     weekCard
                     AskCoachRow(prompts: [
-                        ("sparkles", "Make me a routine", "Make me a routine for "),
+                        ("sparkles", "Make me a routine", "Make me a routine that fits my recent training, recovery and goals, and save it to Training."),
                         ("checklist", "Review my last workout", "Review my last workout and tell me what to change next time."),
                         ("arrow.up.right", "How can I progress?", "How can I improve my training from here?"),
                     ])

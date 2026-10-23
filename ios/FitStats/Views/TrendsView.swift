@@ -286,7 +286,7 @@ struct MetricDetailView: View {
         .navigationTitle(def.label)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                AskCoachButton(text: "About the \(def.label) trend: ")
+                AskCoachButton(text: "About my \(def.label) trend: what's changed, why, and what should I do about it?")
             }
         }
         .navigationBarTitleDisplayMode(.inline)

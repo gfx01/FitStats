@@ -24,7 +24,7 @@ private struct DetailScaffold<Content: View>: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                AskCoachButton(text: "About my \(title.lowercased()) on \(Format.longDay(date)): ")
+                AskCoachButton(text: "About my \(title.lowercased()) on \(Format.longDay(date)): what's behind it, and what should I do about it?")
             }
         }
         .task { await model.loadDay(date) }
