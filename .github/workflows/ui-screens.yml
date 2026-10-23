@@ -1,7 +1,10 @@
 name: UI screenshots (simulator, fixture data)
 
-# Manual (Actions → "UI screenshots" → Run workflow), or a push to the ui-check branch: a run
-# takes 5–6 macOS minutes, which count 10× against a private repository's free Actions minutes.
+# Manual (Actions → "UI screenshots" → Run workflow), or a push to the ui-check branch. The app
+# is built first (compiler errors end the run there, in about 10 minutes); then the UI tests run:
+# all of them (about 30 minutes), or only the ones listed in ios/ui-tests-only.txt
+# (one test name per line, # for comments), for quicker rounds while fixing something. Keep
+# that file empty for the full run before a release.
 on:
   workflow_dispatch:
   push:
@@ -50,23 +53,45 @@ jobs:
           echo "udid=$UDID" >> "$GITHUB_OUTPUT"
           xcrun simctl list devices available | grep "$UDID"
 
-      - name: Run screenshot UI test
+      - name: Build the app and its UI tests
+        working-directory: ios
+        run: |
+          set -o pipefail
+          xcodebuild build-for-testing \
+            -project FitStats.xcodeproj \
+            -scheme FitStats \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee test.log | grep -E "error:|BUILD|TEST BUILD (SUCCEEDED|FAILED)" || true
+          grep -qE "TEST BUILD SUCCEEDED|BUILD SUCCEEDED" test.log
+
+      - name: Run screenshot UI tests
         working-directory: ios
         env:
           TEST_RUNNER_FITSTATS_FIXTURES: ${{ runner.temp }}/fixtures
           TEST_RUNNER_SCREENSHOT_DIR: ${{ runner.temp }}/shots
         run: |
           mkdir -p "$RUNNER_TEMP/shots"
+          ONLY=()
+          if [ -f ui-tests-only.txt ]; then
+            while read -r name; do
+              name="${name%%#*}"; name="$(echo "$name" | xargs)"
+              [ -n "$name" ] && ONLY+=("-only-testing:FitStatsUITests/ScreenshotTests/$name")
+            done < ui-tests-only.txt
+          fi
+          echo "Tests: ${ONLY[*]:-all}"
           set -o pipefail
-          xcodebuild test \
+          xcodebuild test-without-building \
             -project FitStats.xcodeproj \
             -scheme FitStats \
             -destination "id=${{ steps.sim.outputs.udid }}" \
             -derivedDataPath build \
             -resultBundlePath "$RUNNER_TEMP/Test.xcresult" \
+            "${ONLY[@]}" \
             CODE_SIGNING_ALLOWED=NO \
-            2>&1 | tee test.log | grep -E "error:|Test Case|Executed|BUILD|TEST (SUCCEEDED|FAILED)" || true
-          grep -q "TEST SUCCEEDED" test.log
+            2>&1 | tee -a test.log | grep -E "error:|Test Case|Executed|TEST (SUCCEEDED|FAILED)|TEST EXECUTE (SUCCEEDED|FAILED)" || true
+          grep -qE "TEST SUCCEEDED|TEST EXECUTE SUCCEEDED" test.log
 
       # Also saved next to the screenshots, so the errors can be read from the ci-screenshots branch.
       - name: Compiler and test errors
