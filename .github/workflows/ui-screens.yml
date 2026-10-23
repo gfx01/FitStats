@@ -1,10 +1,11 @@
 name: UI screenshots (simulator, fixture data)
 
-# Manual (Actions → "UI screenshots" → Run workflow), or a push to the ui-check branch. The app
-# is built first (compiler errors end the run there, in about 10 minutes); then the UI tests run:
-# all of them (about 30 minutes), or only the ones listed in ios/ui-tests-only.txt
-# (one test name per line, # for comments), for quicker rounds while fixing something. Keep
-# that file empty for the full run before a release.
+# Manual (Actions → "UI screenshots" → Run workflow), or a push to the ui-check branch.
+# The UI tests run on four macOS machines at once (about 20–25 minutes in all), each building the
+# app first, so compiler errors end a run in about 10 minutes. With test names in
+# ios/ui-tests-only.txt (one per line, # for comments) only those run, on one machine, for quicker
+# rounds while fixing something; keep that file empty for the full run before a release.
+# Screenshots and errors (errors-<group>.txt) end up together on the ci-screenshots branch.
 on:
   workflow_dispatch:
   push:
@@ -18,9 +19,45 @@ permissions:
   contents: write
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      groups: ${{ steps.groups.outputs.groups }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Which tests on which machine
+        id: groups
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import json, os
+          only = []
+          if os.path.exists("ios/ui-tests-only.txt"):
+              for line in open("ios/ui-tests-only.txt"):
+                  name = line.split("#")[0].strip()
+                  if name:
+                      only.append(name)
+          if only:
+              groups = [{"name": "only", "tests": " ".join(only)}]
+          else:
+              groups = [
+                  {"name": "screens", "tests": "test01ConnectScreen test02AllScreens"},
+                  {"name": "home", "tests": "test03HomeCards"},
+                  {"name": "insights-gestures", "tests": "test04InsightsPack test05Gestures test06DaysRemindersLargeText"},
+                  {"name": "training-coach", "tests": "test07Training test08CoachesAndMuscles test09WakeTimes test10CoachTabs"},
+              ]
+          print("groups=" + json.dumps(groups))
+          EOF
+          cat "$GITHUB_OUTPUT"
+
   screens:
+    needs: plan
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        group: ${{ fromJSON(needs.plan.outputs.groups) }}
+    name: screens (${{ matrix.group.name }})
     steps:
       - uses: actions/checkout@v4
 
@@ -66,21 +103,16 @@ jobs:
             2>&1 | tee test.log | grep -E "error:|BUILD|TEST BUILD (SUCCEEDED|FAILED)" || true
           grep -qE "TEST BUILD SUCCEEDED|BUILD SUCCEEDED" test.log
 
-      - name: Run screenshot UI tests
+      - name: Run screenshot UI tests (${{ matrix.group.tests }})
         working-directory: ios
         env:
           TEST_RUNNER_FITSTATS_FIXTURES: ${{ runner.temp }}/fixtures
           TEST_RUNNER_SCREENSHOT_DIR: ${{ runner.temp }}/shots
+          TESTS: ${{ matrix.group.tests }}
         run: |
           mkdir -p "$RUNNER_TEMP/shots"
           ONLY=()
-          if [ -f ui-tests-only.txt ]; then
-            while read -r name; do
-              name="${name%%#*}"; name="$(echo "$name" | xargs)"
-              [ -n "$name" ] && ONLY+=("-only-testing:FitStatsUITests/ScreenshotTests/$name")
-            done < ui-tests-only.txt
-          fi
-          echo "Tests: ${ONLY[*]:-all}"
+          for name in $TESTS; do ONLY+=("-only-testing:FitStatsUITests/ScreenshotTests/$name"); done
           set -o pipefail
           xcodebuild test-without-building \
             -project FitStats.xcodeproj \
@@ -93,14 +125,14 @@ jobs:
             2>&1 | tee -a test.log | grep -E "error:|Test Case|Executed|TEST (SUCCEEDED|FAILED)|TEST EXECUTE (SUCCEEDED|FAILED)" || true
           grep -qE "TEST SUCCEEDED|TEST EXECUTE SUCCEEDED" test.log
 
-      # Also saved next to the screenshots, so the errors can be read from the ci-screenshots branch.
+      # Saved next to the screenshots, so the errors can be read from the ci-screenshots branch.
       - name: Compiler and test errors
-        if: failure()
+        if: failure() || cancelled()
         working-directory: ios
         run: |
           mkdir -p "$RUNNER_TEMP/shots"
-          grep -E "error:|failed|XCTAssert|Test Case .* failed" test.log | sort -u | head -300 > "$RUNNER_TEMP/shots/errors.txt" || true
-          cat "$RUNNER_TEMP/shots/errors.txt"
+          { grep -E "error:|failed|XCTAssert|Test Case .* (failed|passed)" test.log | sort -u | head -300; } > "$RUNNER_TEMP/shots/errors-${{ matrix.group.name }}.txt" || true
+          cat "$RUNNER_TEMP/shots/errors-${{ matrix.group.name }}.txt"
 
       - name: Collect screenshots
         if: always()
@@ -110,12 +142,29 @@ jobs:
           fi
           ls -la "$RUNNER_TEMP/shots" || true
 
-      - name: Push screenshots to the ci-screenshots branch
+      - uses: actions/upload-artifact@v4
         if: always()
+        with:
+          name: shots-${{ matrix.group.name }}
+          path: ${{ runner.temp }}/shots
+          if-no-files-found: ignore
+          retention-days: 3
+
+  publish:
+    needs: screens
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: shots-*
+          merge-multiple: true
+          path: shots
+      - name: Push screenshots to the ci-screenshots branch
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cd "$RUNNER_TEMP/shots" 2>/dev/null || exit 0
+          cd shots 2>/dev/null || exit 0
           [ -n "$(ls -A .)" ] || exit 0
           git init -q -b ci-screenshots
           git config user.name "github-actions"
