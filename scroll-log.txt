@@ -1,0 +1,5 @@
+scroll routine-Legs by 680: midY 1073 -> 693
+scrolled to routine-Legs: exists true, frame (15.666666984558105, 639.5, 371.3333435058594, 107.33331298828125), on screen true
+scroll history-log by 607: midY 1001 -> 627
+scrolled to history-log: exists true, frame (16.166666666666657, 599.3333333333333, 370.33333333333337, 56.33333333333326), on screen true
+scrolled to ask-coach-Make me a routine: exists true, frame (16.166666666666657, 347.0, 162.66666666666669, 33.0), on screen true

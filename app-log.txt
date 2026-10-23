@@ -1,0 +1,15 @@
+swipe back: installed on UIKitNavigationController
+swipe back: installed on UIKitNavigationController
+logger: set 1 of Squat -> 5 × 80 kg done
+logger: workout saved locally, 1 sets done, 400 kg
+logger: set 2 of Squat -> 5 × 8 kg
+logger: workout saved locally, 1 sets done, 400 kg
+logger: set 2 of Squat -> 5 reps
+logger: workout saved locally, 1 sets done, 400 kg
+logger: set 2 of Squat -> 5 × 85 kg
+logger: workout saved locally, 1 sets done, 400 kg
+logger: set 2 of Squat -> 5 × 85 kg done
+logger: workout saved locally, 2 sets done, 825 kg
+logger: workout saved locally, 2 sets done, 825 kg
+swipe back: start x 201, velocity 0,-800 -> no
+swipe back: installed on UIKitNavigationController
