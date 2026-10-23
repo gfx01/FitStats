@@ -638,7 +638,11 @@ final class ScreenshotTests: XCTestCase {
             // At its right edge, so the cursor goes after the weight already in it.
             kg.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
             kg.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 6) + "85")
-            XCTAssertEqual(kg.value as? String, "85", "the weight field didn't take 85")
+            // What the field reports can lag a moment behind the typing.
+            let took = expectation(for: NSPredicate(format: "value == %@", "85"), evaluatedWith: kg)
+            if XCTWaiter.wait(for: [took], timeout: 3) != .completed {
+                XCTFail("the weight field didn't take 85: \(kg.value ?? "nil")")
+            }
             let done = app.toolbars.buttons["Done"].firstMatch
             if done.exists { done.tap() }
         } else {
