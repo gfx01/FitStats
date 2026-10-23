@@ -639,7 +639,7 @@ final class ScreenshotTests: XCTestCase {
             kg.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
             kg.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 6) + "85")
             // What the field reports can lag a moment behind the typing.
-            let took = expectation(for: NSPredicate(format: "value == %@", "85"), evaluatedWith: kg)
+            let took = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "85"), object: kg)
             if XCTWaiter.wait(for: [took], timeout: 3) != .completed {
                 XCTFail("the weight field didn't take 85: \(kg.value ?? "nil")")
             }
