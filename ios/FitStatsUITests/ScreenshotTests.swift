@@ -946,7 +946,7 @@ final class ScreenshotTests: XCTestCase {
         let consistency = element(app, "bedtime-consistency")
         for _ in 0..<8 where !onScreen(app, consistency) { app.swipeUp() }
         XCTAssertTrue(consistency.exists, "no bedtime consistency chart on the Sleep screen")
-        reveal(app, consistency)
+        scrollTo(app, consistency, near: 0.5)
         shot("122-bedtime-consistency")
         back(app)
 
@@ -972,7 +972,7 @@ final class ScreenshotTests: XCTestCase {
             log.tap()
             let band = element(app, "log-band-workout")
             XCTAssertTrue(band.waitForExistence(timeout: 5), "the logged workout doesn't show the band's recording")
-            reveal(app, band)
+            scrollTo(app, band, near: 0.4)
             shot("125-log-with-band")
         } else {
             XCTFail("no logged workout paired with a band workout in the history")

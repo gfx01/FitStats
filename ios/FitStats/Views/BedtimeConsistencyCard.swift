@@ -1,4 +1,3 @@
-import Charts
 import SwiftUI
 
 /// Sleep: the last 14 nights as bars from falling asleep to waking up, so irregular nights stand
@@ -26,37 +25,12 @@ struct BedtimeConsistencyCard: View {
             let usualBed = Self.median(beds), usualWake = Self.median(wakes)
             Card {
                 SectionHeader(title: "Bedtime consistency", subtitle: "Last \(Self.count) nights, asleep to awake")
-                Chart {
-                    ForEach(nights) { n in
-                        BarMark(xStart: .value("Asleep", n.bed), xEnd: .value("Awake", n.wake), y: .value("Night", Format.shortDay(n.date)), height: .fixed(9))
-                            .foregroundStyle(Theme.sleep.gradient)
-                            .cornerRadius(4.5)
-                        if let set = n.setWake {
-                            PointMark(x: .value("Set wake-up", set), y: .value("Night", Format.shortDay(n.date)))
-                                .symbol(.diamond)
-                                .symbolSize(28)
-                                .foregroundStyle(Theme.recoveryYellow)
-                        }
-                    }
-                    RuleMark(x: .value("Usual bedtime", usualBed))
-                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                        .foregroundStyle(Theme.secondary)
-                    RuleMark(x: .value("Usual wake time", usualWake))
-                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                        .foregroundStyle(Theme.secondary)
+                // Drawn by hand: a fixed column of day labels, so they never sit on the bars.
+                let lowest = beds.first! - 30, highest = wakes.last! + 30
+                Canvas { ctx, size in
+                    Self.draw(nights, in: ctx, size: size, from: lowest, to: highest, usualBed: usualBed, usualWake: usualWake)
                 }
-                .chartXScale(domain: (beds.first! - 30)...(wakes.last! + 30))
-                .chartXAxis {
-                    AxisMarks(values: .stride(by: 120)) { value in
-                        AxisGridLine().foregroundStyle(Theme.track)
-                        AxisValueLabel { if let m = value.as(Double.self) { Text(Format.clock(m)).font(.caption2) } }
-                    }
-                }
-                // Day labels left of the plot, so they never sit on the bars.
-                .chartYAxis {
-                    AxisMarks(position: .leading) { _ in AxisValueLabel(horizontalSpacing: 6).font(.caption2) }
-                }
-                .frame(height: CGFloat(nights.count) * 18 + 30)
+                .frame(height: CGFloat(nights.count) * Self.rowHeight + 22)
                 Text(summary(beds: beds, wakes: wakes, usualBed: usualBed, usualWake: usualWake))
                     .font(.caption)
                     .foregroundStyle(Theme.secondary)
@@ -71,6 +45,58 @@ struct BedtimeConsistencyCard: View {
             }
             .accessibilityElement(children: .combine)
             .accessibilityIdentifier("bedtime-consistency")
+        }
+    }
+
+    private static let rowHeight: CGFloat = 18
+    private static let labelWidth: CGFloat = 58
+
+    nonisolated(unsafe) private static let dayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.setLocalizedDateFormatFromTemplate("EEEd")
+        f.timeZone = TimeZone(identifier: "UTC")
+        return f
+    }()
+
+    /// Day labels, then each night's bar from asleep to awake, the set wake-up as a diamond, the
+    /// usual times as dashed lines and a time axis every 2 hours below.
+    nonisolated private static func draw(_ nights: [Night], in ctx: GraphicsContext, size: CGSize, from lowest: Double, to highest: Double,
+                             usualBed: Double, usualWake: Double) {
+        let left = labelWidth + 6, right = size.width - 4
+        let x = { (m: Double) -> CGFloat in left + (right - left) * CGFloat((m - lowest) / max(1, highest - lowest)) }
+        let rowsBottom = CGFloat(nights.count) * rowHeight
+        // Grid and time labels every 2 hours.
+        var tick = (lowest / 120).rounded(.up) * 120
+        while tick <= highest {
+            var line = Path()
+            line.move(to: CGPoint(x: x(tick), y: 0))
+            line.addLine(to: CGPoint(x: x(tick), y: rowsBottom))
+            ctx.stroke(line, with: .color(Theme.track), lineWidth: 0.5)
+            ctx.draw(Text(Format.clock(tick)).font(.caption2).foregroundColor(Theme.tertiary), at: CGPoint(x: x(tick), y: rowsBottom + 4), anchor: .top)
+            tick += 120
+        }
+        for (i, n) in nights.enumerated() {
+            let y = CGFloat(i) * rowHeight + rowHeight / 2
+            let label = Format.date(n.date).map { dayFormatter.string(from: $0) } ?? n.date
+            ctx.draw(Text(label).font(.caption2).foregroundColor(Theme.secondary), at: CGPoint(x: 0, y: y), anchor: .leading)
+            let bar = CGRect(x: x(n.bed), y: y - 4.5, width: max(4, x(n.wake) - x(n.bed)), height: 9)
+            ctx.fill(Path(roundedRect: bar, cornerRadius: 4.5), with: .color(Theme.sleep))
+            if let set = n.setWake {
+                var diamond = Path()
+                let c = CGPoint(x: x(set), y: y)
+                diamond.move(to: CGPoint(x: c.x, y: c.y - 5))
+                diamond.addLine(to: CGPoint(x: c.x + 4, y: c.y))
+                diamond.addLine(to: CGPoint(x: c.x, y: c.y + 5))
+                diamond.addLine(to: CGPoint(x: c.x - 4, y: c.y))
+                diamond.closeSubpath()
+                ctx.fill(diamond, with: .color(Theme.recoveryYellow))
+            }
+        }
+        for usual in [usualBed, usualWake] {
+            var line = Path()
+            line.move(to: CGPoint(x: x(usual), y: 0))
+            line.addLine(to: CGPoint(x: x(usual), y: rowsBottom))
+            ctx.stroke(line, with: .color(Theme.secondary), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
         }
     }
 
