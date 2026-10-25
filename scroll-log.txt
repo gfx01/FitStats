@@ -1,0 +1,15 @@
+scroll sleep-naps by 1748: midY 2097 -> 1714
+scroll sleep-naps by 1364: midY 1714 -> 1331
+scroll sleep-naps by 981: midY 1331 -> 947
+scroll sleep-naps by 598: midY 947 -> 564
+scroll sleep-naps by 214: midY 564 -> 177
+scroll sleep-naps by -172: midY 177 -> 521
+scroll sleep-naps by 171: midY 521 -> 175
+scroll sleep-naps by -174: midY 175 -> 529
+scroll sleep-naps by 179: midY 529 -> 184
+scroll sleep-naps by -165: midY 184 -> 529
+scroll sleep-naps by 179: midY 529 -> 187
+scroll sleep-naps by -161: midY 187 -> 516
+scroll sleep-naps by 166: midY 516 -> 165
+scroll sleep-naps by -184: midY 165 -> 339
+scrolled to sleep-naps: exists true, frame (15.500000000000057, 241.50000000000009, 371.0, 195.66667175292966), on screen true

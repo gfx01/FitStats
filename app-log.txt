@@ -1,0 +1,24 @@
+swipe back: installed on UIKitNavigationController
+swipe back: start x 130, velocity 224,0 -> begins
+swipe back: back at 76
+swipe back: start x 120, velocity 0,-136 -> no
+swipe back: start x 120, velocity 0,-136 -> no
+swipe back: start x 120, velocity 0,-136 -> no
+swipe back: start x 120, velocity 0,-139 -> no
+swipe back: start x 120, velocity 0,-144 -> no
+swipe back: start x 120, velocity 0,144 -> no
+swipe back: start x 120, velocity 0,-147 -> no
+swipe back: start x 120, velocity 0,144 -> no
+swipe back: start x 120, velocity 0,-148 -> no
+swipe back: start x 120, velocity 0,148 -> no
+swipe back: start x 120, velocity 0,-148 -> no
+swipe back: start x 120, velocity 0,148 -> no
+swipe back: start x 120, velocity 0,-156 -> no
+swipe back: start x 120, velocity 0,145 -> no
+swipe back: installed on UIKitNavigationController
+swipe back: installed on UIKitNavigationController
+day swipe: previous day at 220
+day swipe: next day at -220
+swipe back: installed on UIKitNavigationController
+swipe back: installed on UIKitNavigationController
+swipe back: installed on UIKitNavigationController
