@@ -5,26 +5,31 @@ import SwiftUI
 struct WidgetsView: View {
     @EnvironmentObject private var model: AppModel
     @State private var working: Bool?
+    @State private var size = PreviewSize.small
+
+    enum PreviewSize: String, CaseIterable {
+        case small = "Small", medium = "Medium", large = "Large"
+    }
 
     var body: some View {
+        let s = snapshot
         List {
             Section {
-                VStack(spacing: 14) {
-                    pair("Scores", "Sleep") { WidgetScoresSmall(snapshot: snapshot) } right: { WidgetSleepSmall(snapshot: snapshot) }
-                    pair("Steps", "Heart") { WidgetStepsSmall(snapshot: snapshot) } right: { WidgetHeartSmall(snapshot: snapshot) }
-                    pair("Stress", "Training") { WidgetStressSmall(snapshot: snapshot) } right: { WidgetTrainingSmall(snapshot: snapshot) }
-                    named("Scores") { tile(width: 330) { WidgetScoresMedium(snapshot: snapshot) } }
-                    named("Week") { tile(width: 330) { WidgetWeekMedium(snapshot: snapshot) } }
-                    named("Coach") { tile(width: 330) { WidgetCoachFace(snapshot: snapshot, lines: 5) } }
-                    named("Today") { tile(width: 330, height: 345) { WidgetTodayLarge(snapshot: snapshot) } }
+                Picker("Size", selection: $size) {
+                    ForEach(PreviewSize.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }
-                .frame(maxWidth: .infinity)
+                .pickerStyle(.segmented)
                 .listRowBackground(Color.clear)
-                .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
-                .accessibilityElement(children: .combine)
-                .accessibilityIdentifier("widget-previews")
+                .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                .accessibilityIdentifier("widget-size")
+                previews(s)
+                    .frame(maxWidth: .infinity)
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("widget-previews")
             } footer: {
-                Text("Nine widgets for the Home Screen. Scores, Sleep, Steps and Stress also come in Lock Screen sizes. Tapping a widget opens its part of the app.")
+                Text("Nine widgets, most in several sizes. Scores, Sleep, Steps, Heart, Stress and Training also come in Lock Screen sizes. Tapping a widget opens its part of the app.")
             }
 
             Section {
@@ -70,11 +75,49 @@ struct WidgetsView: View {
         model.widgetSnapshot() ?? WidgetSnapshot(date: model.today, updated: Date(), row: [:])
     }
 
-    private func pair(_ leftName: String, _ rightName: String, @ViewBuilder _ left: () -> some View,
+    /// Every widget in the chosen size, as in the widget gallery.
+    @ViewBuilder private func previews(_ s: WidgetSnapshot) -> some View {
+        switch size {
+        case .small:
+            VStack(spacing: 14) {
+                pair("Scores", "Sleep") { WidgetScoresSmall(snapshot: s) } right: { WidgetSleepSmall(snapshot: s) }
+                pair("Steps", "Heart") { WidgetStepsSmall(snapshot: s) } right: { WidgetHeartSmall(snapshot: s) }
+                pair("Stress", "Training") { WidgetStressSmall(snapshot: s) } right: { WidgetTrainingSmall(snapshot: s) }
+                pair("Coach", nil) { WidgetCoachFace(snapshot: s, lines: 6, font: .caption) } right: { EmptyView() }
+            }
+        case .medium:
+            VStack(spacing: 14) {
+                named("Today") { tile(width: 330) { WidgetTodayMedium(snapshot: s) } }
+                named("Scores") { tile(width: 330) { WidgetScoresMedium(snapshot: s) } }
+                named("Sleep") { tile(width: 330) { WidgetSleepMedium(snapshot: s) } }
+                named("Steps") { tile(width: 330) { WidgetStepsMedium(snapshot: s) } }
+                named("Heart") { tile(width: 330) { WidgetHeartMedium(snapshot: s) } }
+                named("Stress") { tile(width: 330) { WidgetStressMedium(snapshot: s) } }
+                named("Week") { tile(width: 330) { WidgetWeekMedium(snapshot: s) } }
+                named("Training") { tile(width: 330) { WidgetTrainingMedium(snapshot: s) } }
+                named("Coach") { tile(width: 330) { WidgetCoachFace(snapshot: s, lines: 5) } }
+            }
+        case .large:
+            VStack(spacing: 14) {
+                named("Today") { tile(width: 330, height: 345) { WidgetTodayLarge(snapshot: s) } }
+                named("Scores") { tile(width: 330, height: 345) { WidgetScoresLarge(snapshot: s) } }
+                named("Sleep") { tile(width: 330, height: 345) { WidgetSleepLarge(snapshot: s) } }
+                named("Week") { tile(width: 330, height: 345) { WidgetWeekLarge(snapshot: s) } }
+                named("Coach") { tile(width: 330, height: 345) { WidgetCoachFace(snapshot: s, lines: 16) } }
+            }
+        }
+    }
+
+    /// Two small widgets side by side; without a second name the right one is an empty space.
+    private func pair(_ leftName: String, _ rightName: String?, @ViewBuilder _ left: () -> some View,
                       @ViewBuilder right: () -> some View) -> some View {
         HStack(alignment: .top, spacing: 14) {
             named(leftName) { tile(width: 158) { left() } }
-            named(rightName) { tile(width: 158) { right() } }
+            if let rightName {
+                named(rightName) { tile(width: 158) { right() } }
+            } else {
+                Color.clear.frame(width: 158, height: 1)
+            }
         }
     }
 

@@ -435,13 +435,14 @@ struct WidgetTodayLarge: View {
 struct WidgetCoachFace: View {
     let snapshot: WidgetSnapshot
     var lines = 4
+    var font: Font = .footnote
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             WidgetHeader(title: snapshot.coachName.map { "Coach \($0)" } ?? "Coach", icon: "sparkles", color: Theme.sleep)
             if let text = snapshot.todaysCoachText {
                 Text(Self.plain(text))
-                    .font(.footnote)
+                    .font(font)
                     .foregroundStyle(.white)
                     .lineLimit(lines)
                     .fixedSize(horizontal: false, vertical: true)
@@ -449,7 +450,7 @@ struct WidgetCoachFace: View {
             } else {
                 Spacer(minLength: 0)
                 Text("No brief yet today. Tap to open the coach and write today's.")
-                    .font(.footnote)
+                    .font(font)
                     .foregroundStyle(Theme.secondary)
                 Spacer(minLength: 0)
             }
@@ -498,5 +499,349 @@ struct WidgetTrainingSmall: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+
+// MARK: - More sizes
+
+/// Bars for the last 7 days of one measure, today brightest, with a value over each and the
+/// weekday under it.
+struct WidgetBars: View {
+    let days: [WidgetDay]
+    let value: (WidgetDay) -> Double?
+    let maxValue: Double
+    let color: (Double?) -> Color
+    var label: (Double) -> String = { WidgetFormat.number($0) }
+    var showsDays = true
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 5) {
+            ForEach(Array(days.enumerated()), id: \.offset) { i, day in
+                let v = value(day)
+                let last = i == days.count - 1
+                VStack(spacing: 2) {
+                    Text(v.map(label) ?? "–")
+                        .font(.system(size: 9, weight: .semibold, design: .rounded))
+                        .foregroundStyle(last ? .white : Theme.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                    GeometryReader { geo in
+                        VStack(spacing: 0) {
+                            Spacer(minLength: 0)
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(color(v).opacity(last ? 1 : 0.65))
+                                .frame(height: max(3, geo.size.height * min(1, (v ?? 0) / max(maxValue, 1))))
+                        }
+                    }
+                    if showsDays {
+                        Text(day.weekdayLetter)
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(last ? .white : Theme.tertiary)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
+    }
+}
+
+/// Last night's stages as bars with their minutes.
+struct WidgetStages: View {
+    let snapshot: WidgetSnapshot
+
+    var body: some View {
+        let stages: [(String, Double?, Color)] = [
+            ("Awake", snapshot.awakeMin, Theme.stageAwake), ("REM", snapshot.remMin, Theme.stageRem),
+            ("Light", snapshot.lightMin, Theme.stageLight), ("Deep", snapshot.deepMin, Theme.stageDeep),
+        ]
+        let most = max(1, stages.compactMap { $0.1 }.max() ?? 1)
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(stages.indices, id: \.self) { i in
+                let stage = stages[i]
+                HStack(spacing: 6) {
+                    Text(stage.0).font(.system(size: 10, weight: .semibold)).foregroundStyle(stage.2).frame(width: 36, alignment: .leading)
+                    GeometryReader { geo in
+                        Capsule().fill(Theme.track)
+                            .overlay(alignment: .leading) {
+                                Capsule().fill(stage.2).frame(width: max(4, geo.size.width * (stage.1 ?? 0) / most))
+                            }
+                    }
+                    .frame(height: 6)
+                    Text(WidgetFormat.duration(stage.1)).font(.system(size: 10, weight: .medium, design: .rounded))
+                        .foregroundStyle(Theme.secondary).frame(width: 46, alignment: .trailing)
+                }
+            }
+        }
+    }
+}
+
+/// Large: the three scores as big rings, then the week's recovery.
+struct WidgetScoresLarge: View {
+    let snapshot: WidgetSnapshot
+
+    var body: some View {
+        let s = snapshot
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                WidgetHeader(title: "Scores", icon: "circle.circle.fill", color: Theme.recoveryGreen)
+                Text(WidgetFormat.updated(s)).font(.caption2).foregroundStyle(Theme.tertiary).lineLimit(1)
+            }
+            WidgetScoresMedium(snapshot: s, showsFooter: false).frame(height: 104)
+            HStack(spacing: 12) {
+                Label("\(WidgetFormat.number(s.steps)) steps", systemImage: "figure.walk").foregroundStyle(Theme.body)
+                Label("Stress \(WidgetFormat.number(s.stress))", systemImage: "waveform.path.ecg").foregroundStyle(Theme.stressColor(s.stress))
+                Spacer(minLength: 0)
+            }
+            .font(.caption.weight(.medium))
+            .lineLimit(1)
+            Text("Recovery, last 7 days").font(.caption2.weight(.semibold)).foregroundStyle(Theme.secondary)
+            WidgetBars(days: s.week ?? [], value: \.recovery, maxValue: 100, color: Theme.recoveryColor)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+/// Medium: last night's sleep, tonight's bedtime and the stages.
+struct WidgetSleepMedium: View {
+    let snapshot: WidgetSnapshot
+
+    var body: some View {
+        HStack(spacing: 14) {
+            WidgetSleepSmall(snapshot: snapshot).frame(width: 118)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Stages").font(.caption2.weight(.semibold)).foregroundStyle(Theme.secondary)
+                WidgetStages(snapshot: snapshot)
+                Spacer(minLength: 0)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// Large: the medium sleep view and the week's sleep in hours.
+struct WidgetSleepLarge: View {
+    let snapshot: WidgetSnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            WidgetSleepMedium(snapshot: snapshot).frame(height: 140)
+            Text("Sleep, last 7 days (hours)").font(.caption2.weight(.semibold)).foregroundStyle(Theme.secondary)
+            WidgetBars(days: snapshot.week ?? [], value: \.sleepMin, maxValue: 600, color: { _ in Theme.sleep },
+                       label: { String(format: "%.1f", $0 / 60) })
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+/// Medium: recovery as a big ring beside strain, sleep, steps and stress.
+struct WidgetTodayMedium: View {
+    let snapshot: WidgetSnapshot
+
+    var body: some View {
+        let s = snapshot
+        HStack(spacing: 12) {
+            VStack(spacing: 4) {
+                WidgetRing(progress: (s.recovery ?? 0) / 100, color: Theme.recoveryColor(s.recovery), lineWidth: 10) {
+                    Text(s.recovery.map { "\(WidgetFormat.number($0))%" } ?? "–")
+                        .font(Theme.number(22)).foregroundStyle(.white).minimumScaleFactor(0.6).lineLimit(1).padding(10)
+                }
+                .frame(width: 92, height: 92)
+                Text(Theme.recoveryLabel(s.recovery)).font(.caption2.weight(.medium)).foregroundStyle(Theme.secondary).lineLimit(1)
+            }
+            .frame(width: 110)
+            VStack(spacing: 8) {
+                HStack(spacing: 8) {
+                    tile("Strain", WidgetFormat.number(s.strain), "flame.fill", Theme.strain)
+                    tile("Sleep", WidgetFormat.duration(s.sleepMin), "moon.fill", Theme.sleep)
+                }
+                HStack(spacing: 8) {
+                    tile("Steps", WidgetFormat.number(s.steps), "figure.walk", Theme.body)
+                    tile("Stress", WidgetFormat.number(s.stress), "waveform.path.ecg", Theme.stressColor(s.stress))
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func tile(_ title: String, _ value: String, _ icon: String, _ color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 3) {
+                Image(systemName: icon).foregroundStyle(color)
+                Text(title).foregroundStyle(Theme.secondary)
+            }
+            .font(.system(size: 10, weight: .semibold))
+            Text(value).font(Theme.number(17, weight: .semibold)).foregroundStyle(.white).lineLimit(1).minimumScaleFactor(0.6)
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.06)))
+    }
+}
+
+/// Medium: steps, the bar to the goal, active calories and the week's steps.
+struct WidgetStepsMedium: View {
+    let snapshot: WidgetSnapshot
+
+    var body: some View {
+        let goal = snapshot.stepGoal ?? 10_000
+        let progress = min(1, (snapshot.steps ?? 0) / max(goal, 1))
+        HStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                WidgetHeader(title: "Steps", icon: "figure.walk", color: Theme.body)
+                Text(WidgetFormat.number(snapshot.steps)).font(Theme.number(30)).foregroundStyle(.white).lineLimit(1).minimumScaleFactor(0.6)
+                GeometryReader { geo in
+                    Capsule().fill(Theme.track)
+                        .overlay(alignment: .leading) {
+                            Capsule().fill(progress >= 1 ? Theme.recoveryGreen : Theme.body).frame(width: max(6, geo.size.width * progress))
+                        }
+                }
+                .frame(height: 7)
+                Text("Goal \(WidgetFormat.number(goal))").font(.caption2).foregroundStyle(Theme.secondary)
+                Spacer(minLength: 0)
+                Label("\(WidgetFormat.number(snapshot.activeCalories)) active kcal", systemImage: "flame.fill")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(Theme.secondary)
+                    .lineLimit(1)
+            }
+            .frame(width: 130)
+            WidgetBars(days: snapshot.week ?? [], value: \.steps, maxValue: max(goal, (snapshot.week ?? []).compactMap(\.steps).max() ?? 0),
+                       color: { ($0 ?? 0) >= goal ? Theme.recoveryGreen : Theme.body }, label: WidgetFormat.compact)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// Medium: resting heart rate and HRV side by side, with your usual and recovery.
+struct WidgetHeartMedium: View {
+    let snapshot: WidgetSnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                WidgetHeader(title: "Heart", icon: "heart.fill", color: Theme.heart)
+                Text("Recovery \(snapshot.recovery.map { WidgetFormat.number($0) + "%" } ?? "–")")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(Theme.recoveryColor(snapshot.recovery))
+            }
+            HStack(spacing: 10) {
+                column("Resting HR", snapshot.rhr, unit: "bpm", base: snapshot.rhrBaseline, lowerIsBetter: true)
+                column("HRV", snapshot.hrv, unit: "ms", base: snapshot.hrvBaseline, lowerIsBetter: false)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func column(_ title: String, _ value: Double?, unit: String, base: Double?, lowerIsBetter: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.caption2.weight(.semibold)).foregroundStyle(Theme.secondary)
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text(WidgetFormat.number(value)).font(Theme.number(30)).foregroundStyle(.white)
+                Text(unit).font(.caption).foregroundStyle(Theme.tertiary)
+            }
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+            if let base {
+                let diff = ((value ?? base) - base).rounded()
+                let good = lowerIsBetter ? diff <= 0 : diff >= 0
+                Text(value == nil ? "Usual \(WidgetFormat.number(base))"
+                     : diff == 0 ? "Same as usual (\(WidgetFormat.number(base)))"
+                     : "\(diff > 0 ? "▲" : "▼") \(WidgetFormat.number(abs(diff))) vs usual \(WidgetFormat.number(base))")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(value == nil || diff == 0 ? Theme.secondary : good ? Theme.recoveryGreen : Theme.recoveryYellow)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            } else {
+                Text("Usual: needs a few more days").font(.caption2).foregroundStyle(Theme.tertiary).lineLimit(1).minimumScaleFactor(0.8)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.06)))
+    }
+}
+
+/// Medium: today's stress beside the week's.
+struct WidgetStressMedium: View {
+    let snapshot: WidgetSnapshot
+
+    var body: some View {
+        HStack(spacing: 14) {
+            WidgetStressSmall(snapshot: snapshot).frame(width: 110)
+            WidgetBars(days: snapshot.week ?? [], value: \.stress, maxValue: 100, color: Theme.stressColor)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// Large: the week's recovery, sleep, strain and steps.
+struct WidgetWeekLarge: View {
+    let snapshot: WidgetSnapshot
+
+    var body: some View {
+        let week = snapshot.week ?? []
+        VStack(alignment: .leading, spacing: 6) {
+            WidgetHeader(title: "Last 7 days", icon: "calendar", color: Theme.recoveryGreen)
+            row("Recovery %") { WidgetBars(days: week, value: \.recovery, maxValue: 100, color: Theme.recoveryColor, showsDays: false) }
+            row("Sleep, hours") {
+                WidgetBars(days: week, value: \.sleepMin, maxValue: 600, color: { _ in Theme.sleep },
+                           label: { String(format: "%.1f", $0 / 60) }, showsDays: false)
+            }
+            row("Strain") { WidgetBars(days: week, value: \.strain, maxValue: 100, color: { _ in Theme.strain }, showsDays: false) }
+            row("Steps") {
+                WidgetBars(days: week, value: \.steps, maxValue: max(snapshot.stepGoal ?? 10_000, week.compactMap(\.steps).max() ?? 0),
+                           color: { _ in Theme.body }, label: WidgetFormat.compact)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func row(_ title: String, @ViewBuilder _ bars: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.secondary)
+            bars()
+        }
+        .frame(maxHeight: .infinity)
+    }
+}
+
+/// Medium: this week's workouts, a dot for each day, and the latest one.
+struct WidgetTrainingMedium: View {
+    let snapshot: WidgetSnapshot
+
+    var body: some View {
+        HStack(spacing: 14) {
+            WidgetTrainingSmall(snapshot: snapshot).frame(width: 130)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("This week").font(.caption2.weight(.semibold)).foregroundStyle(Theme.secondary)
+                HStack(spacing: 6) {
+                    ForEach(weekDates, id: \.self) { date in
+                        let done = snapshot.workoutDays?.contains(date) ?? false
+                        let future = date > snapshot.date
+                        VStack(spacing: 4) {
+                            Circle()
+                                .fill(done ? Theme.strain : Theme.track)
+                                .overlay(Circle().stroke(date == snapshot.date ? Color.white.opacity(0.7) : .clear, lineWidth: 1.5))
+                                .frame(width: 18, height: 18)
+                                .opacity(future ? 0.4 : 1)
+                            Text(WidgetDay(date: date, recovery: nil, sleepMin: nil, strain: nil, steps: nil, stress: nil).weekdayLetter)
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundStyle(Theme.tertiary)
+                        }
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Monday to Sunday of the snapshot's week.
+    private var weekDates: [String] {
+        guard let d = WidgetDay.dayFormatter.date(from: snapshot.date) else { return [] }
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC")!
+        let fromMonday = (cal.component(.weekday, from: d) + 5) % 7
+        return (0..<7).map { WidgetDay.addDays(snapshot.date, $0 - fromMonday) }
     }
 }

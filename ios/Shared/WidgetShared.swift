@@ -20,6 +20,11 @@ struct WidgetSnapshot: Codable, Equatable {
     var bedtimeFor: String?
     var hrv: Double?
     var activeCalories: Double?
+    /// Last night's stages (minutes).
+    var deepMin: Double?
+    var remMin: Double?
+    var lightMin: Double?
+    var awakeMin: Double?
     /// The last 7 days, oldest first, ending with `date`.
     var week: [WidgetDay]?
 
@@ -37,6 +42,8 @@ struct WidgetSnapshot: Codable, Equatable {
     var workoutMinutesThisWeek: Double?
     var lastWorkoutName: String?
     var lastWorkoutDate: String?
+    /// Days this week with a workout.
+    var workoutDays: [String]?
 
     /// From a day row of the `days` route (JSON numbers by key).
     init(date: String, updated: Date, row: [String: Any], bedtimeMin: Double? = nil, bedtimeFor: String? = nil) {
@@ -52,6 +59,10 @@ struct WidgetSnapshot: Codable, Equatable {
         rhr = num("rhr")
         hrv = num("hrv_rmssd")
         activeCalories = num("calories_active")
+        deepMin = num("sleep_deep_min")
+        remMin = num("sleep_rem_min")
+        lightMin = num("sleep_light_min")
+        awakeMin = num("sleep_awake_min")
         let target = ((row["score_details"] as? [String: Any])?["strainTarget"] as? [Any])?.compactMap { ($0 as? NSNumber)?.doubleValue }
         strainTarget = target?.count == 2 ? target : nil
         self.bedtimeMin = bedtimeMin
@@ -65,7 +76,8 @@ struct WidgetSnapshot: Codable, Equatable {
             let date = WidgetDay.addDays(today, -offset)
             let r = byDate[date] ?? [:]
             func num(_ key: String) -> Double? { (r[key] as? NSNumber)?.doubleValue }
-            return WidgetDay(date: date, recovery: num("recovery"), sleepMin: num("sleep_asleep_min"), strain: num("strain"), steps: num("steps"))
+            return WidgetDay(date: date, recovery: num("recovery"), sleepMin: num("sleep_asleep_min"), strain: num("strain"),
+                             steps: num("steps"), stress: num("stress"))
         }
     }
 
@@ -78,6 +90,7 @@ struct WidgetSnapshot: Codable, Equatable {
             hrvBaseline = old.hrvBaseline
             workoutsThisWeek = old.workoutsThisWeek
             workoutMinutesThisWeek = old.workoutMinutesThisWeek
+            workoutDays = old.workoutDays
         }
         if old.bedtimeFor == date {
             bedtimeMin = old.bedtimeMin
@@ -114,7 +127,16 @@ struct WidgetSnapshot: Codable, Equatable {
         s.lastWorkoutName = "Upper body A"
         let recoveries: [Double] = [64, 71, 48, 80, 66, 58, 72]
         let sleeps: [Double] = [430, 455, 390, 480, 465, 410, 467]
-        s.week = (0..<7).map { WidgetDay(date: "", recovery: recoveries[$0], sleepMin: sleeps[$0], strain: nil, steps: nil) }
+        let strains: [Double] = [52, 61, 30, 70, 44, 38, 46]
+        let steps: [Double] = [9100, 11200, 6400, 12800, 8800, 7300, 8214]
+        let stress: [Double] = [30, 22, 48, 18, 26, 35, 22]
+        s.week = (0..<7).map {
+            WidgetDay(date: "", recovery: recoveries[$0], sleepMin: sleeps[$0], strain: strains[$0], steps: steps[$0], stress: stress[$0])
+        }
+        s.deepMin = 88
+        s.remMin = 120
+        s.lightMin = 259
+        s.awakeMin = 18
         return s
     }()
 
@@ -132,6 +154,7 @@ struct WidgetDay: Codable, Equatable {
     var sleepMin: Double?
     var strain: Double?
     var steps: Double?
+    var stress: Double?
 
     /// yyyy-MM-dd plus `n` days, in UTC like the app's day keys.
     static func addDays(_ ymd: String, _ n: Int) -> String {

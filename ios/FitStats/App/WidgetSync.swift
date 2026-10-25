@@ -41,6 +41,7 @@ extension AppModel {
         let entries = HistoryEntry.merged(logs: workoutLogs, band: bandWorkouts, pairs: workoutPairs)
         let thisWeek = entries.filter { $0.date >= monday && $0.date <= date }
         s.workoutsThisWeek = thisWeek.count
+        s.workoutDays = Array(Set(thisWeek.map(\.date))).sorted()
         s.workoutMinutesThisWeek = thisWeek.reduce(0) { total, entry in
             switch entry {
             case .log(let l): return total + (l.minutes ?? 0)

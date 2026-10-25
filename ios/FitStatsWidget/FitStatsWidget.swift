@@ -136,7 +136,7 @@ struct ScoresWidget: Widget {
         }
         .configurationDisplayName("Scores")
         .description("Recovery, strain and sleep for today.")
-        .supportedFamilies([.systemSmall, .systemMedium, .accessoryCircular, .accessoryRectangular, .accessoryInline])
+        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge, .accessoryCircular, .accessoryRectangular, .accessoryInline])
     }
 }
 
@@ -146,8 +146,8 @@ struct SleepWidget: Widget {
             SleepWidgetView(entry: entry)
         }
         .configurationDisplayName("Sleep")
-        .description("Last night's sleep and when to be in bed tonight.")
-        .supportedFamilies([.systemSmall, .accessoryRectangular])
+        .description("Last night's sleep, its stages, the week and when to be in bed tonight.")
+        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge, .accessoryCircular, .accessoryRectangular, .accessoryInline])
     }
 }
 
@@ -182,6 +182,8 @@ struct ScoresWidgetView: View {
                 .accessory(entry)
         case .systemMedium:
             WidgetShell(entry: entry, compact: false) { WidgetScoresMedium(snapshot: $0) }
+        case .systemLarge:
+            WidgetShell(entry: entry, compact: false) { WidgetScoresLarge(snapshot: $0) }
         default:
             WidgetShell(entry: entry) { WidgetScoresSmall(snapshot: $0) }
         }
@@ -205,6 +207,21 @@ struct SleepWidgetView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessory(entry)
+        case .accessoryCircular:
+            Gauge(value: min(1, max(0, (s?.sleepScore ?? 0) / 100))) {
+                Image(systemName: "moon.fill")
+            } currentValueLabel: {
+                Text(WidgetFormat.number(s?.sleepScore))
+            }
+            .gaugeStyle(.accessoryCircularCapacity)
+            .accessory(entry)
+        case .accessoryInline:
+            Text("\(WidgetFormat.duration(s?.sleepMin)) sleep\(s?.tonightBedtime.map { " · bed \(WidgetFormat.clock($0))" } ?? "")")
+                .accessory(entry)
+        case .systemMedium:
+            WidgetShell(entry: entry, compact: false) { WidgetSleepMedium(snapshot: $0) }
+        case .systemLarge:
+            WidgetShell(entry: entry, compact: false) { WidgetSleepLarge(snapshot: $0) }
         default:
             WidgetShell(entry: entry) { WidgetSleepSmall(snapshot: $0) }
         }
@@ -216,11 +233,24 @@ struct SleepWidgetView: View {
 struct TodayWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: "FitStatsToday", provider: ScoresProvider()) { entry in
-            WidgetShell(entry: entry, compact: false) { WidgetTodayLarge(snapshot: $0) }
+            TodayWidgetView(entry: entry)
         }
         .configurationDisplayName("Today")
         .description("Your scores, steps, heart, stress, tonight's bedtime and the week, all in one.")
-        .supportedFamilies([.systemLarge])
+        .supportedFamilies([.systemMedium, .systemLarge])
+    }
+}
+
+struct TodayWidgetView: View {
+    let entry: ScoresEntry
+    @Environment(\.widgetFamily) private var family
+
+    var body: some View {
+        if family == .systemMedium {
+            WidgetShell(entry: entry, compact: false) { WidgetTodayMedium(snapshot: $0) }
+        } else {
+            WidgetShell(entry: entry, compact: false) { WidgetTodayLarge(snapshot: $0) }
+        }
     }
 }
 
@@ -230,8 +260,8 @@ struct StepsWidget: Widget {
             StepsWidgetView(entry: entry)
         }
         .configurationDisplayName("Steps")
-        .description("Today's steps against your goal.")
-        .supportedFamilies([.systemSmall, .accessoryCircular, .accessoryRectangular])
+        .description("Today's steps against your goal, and the week's.")
+        .supportedFamilies([.systemSmall, .systemMedium, .accessoryCircular, .accessoryRectangular, .accessoryInline])
     }
 }
 
@@ -262,6 +292,10 @@ struct StepsWidgetView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessory(entry)
+        case .accessoryInline:
+            Text("\(WidgetFormat.number(s?.steps)) of \(WidgetFormat.compact(goal)) steps").accessory(entry)
+        case .systemMedium:
+            WidgetShell(entry: entry, compact: false) { WidgetStepsMedium(snapshot: $0) }
         default:
             WidgetShell(entry: entry) { WidgetStepsSmall(snapshot: $0) }
         }
@@ -271,11 +305,45 @@ struct StepsWidgetView: View {
 struct HeartWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: "FitStatsHeart", provider: ScoresProvider()) { entry in
-            WidgetShell(entry: entry) { WidgetHeartSmall(snapshot: $0) }
+            HeartWidgetView(entry: entry)
         }
         .configurationDisplayName("Heart")
         .description("Resting heart rate and HRV against your usual.")
-        .supportedFamilies([.systemSmall])
+        .supportedFamilies([.systemSmall, .systemMedium, .accessoryCircular, .accessoryRectangular])
+    }
+}
+
+struct HeartWidgetView: View {
+    let entry: ScoresEntry
+    @Environment(\.widgetFamily) private var family
+
+    var body: some View {
+        let s = entry.snapshot
+        switch family {
+        case .accessoryCircular:
+            // Resting heart rate on a 40–100 bpm scale.
+            Gauge(value: min(1, max(0, ((s?.rhr ?? 40) - 40) / 60))) {
+                Image(systemName: "heart.fill")
+            } currentValueLabel: {
+                Text(WidgetFormat.number(s?.rhr))
+            }
+            .gaugeStyle(.accessoryCircularCapacity)
+            .accessory(entry)
+        case .accessoryRectangular:
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Resting \(WidgetFormat.number(s?.rhr)) bpm").font(.headline).widgetAccentable()
+                Text("HRV \(WidgetFormat.number(s?.hrv)) ms").font(.caption)
+                if let base = s?.rhrBaseline {
+                    Text("Usual \(WidgetFormat.number(base)) bpm").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessory(entry)
+        case .systemMedium:
+            WidgetShell(entry: entry, compact: false) { WidgetHeartMedium(snapshot: $0) }
+        default:
+            WidgetShell(entry: entry) { WidgetHeartSmall(snapshot: $0) }
+        }
     }
 }
 
@@ -285,8 +353,8 @@ struct StressWidget: Widget {
             StressWidgetView(entry: entry)
         }
         .configurationDisplayName("Stress")
-        .description("Today's stress score.")
-        .supportedFamilies([.systemSmall, .accessoryCircular])
+        .description("Today's stress score, and the week's.")
+        .supportedFamilies([.systemSmall, .systemMedium, .accessoryCircular, .accessoryRectangular])
     }
 }
 
@@ -295,15 +363,26 @@ struct StressWidgetView: View {
     @Environment(\.widgetFamily) private var family
 
     var body: some View {
-        if family == .accessoryCircular {
-            Gauge(value: min(1, max(0, (entry.snapshot?.stress ?? 0) / 100))) {
+        let stress = entry.snapshot?.stress
+        switch family {
+        case .accessoryCircular:
+            Gauge(value: min(1, max(0, (stress ?? 0) / 100))) {
                 Image(systemName: "waveform.path.ecg")
             } currentValueLabel: {
-                Text(WidgetFormat.number(entry.snapshot?.stress))
+                Text(WidgetFormat.number(stress))
             }
             .gaugeStyle(.accessoryCircularCapacity)
             .accessory(entry)
-        } else {
+        case .accessoryRectangular:
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Stress \(WidgetFormat.number(stress))").font(.headline).widgetAccentable()
+                Text(Theme.stressLabel(stress)).font(.caption)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessory(entry)
+        case .systemMedium:
+            WidgetShell(entry: entry, compact: false) { WidgetStressMedium(snapshot: $0) }
+        default:
             WidgetShell(entry: entry) { WidgetStressSmall(snapshot: $0) }
         }
     }
@@ -312,11 +391,24 @@ struct StressWidgetView: View {
 struct WeekWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: "FitStatsWeek", provider: ScoresProvider()) { entry in
-            WidgetShell(entry: entry, tab: "trends", compact: false) { WidgetWeekMedium(snapshot: $0) }
+            WeekWidgetView(entry: entry)
         }
         .configurationDisplayName("Week")
-        .description("Recovery and sleep over the last 7 days.")
-        .supportedFamilies([.systemMedium])
+        .description("Recovery and sleep over the last 7 days; strain and steps too in the large size.")
+        .supportedFamilies([.systemMedium, .systemLarge])
+    }
+}
+
+struct WeekWidgetView: View {
+    let entry: ScoresEntry
+    @Environment(\.widgetFamily) private var family
+
+    var body: some View {
+        if family == .systemLarge {
+            WidgetShell(entry: entry, tab: "trends", compact: false) { WidgetWeekLarge(snapshot: $0) }
+        } else {
+            WidgetShell(entry: entry, tab: "trends", compact: false) { WidgetWeekMedium(snapshot: $0) }
+        }
     }
 }
 
@@ -327,7 +419,7 @@ struct CoachWidget: Widget {
         }
         .configurationDisplayName("Coach")
         .description("Today's brief from your coach. Tap to open the chat.")
-        .supportedFamilies([.systemMedium, .systemLarge])
+        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
     }
 }
 
@@ -336,18 +428,50 @@ struct CoachWidgetView: View {
     @Environment(\.widgetFamily) private var family
 
     var body: some View {
-        WidgetShell(entry: entry, tab: "coach", compact: false) { WidgetCoachFace(snapshot: $0, lines: family == .systemLarge ? 16 : 5) }
+        switch family {
+        case .systemSmall:
+            WidgetShell(entry: entry, tab: "coach") { WidgetCoachFace(snapshot: $0, lines: 6, font: .caption) }
+        case .systemLarge:
+            WidgetShell(entry: entry, tab: "coach", compact: false) { WidgetCoachFace(snapshot: $0, lines: 16) }
+        default:
+            WidgetShell(entry: entry, tab: "coach", compact: false) { WidgetCoachFace(snapshot: $0, lines: 5) }
+        }
     }
 }
 
 struct TrainingWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: "FitStatsTraining", provider: ScoresProvider()) { entry in
-            WidgetShell(entry: entry, tab: "training") { WidgetTrainingSmall(snapshot: $0) }
+            TrainingWidgetView(entry: entry)
         }
         .configurationDisplayName("Training")
         .description("Workouts this week and your latest one.")
-        .supportedFamilies([.systemSmall])
+        .supportedFamilies([.systemSmall, .systemMedium, .accessoryRectangular])
+    }
+}
+
+struct TrainingWidgetView: View {
+    let entry: ScoresEntry
+    @Environment(\.widgetFamily) private var family
+
+    var body: some View {
+        let s = entry.snapshot
+        switch family {
+        case .accessoryRectangular:
+            VStack(alignment: .leading, spacing: 1) {
+                Text("\(s?.workoutsThisWeek ?? 0) workouts this week").font(.headline).widgetAccentable()
+                if let name = s?.lastWorkoutName {
+                    Text("Last: \(name)").font(.caption).lineLimit(1)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .widgetURL(WidgetLink.tab("training"))
+            .containerBackground(for: .widget) { Color.clear }
+        case .systemMedium:
+            WidgetShell(entry: entry, tab: "training", compact: false) { WidgetTrainingMedium(snapshot: $0) }
+        default:
+            WidgetShell(entry: entry, tab: "training") { WidgetTrainingSmall(snapshot: $0) }
+        }
     }
 }
 

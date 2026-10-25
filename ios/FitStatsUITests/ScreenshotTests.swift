@@ -998,13 +998,24 @@ final class ScreenshotTests: XCTestCase {
         }
         row.tap()
         XCTAssertTrue(element(app, "widget-previews").waitForExistence(timeout: 5), "the widgets screen did not open")
-        shot("126-widgets")
+        shot("126-widgets-small")
         app.swipeUp()
-        shot("127-widgets-2")
-        app.swipeUp()
-        shot("128-widgets-3")
-        app.swipeUp()
-        shot("129-widgets-4")
+        shot("127-widgets-small-2")
+        // The other sizes, from the switch at the top.
+        for (size, name) in [("Medium", "128-widgets-medium"), ("Large", "130-widgets-large")] {
+            let segment = app.segmentedControls.buttons[size]
+            for _ in 0..<4 where !(segment.exists && segment.isHittable) { app.swipeDown() }
+            guard segment.exists, segment.isHittable else {
+                XCTFail("no \(size) button on the widgets screen")
+                return
+            }
+            segment.tap()
+            shot(name)
+            app.swipeUp()
+            shot(name + "-2")
+            app.swipeUp()
+            shot(name + "-3")
+        }
         let sharing = element(app, "widget-sharing")
         for _ in 0..<4 where !(sharing.exists && sharing.isHittable) { app.swipeUp() }
         XCTAssertTrue(sharing.waitForExistence(timeout: 5), "no sharing status")
