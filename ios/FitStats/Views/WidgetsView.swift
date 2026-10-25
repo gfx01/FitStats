@@ -57,7 +57,7 @@ struct WidgetsView: View {
             Section("Add a widget") {
                 step(1, "Touch and hold an empty spot on your Home Screen until the apps jiggle.")
                 step(2, "Tap Edit in the top-left corner, then Add Widget.")
-                step(3, "Search for FitStats, pick Scores or Sleep, choose a size and tap Add Widget.")
+                step(3, "Search for FitStats, swipe to the widget you want, choose a size and tap Add Widget.")
                 step(4, "For the Lock Screen: touch and hold the Lock Screen, tap Customize, then the box under the time.")
             }
         }
