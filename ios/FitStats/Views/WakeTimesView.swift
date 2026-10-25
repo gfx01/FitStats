@@ -63,6 +63,7 @@ struct WakeTimesView: View {
                     }
                 }
                 .disabled(saving || !changed || model.status == nil)
+                .accessibilityValue(saved ? "Saved" : saving ? "Saving" : "")
                 .accessibilityIdentifier("wake-save")
             } footer: {
                 Text(tonightText)

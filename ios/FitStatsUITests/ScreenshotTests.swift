@@ -874,7 +874,11 @@ final class ScreenshotTests: XCTestCase {
         for _ in 0..<4 where !(save.exists && save.isHittable) { app.swipeUp() }
         shot("114-wake-times-saving")
         save.tap()
-        sleep(1)
+        // The button says "Saved" once the times are saved.
+        let saved = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Saved"), object: save)
+        if XCTWaiter.wait(for: [saved], timeout: 4) != .completed {
+            XCTFail("saving the wake-up times didn't finish: button \(save.isEnabled ? "enabled" : "disabled"), value \(save.value ?? "nil")")
+        }
         back(app)
         XCTAssertTrue(row.waitForExistence(timeout: 5))
         let summary = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Mon–")).firstMatch
