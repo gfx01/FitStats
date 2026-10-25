@@ -273,6 +273,36 @@ test("chat: a workout CSV is saved to the Training log and the coach is told wha
   tables.fs_workout_logs.splice(logsBefore);
 });
 
+test("weekly summary: written on request or by the cron on Sunday evening, in the phone's clock format", async () => {
+  claudeRequests.length = 0;
+  tables.fs_cache.splice(0, tables.fs_cache.length, ...tables.fs_cache.filter((c) => c.key !== "coach_weekly"));
+  const evs = await events(await coach.handleCoach(post({ kind: "weekly", clock: "12h" })));
+  const done = evs.at(-1)!;
+  assert.equal(done.type, "done", JSON.stringify(evs.filter((e) => e.type === "error")));
+  const weekly = done.weekly as Row;
+  assert.match(String(weekly.text), /^\*\*Training\*\* 3 sessions/);
+  assert.equal(new Date(`${weekly.week}T00:00:00Z`).getUTCDay(), 1, "keyed by the week's Monday");
+  assert.equal((claudeRequests[0].messages as Row[]).at(-1)!.content, coach.WEEKLY_PROMPT);
+  const system = claudeRequests[0].system as Row[];
+  assert.match(String(system.at(-1)!.text), /^Clock: they use a 12-hour clock\. Write times like 7:10 AM/);
+  assert.ok(!system.some((b) => String(b.text).startsWith("Your personality")), "no coach personality in the summary");
+  assert.equal((tables.fs_user_settings[0] as Row).clock_24h, false, "the clock is remembered for the cron");
+  assert.deepEqual(((await coach.coachWeekly()).weekly as Row).text, weekly.text);
+
+  // A 24-hour phone: chat answers are told so too.
+  claudeRequests.length = 0;
+  await events(await coach.handleCoach(post({ message: "When should I sleep?", clock: "24h" })));
+  assert.match(String((claudeRequests[0].system as Row[]).at(-1)!.text), /^Clock: they use a 24-hour clock/);
+
+  // The cron writes it once, on Sunday from 18:00 local time (Europe/Budapest in the fakes).
+  tables.fs_cache.splice(0, tables.fs_cache.length, ...tables.fs_cache.filter((c) => c.key !== "coach_weekly"));
+  assert.equal(await coach.maybeWeeklySummary(Date.parse("2026-10-18T14:00:00Z")), false, "Sunday 16:00 is too early");
+  assert.equal(await coach.maybeWeeklySummary(Date.parse("2026-10-19T17:00:00Z")), false, "Monday");
+  assert.equal(await coach.maybeWeeklySummary(Date.parse("2026-10-18T17:30:00Z")), true, "Sunday 19:30");
+  assert.equal(await coach.maybeWeeklySummary(Date.parse("2026-10-18T18:30:00Z")), false, "only once a week");
+  (tables.fs_user_settings[0] as Row).clock_24h = null;
+});
+
 test("chat: the chosen coach's voice, and screenshots in, previews kept, not resent", async () => {
   claudeRequests.length = 0;
   const shot = PNG_SCREENSHOT;

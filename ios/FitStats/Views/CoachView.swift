@@ -58,6 +58,10 @@ struct CoachView: View {
                 .onChange(of: coach.messages.count) { _, _ in
                     withAnimation(.easeOut(duration: 0.25)) { proxy.scrollTo(bottomID, anchor: .bottom) }
                 }
+                // A soft tap when an answer has just come in (not when a conversation is opened).
+                .onChange(of: coach.isSending) { was, sending in
+                    if was && !sending && coach.messages.last?.isUser == false { Haptics.soft() }
+                }
             }
             .safeAreaInset(edge: .bottom) { composer }
             .onTapOutside(of: composerFrame, active: inputFocused) { inputFocused = false }
@@ -88,6 +92,20 @@ struct CoachView: View {
                 }
             }
             .sheet(isPresented: $showHistory) { CoachHistoryView() }
+            // From the Sunday reminder.
+            .sheet(isPresented: $model.weeklyRequest) {
+                NavigationStack {
+                    ScrollView { WeeklyCard().padding(16) }
+                        .screenBackground()
+                        .navigationTitle("Your week")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { model.weeklyRequest = false } } }
+                }
+                .environmentObject(coach)
+                .environmentObject(model)
+                .preferredColorScheme(.dark)
+                .presentationDetents([.medium, .large])
+            }
             .onChange(of: pickedItems) { _, items in
                 guard !items.isEmpty else { return }
                 Task { await loadPicked(items) }
@@ -138,6 +156,7 @@ struct CoachView: View {
             setupCard
         } else {
             BriefingCard()
+            WeeklyCard()
             VStack(alignment: .leading, spacing: 10) {
                 SectionHeader(title: "Ask")
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
@@ -414,6 +433,62 @@ private struct MessageRow: View {
                     }
             }
         }
+    }
+}
+
+/// The week's summary: written by the server on Sunday evening, or now on request.
+struct WeeklyCard: View {
+    @EnvironmentObject var coach: CoachStore
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        let thisWeek = TrainingView.monday(of: model.today)
+        Card {
+            HStack {
+                SectionHeader(title: coach.weekly?.week == thisWeek || coach.weekly == nil ? "This week" : "Last week",
+                              subtitle: "Training, sleep and recovery")
+                Spacer()
+                if coach.weekly != nil && !coach.isWritingWeekly {
+                    Button { coach.generateWeekly() } label: { Image(systemName: "arrow.clockwise") }
+                        .font(.footnote.weight(.semibold))
+                        .disabled(!coach.isConfigured)
+                        .accessibilityLabel("Write this week's summary again")
+                }
+            }
+            if coach.isWritingWeekly {
+                if coach.weeklyStreaming.isEmpty {
+                    HStack(spacing: 8) {
+                        TypingDots()
+                        Text("Looking back at your week…").font(.footnote).foregroundStyle(Theme.secondary)
+                    }
+                } else {
+                    CoachMarkdown(text: coach.weeklyStreaming, linesAsParagraphs: true).font(.subheadline)
+                }
+            } else if let weekly = coach.weekly {
+                CoachMarkdown(text: weekly.text, linesAsParagraphs: true).font(.subheadline)
+                Text("Written \(Format.relative(weekly.createdAt))\(coach.label(for: weekly.model).map { " · \($0)" } ?? "")")
+                    .font(.caption2)
+                    .foregroundStyle(Theme.tertiary)
+            } else {
+                Text("Your coach looks back at the week every Sunday evening. Turn on the reminder in Settings, or write it now.")
+                    .font(.footnote)
+                    .foregroundStyle(Theme.secondary)
+                Button { coach.generateWeekly() } label: {
+                    Label("Write my week so far", systemImage: "calendar")
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(Capsule().fill(Theme.sleep.opacity(0.22)))
+                }
+                .buttonStyle(.plain)
+                .disabled(!coach.isConfigured)
+            }
+            if let error = coach.weeklyError {
+                Label(error, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(Theme.recoveryYellow)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("coach-weekly")
     }
 }
 

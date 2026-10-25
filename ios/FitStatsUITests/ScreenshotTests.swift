@@ -926,6 +926,53 @@ final class ScreenshotTests: XCTestCase {
         app.terminate()
     }
 
+    /// The sync line on Today, the bedtime consistency chart, the weekly summary and its reminder,
+    /// and a logged workout with the band's recording of it.
+    func test11WeekAndSleep() {
+        let fixtures = ProcessInfo.processInfo.environment["FITSTATS_FIXTURES"] ?? ""
+        XCTAssertFalse(fixtures.isEmpty, "FITSTATS_FIXTURES is not set")
+        let app = XCUIApplication()
+        app.launchEnvironment["FITSTATS_FIXTURES"] = fixtures
+        app.launch()
+        XCTAssertTrue(app.buttons["ring-recovery"].waitForExistence(timeout: 15), "Today screen did not load")
+        XCTAssertTrue(element(app, "today-sync-status").exists, "no sync status at the top of Today")
+        shot("121-today-sync-line")
+
+        app.buttons["ring-sleep"].tap()
+        let consistency = element(app, "bedtime-consistency")
+        for _ in 0..<8 where !onScreen(app, consistency) { app.swipeUp() }
+        XCTAssertTrue(consistency.exists, "no bedtime consistency chart on the Sleep screen")
+        reveal(app, consistency)
+        shot("122-bedtime-consistency")
+        back(app)
+
+        app.tabBars.buttons["Coach"].tap()
+        let weekly = element(app, "coach-weekly")
+        for _ in 0..<6 where !onScreen(app, weekly) { app.swipeUp() }
+        XCTAssertTrue(weekly.exists, "no weekly summary card on the Coach screen")
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Next week")).firstMatch.exists, "the fixture summary isn't shown")
+        reveal(app, weekly)
+        shot("123-coach-weekly")
+
+        app.tabBars.buttons["Settings"].tap()
+        let toggle = app.switches["toggle-reminders.weekly"]
+        for _ in 0..<8 where !(toggle.exists && toggle.isHittable) { app.swipeUp() }
+        XCTAssertTrue(toggle.exists, "no weekly summary reminder in Settings")
+
+        app.tabBars.buttons["Training"].tap()
+        let log = app.buttons["history-log"].firstMatch
+        scrollTo(app, log)
+        if log.exists {
+            log.tap()
+            let band = element(app, "log-band-workout")
+            for _ in 0..<4 where !onScreen(app, band) && band.exists { app.swipeUp() }
+            shot("124-log-with-band")
+        } else {
+            XCTFail("no logged workout in the history")
+        }
+        app.terminate()
+    }
+
     /// Training load and best bedtime on Insights, the calendar and compare periods from Trends,
     /// and a workout's heart-rate recovery.
     func test04InsightsPack() {

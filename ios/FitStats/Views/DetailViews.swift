@@ -155,6 +155,7 @@ struct SleepDetailView: View {
             }
             BreakdownCard(breakdown: ScoreBreakdown(day?.json("score_details")?["sleep"]), color: Theme.sleep,
                           emptyText: "No main sleep recorded for this night.")
+            BedtimeConsistencyCard(endDate: date)
             Card {
                 SectionHeader(title: "Night details")
                 // Estimated from the awake stretch before the first sleep stage (Fitbit reports 0).

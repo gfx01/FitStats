@@ -268,7 +268,7 @@ private struct SetRow: View {
             }
             Button {
                 set.done.toggle()
-                if set.done { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
+                if set.done { Haptics.tap() }
             } label: {
                 Image(systemName: set.done ? "checkmark.circle.fill" : "circle")
                     .font(.title2)
@@ -401,6 +401,7 @@ private struct FinishWorkoutSheet: View {
         if !workout.editing && final.endedAt == nil { final.endedAt = Format.isoNow() }
         final.name = final.name.trimmingCharacters(in: .whitespaces).isEmpty ? "Workout" : final.name.trimmingCharacters(in: .whitespaces)
         if await model.saveLog(final) != nil {
+            Haptics.success()
             dismiss()
             workout.discard()
         } else {

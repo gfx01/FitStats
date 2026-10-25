@@ -204,6 +204,7 @@ struct SettingsView: View {
                 }
                 .onChange(of: bedtimeLead) { _, _ in Task { await Reminders.update(model) } }
             }
+            ReminderToggle("Weekly summary (Sunday 7 PM)", key: Reminders.weeklyKey)
             ReminderToggle("Journal reminder", key: Reminders.journalKey)
             if journalReminder {
                 DatePicker("At", selection: journalTimeBinding, displayedComponents: .hourAndMinute)
@@ -212,7 +213,7 @@ struct SettingsView: View {
         } header: {
             Text("Reminders")
         } footer: {
-            Text("The bedtime reminder comes before tonight's In bed by time from the Tonight plan. It is set again each time FitStats refreshes; for nights after that it uses an estimate until you open the app. The journal reminder skips days you've already logged.")
+            Text("The bedtime reminder comes before tonight's In bed by time from the Tonight plan. It is set again each time FitStats refreshes; for nights after that it uses an estimate until you open the app. The weekly summary is written by your server on Sunday evening; the reminder opens it. The journal reminder skips days you've already logged.")
         }
     }
 

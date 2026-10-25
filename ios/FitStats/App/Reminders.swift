@@ -14,6 +14,8 @@ enum Reminders {
     /// Minutes before the plan's "In bed by" time.
     static let bedtimeLeadKey = "reminders.bedtimeLead"
     static let journalKey = "reminders.journal"
+    /// Sunday at 19:00: the week's summary (the server writes it from 18:00).
+    static let weeklyKey = "reminders.weekly"
     /// Minutes from midnight.
     static let journalTimeKey = "reminders.journalTime"
 
@@ -95,6 +97,18 @@ enum Reminders {
         }
     }
 
+    /// Sunday 19:00 this week and next (times already past are left out).
+    static func weeklies(today: String, zone: TimeZone, now: Date) -> [Planned] {
+        let sundays = (0..<14).map { Format.addDays(today, $0) }.filter { SleepPlan.weekdayIndex($0) == 6 }
+        return sundays.compactMap { day -> Planned? in
+            guard let base = midnight(day, zone) else { return nil }
+            let fire = base.addingTimeInterval(19 * 3600)
+            guard fire > now.addingTimeInterval(60) else { return nil }
+            return Planned(id: "\(prefix)weekly.\(day)", date: fire, title: "Your week in review",
+                           body: "Your coach's summary of this week's training, sleep and recovery. Tap to read it.", route: "weekly")
+        }
+    }
+
     // MARK: scheduling
 
     /// Replaces FitStats' pending reminders with the ones the current settings and data call for.
@@ -109,6 +123,9 @@ enum Reminders {
             planned += bedtimes(days: model.daysByDate, today: model.today,
                                 sleepNeedMin: Double(model.status?.settings.sleepNeedMin ?? 480),
                                 wakeTimes: model.wakeTimes, zone: zone, lead: lead, now: now)
+        }
+        if defaults.bool(forKey: weeklyKey) {
+            planned += weeklies(today: model.today, zone: zone, now: now)
         }
         if defaults.bool(forKey: journalKey) {
             let logged = Set(model.journal.keys)

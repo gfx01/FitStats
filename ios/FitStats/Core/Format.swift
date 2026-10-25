@@ -133,6 +133,12 @@ enum Format {
 
     /// Minutes from local midnight (negative = evening before) → "23:30"
     /// Hours and minutes in the device's 12- or 24-hour style.
+    /// The phone shows 24-hour times (Settings → General → Date & Time). The coach is told, so
+    /// its times read like the app's.
+    static var uses24HourClock: Bool {
+        !(DateFormatter.dateFormat(fromTemplate: "j", options: 0, locale: .current) ?? "").contains("a")
+    }
+
     private static let clockFormatter: DateFormatter = {
         let f = DateFormatter()
         f.setLocalizedDateFormatFromTemplate("jmm")

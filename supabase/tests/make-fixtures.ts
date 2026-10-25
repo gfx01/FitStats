@@ -207,5 +207,7 @@ write("coach-status.json", await coach.coachStatus());
 write("coach-threads.json", await coach.coachThreads());
 write("coach-thread.json", await (await coach.coachThread(String(tables.fs_coach_threads[0].id))).json());
 write("coach-brief.json", await coach.coachBrief());
+await ask({ kind: "weekly", clock: "12h" });
+write("coach-weekly.json", await coach.coachWeekly());
 
 console.log(`fixtures for ${today} written to ${out} (${days.length} days, ${tables.fs_coach_messages.length} coach messages)`);

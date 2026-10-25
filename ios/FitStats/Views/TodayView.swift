@@ -92,6 +92,7 @@ struct TodayView: View {
                             editHeader
                         } else {
                             WeekStrip(today: model.today, selected: $selected) { model.daysByDate[$0]?.double("recovery") }
+                            syncLine
                             banners
                             emptyState
                         }
@@ -877,34 +878,6 @@ struct TodayView: View {
                     .font(.caption)
                     .foregroundStyle(Theme.tertiary)
             }
-            HStack(spacing: 8) {
-                if model.isSyncing {
-                    ProgressView().scaleEffect(0.8)
-                    Text("Getting the latest from Google…").font(.caption).foregroundStyle(Theme.secondary)
-                } else {
-                    Text(updatedText).font(.caption).foregroundStyle(Theme.tertiary)
-                }
-                Spacer()
-                Button {
-                    Task { await model.syncNow() }
-                } label: {
-                    Label("Sync now", systemImage: "arrow.clockwise").font(.caption.weight(.semibold))
-                }
-                .disabled(model.isSyncing)
-            }
-            if let band = model.band, let synced = Format.timestamp(band.lastSyncTime) {
-                let name = band.name ?? "Your band"
-                if Date().timeIntervalSince(synced) > 30 * 60 {
-                    Label("\(name) last synced to your phone \(Format.relative(band.lastSyncTime)). Open the Google Health app to send newer data.",
-                          systemImage: "exclamationmark.circle")
-                        .font(.caption)
-                        .foregroundStyle(Theme.recoveryYellow)
-                } else {
-                    Text("\(name) synced to your phone \(Format.relative(band.lastSyncTime))")
-                        .font(.caption)
-                        .foregroundStyle(Theme.tertiary)
-                }
-            }
         }
         .padding(.top, 4)
     }
@@ -912,6 +885,59 @@ struct TodayView: View {
     private var updatedText: String {
         guard let fetched = model.status?.sync.lastRecentSyncAt else { return "Not updated yet" }
         return "Updated \(Format.relative(fetched))"
+    }
+
+    /// How fresh the data is, at the top: when FitStats last got data from Google and when the
+    /// band last synced to the phone; tap to sync now (pull down works too).
+    private var syncLine: some View {
+        Button {
+            Task { await model.syncNow() }
+        } label: {
+            HStack(spacing: 6) {
+                if model.isSyncing {
+                    ProgressView().controlSize(.mini)
+                    Text("Getting the latest from Google…")
+                } else {
+                    Image(systemName: bandIsStale ? "exclamationmark.circle" : "checkmark.circle")
+                        .foregroundStyle(bandIsStale ? Theme.recoveryYellow : Theme.recoveryGreen)
+                    Text([updatedText, bandText].compactMap { $0 }.joined(separator: " · "))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                    Spacer(minLength: 4)
+                    Image(systemName: "arrow.clockwise").foregroundStyle(Theme.tertiary)
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(Theme.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 4)
+            .contentShape(Rectangle())
+            .overlay(alignment: .bottomLeading) {
+                if bandIsStale && !model.isSyncing {
+                    Text("Open the Google Health app so your band sends newer data.")
+                        .font(.caption2)
+                        .foregroundStyle(Theme.recoveryYellow)
+                        .padding(.horizontal, 4)
+                        .offset(y: 16)
+                }
+            }
+            .padding(.bottom, bandIsStale && !model.isSyncing ? 14 : 0)
+        }
+        .buttonStyle(.plain)
+        .disabled(model.isSyncing)
+        .accessibilityLabel(model.isSyncing ? "Syncing" : "\([updatedText, bandText].compactMap { $0 }.joined(separator: ", ")). Sync now")
+        .accessibilityIdentifier("today-sync-status")
+    }
+
+    /// The band hasn't sent data to the phone for over 30 minutes.
+    private var bandIsStale: Bool {
+        guard let synced = Format.timestamp(model.band?.lastSyncTime) else { return false }
+        return Date().timeIntervalSince(synced) > 30 * 60
+    }
+
+    private var bandText: String? {
+        guard let band = model.band, Format.timestamp(band.lastSyncTime) != nil else { return nil }
+        return "band \(Format.relative(band.lastSyncTime))"
     }
 }
 

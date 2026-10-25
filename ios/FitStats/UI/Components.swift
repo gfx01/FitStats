@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct Card<Content: View>: View {
     var padding: CGFloat = 16
@@ -360,4 +361,14 @@ struct ScreenBackground: ViewModifier {
 
 extension View {
     func screenBackground() -> some View { modifier(ScreenBackground()) }
+}
+
+/// Short haptic taps for things that just happened (silent where the iPhone has haptics off).
+@MainActor
+enum Haptics {
+    /// Something was saved or finished: a workout, a routine, the journal.
+    static func success() { UINotificationFeedbackGenerator().notificationOccurred(.success) }
+    /// A small step: a set ticked off, an answer arrived.
+    static func tap() { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
+    static func soft() { UIImpactFeedbackGenerator(style: .soft).impactOccurred() }
 }

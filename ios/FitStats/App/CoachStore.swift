@@ -19,6 +19,10 @@ final class CoachStore: ObservableObject {
         didSet { UserDefaults.standard.set(persona.rawValue, forKey: CoachPersona.storageKey) }
     }
 
+    @Published private(set) var weekly: CoachWeekly?
+    @Published private(set) var weeklyStreaming = ""
+    @Published private(set) var isWritingWeekly = false
+    @Published var weeklyError: String?
     @Published private(set) var brief: CoachBrief?
     @Published private(set) var briefStreaming = ""
     @Published private(set) var isBriefing = false
@@ -44,6 +48,9 @@ final class CoachStore: ObservableObject {
 
     var isConfigured: Bool { status?.configured ?? false }
 
+    /// "12h" or "24h", sent with every request so the coach writes times the way the phone does.
+    static var clock: String { Format.uses24HourClock ? "24h" : "12h" }
+
     var modelLabel: String? { label(for: status?.model) }
 
     func label(for modelId: String?) -> String? {
@@ -63,6 +70,7 @@ final class CoachStore: ObservableObject {
         status = load(CoachStatus.self, "coach-status.json")
         threads = load(CoachThreadsResponse.self, "coach-threads.json")?.threads ?? []
         brief = load(CoachBriefResponse.self, "coach-brief.json")?.brief
+        weekly = load(CoachWeeklyResponse.self, "coach-weekly.json")?.weekly
         fixtureMessages = load(CoachThreadResponse.self, "coach-thread.json")?.messages ?? []
     }
 
@@ -72,6 +80,8 @@ final class CoachStore: ObservableObject {
             status = try await api.fetch(CoachStatus.self, "coach_status").0
             threads = try await api.fetch(CoachThreadsResponse.self, "coach_threads").0.threads
             brief = try await api.fetch(CoachBriefResponse.self, "coach_brief").0.brief
+            // Servers before 1.11.0 don't have it.
+            if let w = try? await api.fetch(CoachWeeklyResponse.self, "coach_weekly").0 { weekly = w.weekly }
         } catch {
             handle(error)
         }
@@ -179,7 +189,7 @@ final class CoachStore: ObservableObject {
         // the answer on its own and it is read from the thread when the app is back.
         let background = BackgroundTime("coach-answer")
         defer { background.end() }
-        var body: [String: Any] = ["message": question, "persona": persona.rawValue]
+        var body: [String: Any] = ["message": question, "persona": persona.rawValue, "clock": Self.clock]
         if let thread { body["thread_id"] = thread }
         if !images.isEmpty {
             body["images"] = images.map { ["media_type": "image/jpeg", "data": $0.data, "thumb": $0.thumb] }
@@ -327,7 +337,8 @@ final class CoachStore: ObservableObject {
             defer { background.end() }
             var finished = false
             do {
-                for try await event in api.events("coach", body: Data(#"{"kind":"brief"}"#.utf8)) {
+                let request = (try? JSONSerialization.data(withJSONObject: ["kind": "brief", "clock": Self.clock])) ?? Data(#"{"kind":"brief"}"#.utf8)
+                for try await event in api.events("coach", body: request) {
                     switch event.type {
                     case "text":
                         briefStreaming += event.text ?? ""
@@ -381,6 +392,59 @@ final class CoachStore: ObservableObject {
             try? await Task.sleep(for: .seconds(2.5))
         }
         return false
+    }
+
+    // MARK: weekly summary
+
+    /// Writes this week's summary now (the server also writes it on Sunday evening).
+    func generateWeekly() {
+        guard !isWritingWeekly, fixtureDir == nil, let api = apiProvider() else { return }
+        isWritingWeekly = true
+        weeklyStreaming = ""
+        weeklyError = nil
+        let before = weekly?.createdAt
+        Task {
+            let background = BackgroundTime("coach-weekly")
+            defer {
+                background.end()
+                isWritingWeekly = false
+                weeklyStreaming = ""
+            }
+            do {
+                let request = try JSONSerialization.data(withJSONObject: ["kind": "weekly", "clock": Self.clock])
+                for try await event in api.events("coach", body: request) {
+                    switch event.type {
+                    case "text":
+                        weeklyStreaming += event.text ?? ""
+                    case "done":
+                        if let w = event.weekly { weekly = w }
+                        isWritingWeekly = false
+                        weeklyStreaming = ""
+                    case "error":
+                        throw CoachFailure(message: event.message ?? "The weekly summary couldn't be written.")
+                    default:
+                        break
+                    }
+                }
+            } catch let e as CoachFailure {
+                weeklyError = e.localizedDescription
+            } catch {
+                if error.isUnauthorized {
+                    onUnauthorized()
+                    return
+                }
+                // The server finishes it anyway; read it once it's saved.
+                let deadline = Date().addingTimeInterval(120)
+                while Date() < deadline {
+                    if let w = try? await api.fetch(CoachWeeklyResponse.self, "coach_weekly").0.weekly, w.createdAt != before {
+                        weekly = w
+                        return
+                    }
+                    try? await Task.sleep(for: .seconds(2.5))
+                }
+                weeklyError = "The connection was interrupted. Try again."
+            }
+        }
     }
 
     // MARK: settings

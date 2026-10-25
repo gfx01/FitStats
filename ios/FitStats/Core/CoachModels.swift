@@ -113,6 +113,25 @@ struct CoachBriefResponse: Codable {
     let brief: CoachBrief?
 }
 
+/// The week's summary: written by the server on Sunday evening, or on request (lib/coach.ts).
+struct CoachWeekly: Codable, Equatable {
+    /// Monday of the week it is about.
+    let week: String
+    let date: String
+    let text: String
+    let createdAt: String
+    let model: String?
+
+    enum CodingKeys: String, CodingKey {
+        case week, date, text, model
+        case createdAt = "created_at"
+    }
+}
+
+struct CoachWeeklyResponse: Codable {
+    let weekly: CoachWeekly?
+}
+
 /// One server-sent event from the `coach` route: status, text, done or error.
 struct CoachEvent: Decodable {
     let type: String
@@ -122,11 +141,12 @@ struct CoachEvent: Decodable {
     let threadId: String?
     let messageId: String?
     let brief: CoachBrief?
+    let weekly: CoachWeekly?
     let usage: CoachUsage?
     let persona: String?
 
     enum CodingKeys: String, CodingKey {
-        case type, text, message, code, brief, usage, persona
+        case type, text, message, code, brief, weekly, usage, persona
         case threadId = "thread_id"
         case messageId = "message_id"
     }

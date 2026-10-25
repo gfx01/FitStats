@@ -151,6 +151,7 @@ struct WakeTimesView: View {
         let ok = await model.saveWakeTimes(times)
         saving = false
         saved = ok
+        if ok { Haptics.success() }
         if ok && closesOnSave { dismiss() }
     }
 

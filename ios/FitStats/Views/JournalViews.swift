@@ -213,7 +213,10 @@ struct JournalSheet: View {
         saving = true
         let tags = allTags.filter(selected.contains)
         Task {
-            if await model.saveJournal(date: date, tags: tags, note: note) { dismiss() }
+            if await model.saveJournal(date: date, tags: tags, note: note) {
+                Haptics.success()
+                dismiss()
+            }
             saving = false
         }
     }

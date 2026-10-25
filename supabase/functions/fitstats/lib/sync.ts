@@ -73,6 +73,8 @@ export interface UserSettings {
   coach_model?: string | null;
   /** Wake-up times set by hand (lib/planner.ts WakeTimes); missing before the column existed. */
   wake_times?: unknown;
+  /** The phone's clock: true for 24 hours, false for 12, null until the app has said. */
+  clock_24h?: boolean | null;
 }
 
 interface SyncState {

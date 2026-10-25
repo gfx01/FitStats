@@ -378,3 +378,39 @@ struct LibraryExercise: Codable, Equatable, Identifiable, Hashable {
 extension Array {
     subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
 }
+
+/// Logged workouts and the band's recordings of the same sessions (the server pairs them the
+/// same way for the coach: lib/training.ts pairBandWorkouts).
+enum WorkoutPairing {
+    /// Log id → band workout: the one of that day overlapping the log most in time (a log without
+    /// an end counts as an hour); for a day's only log without times, the day's only band
+    /// workout. Each band workout goes to one log.
+    static func pairs(logs: [WorkoutLog], band: [Exercise]) -> [String: Exercise] {
+        var out: [String: Exercise] = [:]
+        var used = Set<String>()
+        let byDay = Dictionary(grouping: band, by: \.date)
+        var candidates: [(log: String, band: Exercise, overlap: TimeInterval)] = []
+        for log in logs {
+            guard let start = Format.timestamp(log.startedAt) else { continue }
+            let end = Format.timestamp(log.endedAt) ?? start.addingTimeInterval(3600)
+            for x in byDay[log.date] ?? [] {
+                guard let a = Format.timestamp(x.startTime), let b = Format.timestamp(x.endTime) else { continue }
+                let overlap = min(b, end).timeIntervalSince(max(a, start))
+                if overlap > 0 { candidates.append((log.id, x, overlap)) }
+            }
+        }
+        for c in candidates.sorted(by: { $0.overlap > $1.overlap }) where out[c.log] == nil && !used.contains(c.band.id) {
+            out[c.log] = c.band
+            used.insert(c.band.id)
+        }
+        let logsPerDay = Dictionary(grouping: logs, by: \.date).mapValues(\.count)
+        for log in logs where out[log.id] == nil && Format.timestamp(log.startedAt) == nil && logsPerDay[log.date] == 1 {
+            let free = (byDay[log.date] ?? []).filter { !used.contains($0.id) }
+            if free.count == 1 {
+                out[log.id] = free[0]
+                used.insert(free[0].id)
+            }
+        }
+        return out
+    }
+}

@@ -699,6 +699,26 @@ test("sleep plan: need from strain, debt and naps; bedtime from the usual wake t
   assert.equal(few.bedtimeMin, null);
 });
 
+test("training: logged workouts paired with the band's recordings of the same sessions", async () => {
+  const { pairBandWorkouts } = await import("../functions/fitstats/lib/training.ts");
+  const log = (id: string, date: string, start: string | null, end: string | null) =>
+    ({ id, date, started_at: start, ended_at: end, routine_id: null, name: id, exercises: [], notes: null, effort: null, created_at: "", updated_at: "" });
+  const band = [
+    { id: "run", date: "2026-10-14", start_time: "2026-10-14T06:00:00Z", end_time: "2026-10-14T06:40:00Z" },
+    { id: "gym", date: "2026-10-14", start_time: "2026-10-14T16:10:00Z", end_time: "2026-10-14T17:05:00Z" },
+    { id: "walk", date: "2026-10-15", start_time: "2026-10-15T12:00:00Z", end_time: "2026-10-15T12:30:00Z" },
+  ];
+  const pairs = pairBandWorkouts([
+    log("push", "2026-10-14", "2026-10-14T16:00:00Z", "2026-10-14T17:00:00Z"),
+    // Starts during the run but no end: an hour is assumed.
+    log("strong", "2026-10-14", "2026-10-14T06:20:00Z", null),
+    // No times: the day's only band workout.
+    log("manual", "2026-10-15", null, null),
+    log("none", "2026-10-16", "2026-10-16T10:00:00Z", null),
+  ], band);
+  assert.deepEqual(Object.fromEntries([...pairs].map(([k, v]) => [k, v.id])), { push: "gym", strong: "run", manual: "walk" });
+});
+
 test("sleep plan: a wake-up time set by hand for tomorrow wins over the usual one", () => {
   const today = "2026-10-18"; // a Sunday: tomorrow is Monday (index 0)
   const rows = Array.from({ length: 28 }, (_, i) => {

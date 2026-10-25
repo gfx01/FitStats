@@ -209,7 +209,8 @@ struct TrainingView: View {
 
     /// What you logged here and what the band recorded, newest first.
     @ViewBuilder private var historySection: some View {
-        let entries = HistoryEntry.merged(logs: model.workoutLogs, band: model.bandWorkouts)
+        let pairs = model.workoutPairs
+        let entries = HistoryEntry.merged(logs: model.workoutLogs, band: model.bandWorkouts, pairs: pairs)
         let shown = showAllHistory ? entries : Array(entries.prefix(8))
         VStack(alignment: .leading, spacing: 10) {
             SectionHeader(title: "History", subtitle: "Logged here, and recorded by your band")
@@ -228,7 +229,7 @@ struct TrainingView: View {
                         VStack(spacing: 0) {
                             ForEach(Array(week.entries.enumerated()), id: \.element.id) { item in
                                 if item.offset > 0 { Divider().overlay(Theme.track).padding(.leading, 56) }
-                                historyRow(item.element)
+                                historyRow(item.element, pairs: pairs)
                             }
                         }
                     }
@@ -243,14 +244,18 @@ struct TrainingView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    @ViewBuilder private func historyRow(_ entry: HistoryEntry) -> some View {
+    @ViewBuilder private func historyRow(_ entry: HistoryEntry, pairs: [String: Exercise]) -> some View {
         switch entry {
         case .log(let log):
+            // A session the band recorded too: one row, with its heart rate and strain.
+            let band = pairs[log.id]
             NavigationLink(value: TrainingRoute.log(log.id)) {
                 HistoryRow(icon: "dumbbell.fill", tint: Theme.strain, title: log.name, date: log.date,
                            detail: [log.minutes.map { Format.duration($0) }, "\(log.doneSetCount) sets",
-                                    log.volumeKg.map { "\(Format.number($0)) kg" }].compactMap { $0 }.joined(separator: " · "),
-                           badge: "Logged")
+                                    log.volumeKg.map { "\(Format.number($0)) kg" },
+                                    band?.avgHr.map { "♥ \(Int($0.rounded())) bpm" },
+                                    band?.strain.map { "strain \(Format.number($0, decimals: 1))" }].compactMap { $0 }.joined(separator: " · "),
+                           badge: band == nil ? "Logged" : "Logged + band")
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("history-log")
@@ -311,8 +316,11 @@ enum HistoryEntry: Identifiable {
         }
     }
 
-    static func merged(logs: [WorkoutLog], band: [Exercise]) -> [HistoryEntry] {
-        (logs.map(HistoryEntry.log) + band.map(HistoryEntry.band)).sorted { $0.sortKey > $1.sortKey }
+    /// Logged workouts and the band's, newest first; a band workout paired with a logged one
+    /// (WorkoutPairing) is shown in that one's row instead of its own.
+    static func merged(logs: [WorkoutLog], band: [Exercise], pairs: [String: Exercise] = [:]) -> [HistoryEntry] {
+        let paired = Set(pairs.values.map(\.id))
+        return (logs.map(HistoryEntry.log) + band.filter { !paired.contains($0.id) }.map(HistoryEntry.band)).sorted { $0.sortKey > $1.sortKey }
     }
 }
 

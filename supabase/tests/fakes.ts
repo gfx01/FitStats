@@ -583,6 +583,12 @@ function claudeFetch(init: RequestInit): Response {
     return sseResponse(message(model, usage1, textEvents(0, text), "end_turn", 160));
   }
 
+  if (typeof last.content === "string" && last.content.startsWith("Write my summary of this week")) {
+    const text = "**Training** 3 sessions: two logged, one run.\n**Sleep** 7h 28m a night, bedtimes within 40 minutes.\n" +
+      "**Recovery** Steady, HRV close to baseline.\n**Next week** Add a leg day.";
+    return sseResponse(message(model, usage1, textEvents(0, text), "end_turn", 90));
+  }
+
   const results = Array.isArray(last.content) ? (last.content as Row[]).filter((c) => c.type === "tool_result") : [];
   // Screenshots: image blocks first, then the question.
   const images = Array.isArray(last.content) ? (last.content as Row[]).filter((c) => c.type === "image") : [];

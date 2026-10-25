@@ -24,6 +24,7 @@ struct FitStatsApp: App {
                 .onAppear {
                     ReminderDelegate.shared.onOpen = { [model] route in
                         if route == "journal" { model.journalRequest = model.today }
+                        if route == "weekly" { model.weeklyRequest = true }
                     }
                 }
                 .onChange(of: scenePhase) { _, phase in
@@ -86,6 +87,9 @@ struct MainTabs: View {
         // An "Ask coach" button anywhere in the app opens the Coach with the question typed in.
         .onChange(of: model.coachDraft) { _, draft in
             if draft != nil { tab = "coach" }
+        }
+        .onChange(of: model.weeklyRequest) { _, open in
+            if open { tab = "coach" }
         }
     }
 }

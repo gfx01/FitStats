@@ -266,6 +266,43 @@ export async function deleteLog(id: string): Promise<void> {
 
 // ----------------------------------------------------------- for the coach
 
+/**
+ * Log id → the band workout recorded during the same session: the one of that day overlapping
+ * it most in time (a log without an end counts as an hour); for a day's only log without times,
+ * the day's only band workout. Each band workout goes to one log. The app pairs them the same way
+ * (TrainingModels.swift WorkoutPairing).
+ */
+export function pairBandWorkouts(logs: WorkoutLog[], band: Row[]): Map<string, Row> {
+  const out = new Map<string, Row>();
+  const used = new Set<unknown>();
+  const time = (v: unknown) => (typeof v === "string" ? Date.parse(v) : NaN);
+  const candidates: { log: string; band: Row; overlap: number }[] = [];
+  for (const l of logs) {
+    const start = time(l.started_at);
+    if (!Number.isFinite(start)) continue;
+    const end = Number.isFinite(time(l.ended_at)) ? time(l.ended_at) : start + 3_600_000;
+    for (const x of band) {
+      if (x.date !== l.date) continue;
+      const overlap = Math.min(time(x.end_time), end) - Math.max(time(x.start_time), start);
+      if (overlap > 0) candidates.push({ log: l.id, band: x, overlap });
+    }
+  }
+  for (const c of candidates.sort((a, b) => b.overlap - a.overlap)) {
+    if (out.has(c.log) || used.has(c.band.id)) continue;
+    out.set(c.log, c.band);
+    used.add(c.band.id);
+  }
+  for (const l of logs) {
+    if (out.has(l.id) || Number.isFinite(time(l.started_at)) || logs.filter((x) => x.date === l.date).length !== 1) continue;
+    const free = band.filter((x) => x.date === l.date && !used.has(x.id));
+    if (free.length === 1) {
+      out.set(l.id, free[0]);
+      used.add(free[0].id);
+    }
+  }
+  return out;
+}
+
 /** "; works quads, glutes (helps: hamstrings)", or nothing for an exercise the library doesn't know. */
 function musclesText(name: string, chosen?: MuscleId[] | null): string {
   const m = exerciseMuscles(name, chosen);

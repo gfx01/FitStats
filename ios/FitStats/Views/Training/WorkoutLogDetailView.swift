@@ -16,7 +16,7 @@ struct WorkoutLogDetailView: View {
                 if let log {
                     header(log)
                     totals(log)
-                    if let band = bandMatch(log) { bandCard(band) }
+                    if let band = model.workoutPairs[log.id] { bandCard(band) }
                     WorkoutMusclesCard(title: "Muscles worked", sets: model.library.sets(in: [log]), library: model.library)
                     ForEach(log.exercises) { exerciseCard($0) }
                     if let notes = log.notes, !notes.isEmpty {
@@ -136,48 +136,69 @@ struct WorkoutLogDetailView: View {
         }
     }
 
+    /// The band's recording of this session: heart rate, strain, calories, heart-rate recovery
+    /// and time in each zone, with its own screen a tap away.
     private func bandCard(_ x: Exercise) -> some View {
         NavigationLink(value: DetailRoute.workout(x.date, x.id)) {
             Card {
                 HStack {
-                    SectionHeader(title: "Recorded by your band")
+                    SectionHeader(title: "Recorded by your band", subtitle: x.displayName)
                     Spacer()
                     Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).foregroundStyle(Theme.tertiary)
                 }
-                HStack(spacing: 12) {
-                    Image(systemName: x.symbol)
-                        .font(.subheadline)
-                        .foregroundStyle(Theme.heart)
-                        .frame(width: 32, height: 32)
-                        .background(Circle().fill(Theme.heart.opacity(0.15)))
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(x.displayName).font(.subheadline.weight(.semibold))
-                        Text([x.durationS.map { Format.duration($0 / 60) }, x.avgHr.map { "avg \(Int($0.rounded())) bpm" },
-                              x.strain.map { "strain \(Format.number($0, decimals: 1))" }].compactMap { $0 }.joined(separator: " · "))
-                            .font(.caption)
-                            .foregroundStyle(Theme.secondary)
+                let raw: [(String, String?)] = [
+                    ("Avg heart rate", x.avgHr.map { "\(Int($0.rounded())) bpm" }),
+                    ("Max heart rate", x.hrMax.map { "\(Int($0.rounded())) bpm" }),
+                    ("Strain", x.strain.map { Format.number($0, decimals: 1) }),
+                    ("Calories", x.calories.map { "\(Int($0.rounded())) kcal" }),
+                    ("Duration", x.durationS.map { Format.duration($0 / 60) }),
+                    ("HR drop, 1 min", x.hrr1min.map { "\(Int($0.rounded())) bpm" }),
+                ]
+                let stats = raw.compactMap { item in item.1.map { (item.0, $0) } }
+                LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)],
+                          alignment: .leading, spacing: 10) {
+                    ForEach(stats, id: \.0) { stat in
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(stat.1).font(.subheadline.weight(.semibold)).monospacedDigit()
+                            Text(stat.0).font(.caption2).foregroundStyle(Theme.tertiary)
+                        }
                     }
-                    Spacer(minLength: 0)
                 }
+                zoneBar(x)
             }
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("log-band-workout")
     }
 
-    /// The band workout of the same day that overlaps this one in time; without times, the
-    /// day's only band workout.
-    private func bandMatch(_ log: WorkoutLog) -> Exercise? {
-        let sameDay = model.bandWorkouts.filter { $0.date == log.date }
-        guard let start = Format.timestamp(log.startedAt) else { return sameDay.count == 1 ? sameDay[0] : nil }
-        let end = Format.timestamp(log.endedAt) ?? start.addingTimeInterval(3600)
-        return sameDay
-            .compactMap { x -> (Exercise, TimeInterval)? in
-                guard let a = Format.timestamp(x.startTime), let b = Format.timestamp(x.endTime) else { return nil }
-                let overlap = min(b, end).timeIntervalSince(max(a, start))
-                return overlap > 0 ? (x, overlap) : nil
+    /// Time in the light, moderate, vigorous and peak heart-rate zones, as one bar.
+    @ViewBuilder private func zoneBar(_ x: Exercise) -> some View {
+        let zones: [(String, Double, Color)] = [
+            ("Light", x.zoneLightS ?? 0, Theme.recoveryGreen), ("Moderate", x.zoneModerateS ?? 0, Theme.recoveryYellow),
+            ("Vigorous", x.zoneVigorousS ?? 0, Theme.strain), ("Peak", x.zonePeakS ?? 0, Theme.heart),
+        ]
+        let total = zones.reduce(0) { $0 + $1.1 }
+        if total > 0 {
+            VStack(alignment: .leading, spacing: 6) {
+                GeometryReader { geo in
+                    HStack(spacing: 2) {
+                        ForEach(zones.filter { $0.1 > 0 }, id: \.0) { z in
+                            RoundedRectangle(cornerRadius: 3).fill(z.2).frame(width: max(4, (geo.size.width - 6) * z.1 / total))
+                        }
+                    }
+                }
+                .frame(height: 8)
+                HStack(spacing: 10) {
+                    ForEach(zones.filter { $0.1 > 0 }, id: \.0) { z in
+                        HStack(spacing: 4) {
+                            Circle().fill(z.2).frame(width: 6, height: 6)
+                            Text("\(z.0) \(Format.duration(z.1 / 60))").font(.caption2).foregroundStyle(Theme.secondary)
+                        }
+                    }
+                }
             }
-            .max { $0.1 < $1.1 }?.0
+            .accessibilityElement(children: .combine)
+        }
     }
 
     private func timeRange(_ log: WorkoutLog) -> String? {

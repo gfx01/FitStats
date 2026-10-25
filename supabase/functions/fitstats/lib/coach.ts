@@ -20,6 +20,7 @@ import {
   muscleSetsText,
   routineText,
   saveRoutine,
+  pairBandWorkouts,
   TrainingInputError,
 } from "./training.ts";
 import { awakeAfterOnset, fallAsleepMinutes, type Json, mainSleepOf } from "./transform.ts";
@@ -780,14 +781,28 @@ export async function runTool(name: string, input: Json, ctx: Ctx, stats: Json |
     }
     case "get_training": {
       const [from, to] = input.from || input.to ? rangeArgs(input) : [addDays(ctx.today, -89), ctx.today];
-      const [routines, logs, year] = await Promise.all([loadRoutines(), loadLogs(from, to), loadLogs(addDays(ctx.today, -364), ctx.today)]);
+      const [routines, logs, year, band] = await Promise.all([
+        loadRoutines(), loadLogs(from, to), loadLogs(addDays(ctx.today, -364), ctx.today),
+        db.select<Row>("fs_exercise", `select=*&date=gte.${from}&date=lte.${to}`),
+      ]);
+      const paired = pairBandWorkouts(logs, band);
+      const recording = (x: Row | undefined) => x && {
+        name: x.name ?? x.exercise_type, start: localTime(x.start_time, ctx.tz), minutes: num(x.duration_s) === null ? null : Math.round(num(x.duration_s)! / 60),
+        avg_hr: num(x.avg_hr), max_hr: num(x.hr_max), strain: num(x.strain), calories: num(x.calories), hr_drop_1min: num(x.hrr_1min),
+      };
       const withMuscles = <T extends { name: string; muscles?: MuscleId[] | null }>(e: T) => {
         const m = exerciseMuscles(e.name, e.muscles);
         return { ...e, muscles: undefined, works: m.primary, helps: m.secondary };
       };
       return {
         routines: routines.map((r) => ({ id: r.id, name: r.name, made_by: r.created_by === "coach" ? "you (the coach)" : "them", notes: r.notes, exercises: r.exercises.map(withMuscles) })),
-        logged_workouts: { from, to, workouts: logs.map((l) => ({ ...l, created_at: undefined, updated_at: undefined, exercises: l.exercises.map(withMuscles) })) },
+        logged_workouts: {
+          from, to,
+          note: "band_recording: the band's recording of the same session (matched by time), when there is one; get_workouts has the rest of the band's workouts.",
+          workouts: logs.map((l) => ({
+            ...l, created_at: undefined, updated_at: undefined, exercises: l.exercises.map(withMuscles), band_recording: recording(paired.get(l.id)) ?? null,
+          })),
+        },
         exercise_progress_last_year: exerciseProgress(year),
         muscle_sets_last_7_days: muscleSetsText(year.filter((l) => l.date > addDays(ctx.today, -7))),
         muscle_sets_last_28_days: muscleSetsText(year.filter((l) => l.date > addDays(ctx.today, -28))),
@@ -881,6 +896,20 @@ Score definitions
 - Awakenings count only times awake after falling asleep and before the final wake-up; "awake after falling asleep" is the minutes of those. Fitbit's awake time also includes the stretch of falling asleep.
 - Sleep plan (shown in the app as "Tonight"): need tonight = their sleep need setting (the base) + 0–45 min for the day's strain (0 at 35 or less, 45 at 85 or more) + a quarter of the last 7 nights' sleep debt (at most 60 min; earlier days' naps count as sleep) − today's naps (at most 60 min); time in bed = need tonight ÷ their typical sleep efficiency; bedtime = the wake-up time they set for tomorrow (else their usual wake time for tomorrow's kind of day) − time in bed. Use its numbers when suggesting a bedtime; call the plan's total "need tonight", not their sleep need.
 - Wake-up times they set by hand are when they have to be up. A morning with a later time, or with none, is one they can sleep in: when they are short of sleep, point those out as the chance to catch up, and keep the plan's bedtime for nights before an early morning.`;
+
+export const WEEKLY_PROMPT = `Write my summary of this week (Monday to today). Four short lines, no greeting, each starting with a bold label: **Training**, **Sleep**, **Recovery** and **Next week**. Training: the sessions I logged and the band recorded, the muscles they worked, and how that compares with my usual week. Sleep: average time asleep against my sleep need, and how regular my bedtimes were. Recovery: how recovery and HRV moved through the week. Next week: one concrete thing to change, from the data. Under 110 words.`;
+
+/** The clock they use, for writing times: the data lists 24-hour times. */
+function clockPrompt(clock24: boolean | null | undefined): string | null {
+  if (clock24 === true) return "Clock: they use a 24-hour clock. Write times like 07:10 and 22:45.";
+  if (clock24 === false) return "Clock: they use a 12-hour clock. Write times like 7:10 AM and 10:45 PM (the data lists 24-hour times: convert them).";
+  return null;
+}
+
+/** Monday of the week of a day. */
+function mondayOf(day: Ymd): Ymd {
+  return addDays(day, -((new Date(`${day}T00:00:00Z`).getUTCDay() + 6) % 7));
+}
 
 export const BRIEF_PROMPT = `Write my briefing for today. Three or four short lines, no greeting, each starting with a bold label: **Recovery**, **Today**, **Tonight**, and only if there is something worth saying, **Trend**. Recovery: today's score and its main drivers. Today: how hard to train (the strain range) and one concrete suggestion. Tonight: the bedtime and the need tonight from tonight's sleep plan. Trend: one notable change over the last weeks. Under 90 words. If today's recovery isn't available yet, say so and base the advice on the last few days.`;
 
@@ -1116,6 +1145,34 @@ export async function coachDelete(id: string): Promise<Response> {
   return jsonResponse({ deleted: true });
 }
 
+/** The latest weekly summary, if it is about this week or last week. */
+export async function coachWeekly(): Promise<Row> {
+  const ctx = await context();
+  const row = await db.selectOne<Row>("fs_cache", "select=value&key=eq.coach_weekly");
+  const weekly = (row?.value ?? null) as Json | null;
+  const recent = weekly && String(weekly.week) >= addDays(mondayOf(ctx.today), -7);
+  return { weekly: recent ? weekly : null };
+}
+
+/**
+ * From the cron: on Sunday from 18:00 local time, writes the week's summary once (the app's
+ * Sunday 19:00 reminder opens it). Nothing without a Claude API key.
+ */
+export async function maybeWeeklySummary(now = Date.now()): Promise<boolean> {
+  const apiKey = db.optionalEnv("ANTHROPIC_API_KEY");
+  if (!apiKey) return false;
+  const ctx = await context();
+  const local = clockFor(ctx.acc).locate(now);
+  if (new Date(`${local.date}T00:00:00Z`).getUTCDay() !== 0 || local.minute < 18 * 60) return false;
+  const row = await db.selectOne<Row>("fs_cache", "select=value&key=eq.coach_weekly");
+  if (((row?.value ?? null) as Json | null)?.week === mondayOf(ctx.today)) return false;
+  await converse({
+    kind: "weekly", message: "", images: [], files: [], persona: DEFAULT_PERSONA, threadId: null, history: [], ctx, apiKey,
+    signal: AbortSignal.timeout(ANSWER_TIMEOUT_MS), send: () => {},
+  });
+  return true;
+}
+
 export async function coachBrief(): Promise<Row> {
   const ctx = await context();
   const row = await db.selectOne<Row>("fs_cache", "select=value&key=eq.coach_brief");
@@ -1134,7 +1191,7 @@ export async function coachBrief(): Promise<Row> {
  */
 export async function handleCoach(req: Request): Promise<Response> {
   const body = (await req.json().catch(() => ({}))) as Row;
-  const kind = body.kind === "brief" ? "brief" : "chat";
+  const kind = body.kind === "brief" ? "brief" : body.kind === "weekly" ? "weekly" : "chat";
   const message = typeof body.message === "string" ? body.message.trim() : "";
   const threadId = typeof body.thread_id === "string" && UUID.test(body.thread_id) ? body.thread_id : null;
   const persona = typeof body.persona === "string" && COACH_PERSONAS[body.persona] ? body.persona : DEFAULT_PERSONA;
@@ -1150,6 +1207,12 @@ export async function handleCoach(req: Request): Promise<Response> {
     return jsonResponse({ error: "coach_not_configured", message: "Add an Anthropic API key as the ANTHROPIC_API_KEY secret in Supabase (see SETUP.md)." }, 503);
   }
   const ctx = await context();
+  // The phone's clock (12 or 24 hours), also kept for the weekly summary the server writes alone.
+  const clock24 = body.clock === "24h" ? true : body.clock === "12h" ? false : null;
+  if (clock24 !== null && ctx.settings.clock_24h !== clock24) {
+    ctx.settings = { ...ctx.settings, clock_24h: clock24 };
+    await db.update("fs_user_settings", "id=eq.1", { clock_24h: clock24 }).catch((e) => console.error("clock setting", String(e)));
+  }
   const usage = await loadUsage(ctx.today);
   if (usage.day_requests >= DAILY_REQUEST_LIMIT) {
     return jsonResponse({ error: "daily_limit", message: `The coach answers at most ${DAILY_REQUEST_LIMIT} messages a day. Try again tomorrow.` }, 429);
@@ -1212,7 +1275,7 @@ export async function handleCoach(req: Request): Promise<Response> {
 }
 
 async function converse(o: {
-  kind: "chat" | "brief";
+  kind: "chat" | "brief" | "weekly";
   message: string;
   images: CoachImage[];
   /** Workout CSVs: imported to the Training log before Claude is asked. */
@@ -1234,6 +1297,8 @@ async function converse(o: {
   ];
   // After the cached part, so switching coaches keeps the cache.
   if (o.kind === "chat") system.push({ type: "text", text: personaPrompt(o.persona) });
+  const clock = clockPrompt(o.ctx.settings.clock_24h);
+  if (clock) system.push({ type: "text", text: clock });
   // Attached workout files go to the Training log first; Claude gets what was saved.
   const imported: { name: string; note: string }[] = [];
   for (const f of o.files) {
@@ -1252,7 +1317,8 @@ async function converse(o: {
       ...(asked ? [{ type: "text", text: asked }] : []),
     ]
     : asked;
-  const messages: Json[] = [...o.history, { role: "user", content: o.kind === "brief" ? BRIEF_PROMPT : question }];
+  const asks = o.kind === "brief" ? BRIEF_PROMPT : o.kind === "weekly" ? WEEKLY_PROMPT : question;
+  const messages: Json[] = [...o.history, { role: "user", content: asks }];
   const usage = emptyUsage();
   let text = "";
 
@@ -1334,6 +1400,13 @@ async function converse(o: {
     await db.upsert("fs_cache", [{ key: "coach_brief", value: brief, updated_at: now }], "key");
     await saveUsage(o.ctx.today, usage);
     o.send({ type: "done", brief, model, usage });
+    return;
+  }
+  if (o.kind === "weekly") {
+    const weekly = { week: mondayOf(o.ctx.today), date: o.ctx.today, text, created_at: now, model };
+    await db.upsert("fs_cache", [{ key: "coach_weekly", value: weekly, updated_at: now }], "key");
+    await saveUsage(o.ctx.today, usage);
+    o.send({ type: "done", weekly, model, usage });
     return;
   }
   await db.update("fs_coach_threads", `id=eq.${threadId}`, { updated_at: now });

@@ -145,6 +145,7 @@ struct RoutineEditorView: View {
             .map { var e = $0; e.name = e.name.trimmingCharacters(in: .whitespaces); return e }
             .filter { !$0.name.isEmpty }
         if await model.saveRoutine(clean) != nil {
+            Haptics.success()
             dismiss()
         } else {
             error = model.trainingError ?? "Couldn't save the routine."

@@ -35,6 +35,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var workoutLogs: [WorkoutLog] = []
     /// The band's workouts of the last 120 days, for the Training tab's history.
     @Published private(set) var bandWorkouts: [Exercise] = []
+    /// Logged workout id → the band's recording of the same session (WorkoutPairing).
+    var workoutPairs: [String: Exercise] { WorkoutPairing.pairs(logs: workoutLogs, band: bandWorkouts) }
     /// Which muscles exercises work (with the training data from server 1.8.0).
     @Published private(set) var library = ExerciseLibrary.empty
     @Published var trainingError: String?
@@ -49,6 +51,8 @@ final class AppModel: ObservableObject {
     var isFixture: Bool { fixtureDir != nil }
     /// A tapped journal reminder: Today opens this day's journal.
     @Published var journalRequest: String?
+    /// A tapped weekly-summary reminder: the Coach opens the week's summary.
+    @Published var weeklyRequest = false
 
     init() {
         let configured = Bundle.main.object(forInfoDictionaryKey: "FitStatsServerURL") as? String

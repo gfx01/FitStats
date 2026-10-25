@@ -10,7 +10,7 @@
 //   coach | coach_status | coach_threads | coach_thread | coach_delete | coach_brief
 //                      Claude coach (lib/coach.ts), also x-app-key
 
-import { coachBrief, coachDelete, coachStatus, coachThread, coachThreads, handleCoach, isCoachModel } from "./lib/coach.ts";
+import { coachBrief, coachDelete, coachStatus, coachThread, coachThreads, coachWeekly, handleCoach, isCoachModel, maybeWeeklySummary } from "./lib/coach.ts";
 import * as db from "./lib/db.ts";
 import { decodeIdToken, exchangeCode, GOOGLE_AUTH_URL, HEALTH_SCOPES, HealthClient, OAUTH_SCOPES } from "./lib/google.ts";
 import { JOURNAL_TAGS, journalEntries, JournalInputError, saveJournalEntry } from "./lib/journal.ts";
@@ -492,6 +492,8 @@ Deno.serve(async (req: Request) => {
       const row = await db.selectOne<Row>("fs_secrets", "select=value&name=eq.cron_secret");
       if (!secret || !row || secret !== row.value) return json({ error: "forbidden" }, 403);
       background(runSync("cron", false));
+      // Sunday evening's weekly summary, once a week (does nothing the rest of the time).
+      background(maybeWeeklySummary().catch((e) => console.error("weekly summary", String(e))));
       return json({ accepted: true }, 202);
     }
 
@@ -535,6 +537,8 @@ Deno.serve(async (req: Request) => {
         return await coachDelete(params.get("id") ?? "");
       case "coach_brief":
         return json(await coachBrief());
+      case "coach_weekly":
+        return json(await coachWeekly());
       default:
         return json({ error: "unknown route" }, 404);
     }
