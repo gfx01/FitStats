@@ -980,6 +980,33 @@ final class ScreenshotTests: XCTestCase {
         app.terminate()
     }
 
+    /// Settings → Widgets: the widget previews with today's numbers and the sharing status.
+    func test12Widgets() {
+        let fixtures = ProcessInfo.processInfo.environment["FITSTATS_FIXTURES"] ?? ""
+        XCTAssertFalse(fixtures.isEmpty, "FITSTATS_FIXTURES is not set")
+        let app = XCUIApplication()
+        app.launchEnvironment["FITSTATS_FIXTURES"] = fixtures
+        app.launch()
+        XCTAssertTrue(app.buttons["ring-recovery"].waitForExistence(timeout: 15), "Today screen did not load")
+
+        app.tabBars.buttons["Settings"].tap()
+        let row = app.buttons["settings-widgets"]
+        for _ in 0..<8 where !(row.exists && row.isHittable) { app.swipeUp() }
+        guard row.exists, row.isHittable else {
+            XCTFail("missing the widgets row in Settings")
+            return
+        }
+        row.tap()
+        XCTAssertTrue(element(app, "widget-previews").waitForExistence(timeout: 5), "the widgets screen did not open")
+        let sharing = element(app, "widget-sharing")
+        XCTAssertTrue(sharing.waitForExistence(timeout: 5), "no sharing status")
+        XCTAssertTrue(sharing.label.contains("Working"), "sharing status: \(sharing.label)")
+        shot("126-widgets")
+        app.swipeUp()
+        shot("127-widgets-2")
+        app.terminate()
+    }
+
     /// Training load and best bedtime on Insights, the calendar and compare periods from Trends,
     /// and a workout's heart-rate recovery.
     func test04InsightsPack() {

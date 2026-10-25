@@ -59,6 +59,14 @@ jobs:
           rm -rf Payload FitStats.ipa
           mkdir Payload
           cp -R build/Build/Products/Release-iphoneos/FitStats.app Payload/
+          # Ad-hoc signed with the app group, widget first: signing apps read the entitlements
+          # from the binaries to know which capabilities (here the shared app group) to set up.
+          WIDGET=Payload/FitStats.app/PlugIns/FitStatsWidget.appex
+          test -d "$WIDGET" || { echo "::error::The widget extension is missing from the app"; exit 1; }
+          codesign --force --sign - --entitlements Entitlements/FitStatsWidget.entitlements "$WIDGET"
+          codesign --force --sign - --entitlements Entitlements/FitStats.entitlements Payload/FitStats.app
+          codesign -d --entitlements - "$WIDGET"
+          codesign -d --entitlements - Payload/FitStats.app
           zip -qry FitStats.ipa Payload
           ls -lh FitStats.ipa
 
@@ -79,6 +87,6 @@ jobs:
           gh release delete build-latest --cleanup-tag --yes || true
           gh release create build-latest FitStats.ipa \
             --title "FitStats (latest build)" \
-            --notes "Unsigned IPA built from ${GITHUB_REF_NAME} @ ${GITHUB_SHA::7}. Install it with Sideloadly; see SETUP.md." \
+            --notes "IPA (sign it yourself) built from ${GITHUB_REF_NAME} @ ${GITHUB_SHA::7}. Install it with your signing app; see SETUP.md. Includes the widget extension (one more App ID)." \
             --prerelease \
             --target "$GITHUB_SHA"

@@ -76,6 +76,7 @@ final class AppModel: ObservableObject {
         }
         appKey = KeyStore.read()
         if appKey != nil { loadCache() }
+        updateWidgets()
     }
 
     private func loadFixtures() {
@@ -225,6 +226,7 @@ final class AppModel: ObservableObject {
             lastRefresh = Date()
             errorMessage = nil
             await Reminders.update(self)
+            updateWidgets()
         } catch {
             handle(error)
             return
@@ -336,6 +338,7 @@ final class AppModel: ObservableObject {
         workoutLogs = []
         bandWorkouts = []
         coach.reset()
+        updateWidgets()
     }
 
     private func handle(_ error: Error) {
@@ -444,6 +447,7 @@ final class AppModel: ObservableObject {
         }
         status?.settings.wakeTimes = any ? times : nil
         await Reminders.update(self)
+        updateWidgets()
         return true
     }
 

@@ -22,6 +22,7 @@ struct SettingsView: View {
                 deviceSection
                 liveSection
                 remindersSection
+                widgetsSection
                 preferencesSection
                 coachSection
                 dataSection
@@ -246,6 +247,17 @@ struct SettingsView: View {
         case ..<63: return "battery.50"
         case ..<88: return "battery.75"
         default: return "battery.100"
+        }
+    }
+
+    private var widgetsSection: some View {
+        Section {
+            NavigationLink {
+                WidgetsView()
+            } label: {
+                Label("Home Screen widgets", systemImage: "square.grid.2x2.fill")
+            }
+            .accessibilityIdentifier("settings-widgets")
         }
     }
 

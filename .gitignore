@@ -4,6 +4,7 @@ ios/build/
 ios/Payload/
 ios/*.ipa
 ios/FitStats/Info.plist
+ios/FitStatsWidget/Info.plist
 DerivedData/
 .DS_Store
 node_modules/

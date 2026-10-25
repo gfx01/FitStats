@@ -71,4 +71,16 @@ enum JSONValue: Codable, Equatable {
     }
 
     subscript(key: String) -> JSONValue? { object?[key] }
+
+    /// As JSONSerialization would give it (numbers as NSNumber, null as NSNull).
+    var anyValue: Any {
+        switch self {
+        case .null: return NSNull()
+        case .bool(let b): return NSNumber(value: b)
+        case .number(let n): return NSNumber(value: n)
+        case .string(let s): return s
+        case .array(let a): return a.map(\.anyValue)
+        case .object(let o): return o.mapValues(\.anyValue)
+        }
+    }
 }
