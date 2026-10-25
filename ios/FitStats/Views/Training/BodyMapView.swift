@@ -43,6 +43,27 @@ struct BodyMapView: View {
     }
 }
 
+/// A small tile for lists: the side of the body that does most of the work, zoomed in on the
+/// main muscles so they read at thumbnail size.
+struct BodyMapThumbnail: View {
+    let levels: [String: Double]
+    var size: CGFloat = 52
+    @Environment(\.bodyFigure) private var figure
+
+    var body: some View {
+        let levels = levels
+        let front = BodyShapes.figure(figure, front: true), back = BodyShapes.figure(figure, front: false)
+        let shapes = BodyShapes.worked(back, levels) > BodyShapes.worked(front, levels) ? back : front
+        Canvas { ctx, size in
+            BodyShapes.draw(shapes, levels: levels, color: Theme.muscle, in: ctx, size: size, area: BodyShapes.focus(shapes, levels: levels))
+        }
+        .frame(width: size, height: size)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.04)))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .accessibilityHidden(true)
+    }
+}
+
 extension Theme {
     /// Muscles on the body map.
     static let muscle = Color(red: 1.0, green: 0.47, blue: 0.32)
@@ -94,6 +115,24 @@ enum BodyShapes {
         return Figure(regions: regions, bounds: bounds.isNull ? CGRect(x: 0, y: 0, width: 724, height: 1448) : bounds)
     }
 
+    /// How much of the figure's muscles are worked, for picking the side to show.
+    static func worked(_ figure: Figure, _ levels: [String: Double]) -> Double {
+        figure.regions.reduce(0) { $0 + ($1.muscle.isEmpty ? 0 : levels[$1.muscle] ?? 0) }
+    }
+
+    /// A square around the main muscles (all worked ones when none is main), at least 45% of
+    /// the figure's height and kept within it top to bottom; nil when nothing is worked.
+    static func focus(_ figure: Figure, levels: [String: Double]) -> CGRect? {
+        let main = figure.regions.filter { !$0.muscle.isEmpty && (levels[$0.muscle] ?? 0) >= 1 }
+        let regions = main.isEmpty ? figure.regions.filter { !$0.muscle.isEmpty && (levels[$0.muscle] ?? 0) > 0 } : main
+        guard !regions.isEmpty else { return nil }
+        let worked = regions.reduce(CGRect.null) { $0.union($1.path.boundingRect) }
+        let b = figure.bounds
+        let side = min(max(worked.width, worked.height, b.height * 0.45) * 1.15, b.height)
+        let y = min(max(worked.midY - side / 2, b.minY), b.maxY - side)
+        return CGRect(x: b.midX - side / 2, y: y, width: side, height: side)
+    }
+
     /// "M x y L x y C x1 y1 x2 y2 x y Z", as body_map.py writes it.
     static func path(_ commands: String) -> Path {
         var p = Path()
@@ -123,9 +162,9 @@ enum BodyShapes {
 
     /// Fits the figure into `size` and fills each region: the body, the muscles in the base
     /// colour, then the worked ones in `color` by level.
-    static func draw(_ figure: Figure, levels: [String: Double], color: Color, in ctx: GraphicsContext, size: CGSize) {
+    static func draw(_ figure: Figure, levels: [String: Double], color: Color, in ctx: GraphicsContext, size: CGSize, area: CGRect? = nil) {
         var ctx = ctx
-        let b = figure.bounds
+        let b = area ?? figure.bounds
         let scale = min(size.width / b.width, size.height / b.height)
         ctx.translateBy(x: (size.width - b.width * scale) / 2, y: (size.height - b.height * scale) / 2)
         ctx.scaleBy(x: scale, y: scale)

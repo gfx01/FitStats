@@ -374,7 +374,7 @@ struct HistoryRow: View {
                 Text(detail.isEmpty ? Format.prettyDay(date, today: model.today) : "\(Format.prettyDay(date, today: model.today)) · \(detail)")
                     .font(.caption)
                     .foregroundStyle(Theme.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
             }
             Spacer(minLength: 4)
             Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).foregroundStyle(Theme.tertiary)

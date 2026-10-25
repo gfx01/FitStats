@@ -835,6 +835,8 @@ test("bedtime: sleep by bedtime window, the best window and its insight", () => 
   assert.equal(insight.title, "You sleep best going to bed between 23:00 and 23:30");
   assert.equal(insight.body, "Average sleep score 86 on the 60 nights you went to bed between 23:00 and 23:30, versus 76 on your 120 other nights. A pattern in your data, not proof of cause.");
   assert.equal(insight.metric, "sleep_bedtime_min");
+  const twelve = buildStats(rows, today, { sleep_need_min: 480, step_goal: 10000, clock_24h: false }).insights.find((i) => i.id === "best_bedtime")!;
+  assert.equal(twelve.title, "You sleep best going to bed between 11:00 PM and 11:30 PM", "a 12-hour phone gets 12-hour times");
 
   // Not clear: the same means with a lot of scatter and few nights.
   const noisy = rows.slice(-12).map((d, i) => {

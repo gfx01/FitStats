@@ -67,6 +67,8 @@ struct ExerciseLibraryView: View {
         }
         .scrollContentBackground(.hidden)
         .background(Theme.background.ignoresSafeArea())
+        .listSectionSpacing(.compact)
+        .contentMargins(.top, 6, for: .scrollContent)
         .searchable(text: $search, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search exercises")
         .navigationTitle(onPick == nil ? "Exercise library" : "Add exercise")
         .navigationBarTitleDisplayMode(.inline)
@@ -118,9 +120,7 @@ struct ExerciseLibraryView: View {
 
     @ViewBuilder private func row(_ e: LibraryExercise, library: ExerciseLibrary) -> some View {
         let label = HStack(spacing: 12) {
-            BodyMapView(levels: Dictionary(uniqueKeysWithValues: e.primary.map { ($0, 1.0) } + e.secondary.filter { !e.primary.contains($0) }.map { ($0, 0.4) }),
-                        height: 44, showsLabels: false)
-                .frame(width: 52)
+            BodyMapThumbnail(levels: Dictionary(uniqueKeysWithValues: e.primary.map { ($0, 1.0) } + e.secondary.filter { !e.primary.contains($0) }.map { ($0, 0.4) }))
             VStack(alignment: .leading, spacing: 3) {
                 Text(e.name).font(.subheadline.weight(.semibold)).foregroundStyle(.white)
                 Text(Self.musclesText(e, library: library))

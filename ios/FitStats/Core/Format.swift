@@ -139,6 +139,18 @@ enum Format {
         !(DateFormatter.dateFormat(fromTemplate: "j", options: 0, locale: .current) ?? "").contains("a")
     }
 
+    /// An hour on a chart axis as the phone shows hours: "6 AM" or "06".
+    static func hour(_ h: Int) -> String {
+        hourFormatter.string(from: Date(timeIntervalSince1970: Double(((h % 24) + 24) % 24) * 3600))
+    }
+
+    private static let hourFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.setLocalizedDateFormatFromTemplate("j")
+        f.timeZone = TimeZone(secondsFromGMT: 0)
+        return f
+    }()
+
     private static let clockFormatter: DateFormatter = {
         let f = DateFormatter()
         f.setLocalizedDateFormatFromTemplate("jmm")
@@ -213,6 +225,14 @@ enum Format {
         let f = DateFormatter()
         f.timeZone = zone ?? .current
         f.setLocalizedDateFormatFromTemplate("jmm")
+        return f.string(from: date)
+    }
+
+    /// A whole-hour tick on a time axis, short so several fit: "5 AM" or "05".
+    static func hour(_ date: Date, zone: TimeZone?) -> String {
+        let f = DateFormatter()
+        f.timeZone = zone ?? .current
+        f.setLocalizedDateFormatFromTemplate("j")
         return f.string(from: date)
     }
 }

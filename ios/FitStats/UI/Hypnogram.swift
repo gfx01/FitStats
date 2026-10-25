@@ -161,16 +161,22 @@ struct HypnogramView: View {
         }
 
         // Bedtime and wake time anchor the axis; whole hours fill in where they fit.
+        // Measured, so a 12-hour "6:19 AM" never sits on the hour before it.
         let labelY = plotHeight + 5
-        ctx.draw(Text(Format.time(layout.start, zone: zone)).font(.caption2.weight(.semibold)).foregroundStyle(Theme.secondary),
-                 at: CGPoint(x: left, y: labelY), anchor: .topLeading)
-        ctx.draw(Text(Format.time(layout.end, zone: zone)).font(.caption2.weight(.semibold)).foregroundStyle(Theme.secondary),
-                 at: CGPoint(x: right, y: labelY), anchor: .topTrailing)
+        let startLabel = ctx.resolve(Text(Format.time(layout.start, zone: zone)).font(.caption2.weight(.semibold)).foregroundStyle(Theme.secondary))
+        let endLabel = ctx.resolve(Text(Format.time(layout.end, zone: zone)).font(.caption2.weight(.semibold)).foregroundStyle(Theme.secondary))
+        let unbounded = CGSize(width: CGFloat.infinity, height: .infinity)
+        ctx.draw(startLabel, at: CGPoint(x: left, y: labelY), anchor: .topLeading)
+        ctx.draw(endLabel, at: CGPoint(x: right, y: labelY), anchor: .topTrailing)
+        var free = left + startLabel.measure(in: unbounded).width + 6
+        let limit = right - endLabel.measure(in: unbounded).width - 6
         for t in ticks {
             let px = x(t, width: size.width)
-            guard px - left > 44, right - px > 44 else { continue }
-            ctx.draw(Text(Format.time(t, zone: zone)).font(.caption2).foregroundStyle(Theme.tertiary),
-                     at: CGPoint(x: px, y: labelY), anchor: .top)
+            let label = ctx.resolve(Text(Format.hour(t, zone: zone)).font(.caption2).foregroundStyle(Theme.tertiary))
+            let half = label.measure(in: unbounded).width / 2
+            guard px - half >= free, px + half <= limit else { continue }
+            ctx.draw(label, at: CGPoint(x: px, y: labelY), anchor: .top)
+            free = px + half + 6
         }
     }
 

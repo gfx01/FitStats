@@ -763,11 +763,21 @@ export function bedtimeAnalysis(days: DayRow[], today: Ymd): BedtimeAnalysis {
   return { nights: nights.length, buckets, best };
 }
 
-function bedtimeInsight(b: BedtimeAnalysis): Insight | null {
+/** Minutes from midnight (negative = the evening before) as the phone shows times: "22:30" or "10:30 PM". */
+export function clockLabel(min: number, clock24: boolean): string {
+  const m = ((Math.round(min) % 1440) + 1440) % 1440;
+  const h = Math.floor(m / 60), mm = String(m % 60).padStart(2, "0");
+  if (clock24) return `${String(h).padStart(2, "0")}:${mm}`;
+  return `${h % 12 === 0 ? 12 : h % 12}:${mm} ${h < 12 ? "AM" : "PM"}`;
+}
+
+function bedtimeInsight(b: BedtimeAnalysis, clock24: boolean): Insight | null {
   if (!b.best?.clear) return null;
   const bucket = b.buckets.find((x) => x.label === b.best!.label)!;
   const def = METRIC_BY_KEY.get("sleep_score")!;
-  const when = bucket.from !== null && bucket.to !== null ? `between ${bucket.label.replace("–", " and ")}` : bucket.label;
+  const when = bucket.from !== null && bucket.to !== null
+    ? `between ${clockLabel(bucket.from, clock24)} and ${clockLabel(bucket.to, clock24)}`
+    : bucket.from === null ? `before ${clockLabel(bucket.to!, clock24)}` : `after ${clockLabel(bucket.from, clock24)}`;
   return {
     id: "best_bedtime",
     title: `You sleep best going to bed ${when}`,
@@ -830,7 +840,7 @@ export interface StatsPayload {
 export function buildStats(
   daysUnsorted: DayRow[],
   today: Ymd,
-  settings: { sleep_need_min: number; step_goal: number },
+  settings: { sleep_need_min: number; step_goal: number; clock_24h?: boolean | null },
   journal: { date: Ymd; tags: string[] }[] = [],
   workouts: WorkoutRow[] = [],
 ): StatsPayload {
@@ -859,7 +869,8 @@ export function buildStats(
   const fromJournal = journalInsight(impacts);
   if (fromJournal) notes.push(fromJournal);
   const bedtime = bedtimeAnalysis(days, today);
-  const fromBedtime = bedtimeInsight(bedtime);
+  // Times as the phone shows them (the app tells the server with each coach request); 24-hour until then.
+  const fromBedtime = bedtimeInsight(bedtime, settings.clock_24h !== false);
   if (fromBedtime) notes.push(fromBedtime);
   return {
     generatedAt: new Date().toISOString(),

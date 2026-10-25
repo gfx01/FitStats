@@ -203,7 +203,7 @@ struct WorkoutLogDetailView: View {
 
     private func timeRange(_ log: WorkoutLog) -> String? {
         guard let start = Format.timestamp(log.startedAt) else { return nil }
-        guard let end = Format.timestamp(log.endedAt) else { return Format.time(start, zone: model.zone) }
+        guard let end = Format.timestamp(log.endedAt), end.timeIntervalSince(start) >= 60 else { return Format.time(start, zone: model.zone) }
         return "\(Format.time(start, zone: model.zone))–\(Format.time(end, zone: model.zone))"
     }
 }

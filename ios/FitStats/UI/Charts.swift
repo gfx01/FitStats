@@ -214,7 +214,7 @@ struct HeartRateDayChart: View {
                 AxisGridLine().foregroundStyle(Theme.track)
                 AxisValueLabel {
                     if let m = value.as(Int.self) {
-                        Text(String(format: "%02d:00", (m / 60) % 24)).foregroundStyle(Theme.tertiary)
+                        Text(Format.clock(Double(m))).foregroundStyle(Theme.tertiary)
                     }
                 }
             }
@@ -258,7 +258,7 @@ struct HourlyBarsChart: View {
             AxisMarks(values: [0.0, 6.0, 12.0, 18.0]) { value in
                 AxisValueLabel {
                     if let h = value.as(Double.self) {
-                        Text(String(format: "%02d", Int(h))).foregroundStyle(Theme.tertiary)
+                        Text(Format.hour(Int(h))).foregroundStyle(Theme.tertiary)
                     }
                 }
             }
@@ -347,7 +347,7 @@ struct SamplesChart: View {
                 AxisGridLine().foregroundStyle(Theme.track)
                 AxisValueLabel {
                     if let d = value.as(Date.self) {
-                        Text(Format.time(d, zone: zone)).foregroundStyle(Theme.tertiary)
+                        Text(Format.hour(d, zone: zone)).foregroundStyle(Theme.tertiary)
                     }
                 }
             }
