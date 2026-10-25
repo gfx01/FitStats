@@ -103,7 +103,7 @@ struct WidgetsView: View {
                 named("Scores") { tile(width: 330, height: 345) { WidgetScoresLarge(snapshot: s) } }
                 named("Sleep") { tile(width: 330, height: 345) { WidgetSleepLarge(snapshot: s) } }
                 named("Week") { tile(width: 330, height: 345) { WidgetWeekLarge(snapshot: s) } }
-                named("Coach") { tile(width: 330, height: 345) { WidgetCoachFace(snapshot: s, lines: 16) } }
+                named("Coach") { tile(width: 330, height: 345) { WidgetCoachFace(snapshot: s, lines: 12, showsScores: true) } }
             }
         }
     }

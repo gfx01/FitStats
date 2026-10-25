@@ -432,7 +432,7 @@ struct CoachWidgetView: View {
         case .systemSmall:
             WidgetShell(entry: entry, tab: "coach") { WidgetCoachFace(snapshot: $0, lines: 6, font: .caption) }
         case .systemLarge:
-            WidgetShell(entry: entry, tab: "coach", compact: false) { WidgetCoachFace(snapshot: $0, lines: 16) }
+            WidgetShell(entry: entry, tab: "coach", compact: false) { WidgetCoachFace(snapshot: $0, lines: 12, showsScores: true) }
         default:
             WidgetShell(entry: entry, tab: "coach", compact: false) { WidgetCoachFace(snapshot: $0, lines: 5) }
         }

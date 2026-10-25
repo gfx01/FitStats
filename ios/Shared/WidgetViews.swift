@@ -436,17 +436,22 @@ struct WidgetCoachFace: View {
     let snapshot: WidgetSnapshot
     var lines = 4
     var font: Font = .footnote
+    /// The large size: today's scores under the brief.
+    var showsScores = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             WidgetHeader(title: snapshot.coachName.map { "Coach \($0)" } ?? "Coach", icon: "sparkles", color: Theme.sleep)
             if let text = snapshot.todaysCoachText {
-                Text(Self.plain(text))
+                Text(Self.styled(text))
                     .font(font)
                     .foregroundStyle(.white)
                     .lineLimit(lines)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
+                if showsScores {
+                    WidgetScoresMedium(snapshot: snapshot, showsFooter: false).frame(height: 100)
+                }
             } else {
                 Spacer(minLength: 0)
                 Text("No brief yet today. Tap to open the coach and write today's.")
@@ -458,18 +463,22 @@ struct WidgetCoachFace: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    /// The brief without Markdown marks (**bold**, # headings, - bullets).
-    static func plain(_ text: String) -> String {
-        text.replacingOccurrences(of: "**", with: "")
-            .replacingOccurrences(of: "__", with: "")
-            .split(separator: "\n", omittingEmptySubsequences: true)
+    /// The brief a line per label, the bold labels ("**Today**") in the coach's colour, and
+    /// headings and bullets made plain.
+    static func styled(_ text: String) -> AttributedString {
+        let cleaned = text.split(separator: "\n", omittingEmptySubsequences: true)
             .map { line -> String in
                 var l = line.trimmingCharacters(in: .whitespaces)
                 while l.hasPrefix("#") { l.removeFirst() }
                 if l.hasPrefix("- ") || l.hasPrefix("* ") { l = "• " + l.dropFirst(2) }
                 return l.trimmingCharacters(in: .whitespaces)
             }
-            .joined(separator: " ")
+            .joined(separator: "\n")
+        var styled = (try? AttributedString(markdown: cleaned, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+            ?? AttributedString(cleaned)
+        let bold = styled.runs.filter { $0.inlinePresentationIntent?.contains(.stronglyEmphasized) == true }.map(\.range)
+        for range in bold { styled[range].foregroundColor = Theme.sleep }
+        return styled
     }
 }
 
@@ -699,10 +708,12 @@ struct WidgetStepsMedium: View {
                 .frame(height: 7)
                 Text("Goal \(WidgetFormat.number(goal))").font(.caption2).foregroundStyle(Theme.secondary)
                 Spacer(minLength: 0)
-                Label("\(WidgetFormat.number(snapshot.activeCalories)) active kcal", systemImage: "flame.fill")
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(Theme.secondary)
-                    .lineLimit(1)
+                HStack(spacing: 3) {
+                    Image(systemName: "flame.fill").foregroundStyle(Theme.body)
+                    Text("\(WidgetFormat.number(snapshot.activeCalories)) active kcal").foregroundStyle(Theme.secondary)
+                }
+                .font(.caption2.weight(.medium))
+                .lineLimit(1)
             }
             .frame(width: 130)
             WidgetBars(days: snapshot.week ?? [], value: \.steps, maxValue: max(goal, (snapshot.week ?? []).compactMap(\.steps).max() ?? 0),
@@ -768,7 +779,9 @@ struct WidgetStressMedium: View {
     var body: some View {
         HStack(spacing: 14) {
             WidgetStressSmall(snapshot: snapshot).frame(width: 110)
-            WidgetBars(days: snapshot.week ?? [], value: \.stress, maxValue: 100, color: Theme.stressColor)
+            // Scaled to the week's highest, as stress mostly stays low.
+            WidgetBars(days: snapshot.week ?? [], value: \.stress,
+                       maxValue: max(25, ((snapshot.week ?? []).compactMap(\.stress).max() ?? 0) * 1.2), color: Theme.stressColor)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
