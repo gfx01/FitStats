@@ -963,16 +963,19 @@ final class ScreenshotTests: XCTestCase {
         for _ in 0..<8 where !(toggle.exists && toggle.isHittable) { app.swipeUp() }
         XCTAssertTrue(toggle.exists, "no weekly summary reminder in Settings")
 
+        // The fixtures' Upper body A on a Wednesday overlaps the band's run that day: one row.
         app.tabBars.buttons["Training"].tap()
-        let log = app.buttons["history-log"].firstMatch
+        let log = app.buttons.matching(identifier: "history-log").matching(NSPredicate(format: "label CONTAINS %@", "Logged + band")).firstMatch
         scrollTo(app, log)
         if log.exists {
+            shot("124-history-paired")
             log.tap()
             let band = element(app, "log-band-workout")
-            for _ in 0..<4 where !onScreen(app, band) && band.exists { app.swipeUp() }
-            shot("124-log-with-band")
+            XCTAssertTrue(band.waitForExistence(timeout: 5), "the logged workout doesn't show the band's recording")
+            reveal(app, band)
+            shot("125-log-with-band")
         } else {
-            XCTFail("no logged workout in the history")
+            XCTFail("no logged workout paired with a band workout in the history")
         }
         app.terminate()
     }

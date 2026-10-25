@@ -52,8 +52,9 @@ struct BedtimeConsistencyCard: View {
                         AxisValueLabel { if let m = value.as(Double.self) { Text(Format.clock(m)).font(.caption2) } }
                     }
                 }
+                // Day labels left of the plot, so they never sit on the bars.
                 .chartYAxis {
-                    AxisMarks { _ in AxisValueLabel().font(.caption2) }
+                    AxisMarks(position: .leading) { _ in AxisValueLabel(horizontalSpacing: 6).font(.caption2) }
                 }
                 .frame(height: CGFloat(nights.count) * 18 + 30)
                 Text(summary(beds: beds, wakes: wakes, usualBed: usualBed, usualWake: usualWake))
