@@ -18,6 +18,25 @@ struct WidgetSnapshot: Codable, Equatable {
     /// app's sleep planner, for the evening of `bedtimeFor`.
     var bedtimeMin: Double?
     var bedtimeFor: String?
+    var hrv: Double?
+    var activeCalories: Double?
+    /// The last 7 days, oldest first, ending with `date`.
+    var week: [WidgetDay]?
+
+    // Known only to the app; the widget's own refresh keeps them (keepAppFields).
+    var stepGoal: Double?
+    /// 30-day averages before today.
+    var rhrBaseline: Double?
+    var hrvBaseline: Double?
+    /// Today's brief from the coach, for the day in `coachDate`.
+    var coachText: String?
+    var coachDate: String?
+    var coachName: String?
+    /// Workouts this week (Monday on) and the latest one.
+    var workoutsThisWeek: Int?
+    var workoutMinutesThisWeek: Double?
+    var lastWorkoutName: String?
+    var lastWorkoutDate: String?
 
     /// From a day row of the `days` route (JSON numbers by key).
     init(date: String, updated: Date, row: [String: Any], bedtimeMin: Double? = nil, bedtimeFor: String? = nil) {
@@ -31,10 +50,44 @@ struct WidgetSnapshot: Codable, Equatable {
         steps = num("steps")
         stress = num("stress")
         rhr = num("rhr")
+        hrv = num("hrv_rmssd")
+        activeCalories = num("calories_active")
         let target = ((row["score_details"] as? [String: Any])?["strainTarget"] as? [Any])?.compactMap { ($0 as? NSNumber)?.doubleValue }
         strainTarget = target?.count == 2 ? target : nil
         self.bedtimeMin = bedtimeMin
         self.bedtimeFor = bedtimeFor
+    }
+
+    /// The 7 days ending `today` from day rows (missing days stay empty).
+    static func week(rows: [[String: Any]], today: String) -> [WidgetDay] {
+        let byDate = Dictionary(rows.compactMap { r in (r["date"] as? String).map { ($0, r) } }, uniquingKeysWith: { _, b in b })
+        return (0..<7).reversed().map { offset in
+            let date = WidgetDay.addDays(today, -offset)
+            let r = byDate[date] ?? [:]
+            func num(_ key: String) -> Double? { (r[key] as? NSNumber)?.doubleValue }
+            return WidgetDay(date: date, recovery: num("recovery"), sleepMin: num("sleep_asleep_min"), strain: num("strain"), steps: num("steps"))
+        }
+    }
+
+    /// After the widget's own refresh: the parts only the app knows, while they still apply.
+    mutating func keepAppFields(from old: WidgetSnapshot?) {
+        guard let old else { return }
+        stepGoal = old.stepGoal
+        if old.date == date {
+            rhrBaseline = old.rhrBaseline
+            hrvBaseline = old.hrvBaseline
+            workoutsThisWeek = old.workoutsThisWeek
+            workoutMinutesThisWeek = old.workoutMinutesThisWeek
+        }
+        if old.bedtimeFor == date {
+            bedtimeMin = old.bedtimeMin
+            bedtimeFor = old.bedtimeFor
+        }
+        coachText = old.coachText
+        coachDate = old.coachDate
+        coachName = old.coachName
+        lastWorkoutName = old.lastWorkoutName
+        lastWorkoutDate = old.lastWorkoutDate
     }
 
     /// For previews and the widget gallery.
@@ -49,11 +102,60 @@ struct WidgetSnapshot: Codable, Equatable {
         s.stress = 22
         s.rhr = 54
         s.bedtimeMin = -75
+        s.hrv = 52
+        s.activeCalories = 410
+        s.stepGoal = 10000
+        s.rhrBaseline = 56
+        s.hrvBaseline = 48
+        s.coachName = "Nova"
+        s.coachText = "Recovery is solid at 72%. A moderate session fits today: aim for strain 55–80, then get to bed by 22:45."
+        s.workoutsThisWeek = 3
+        s.workoutMinutesThisWeek = 165
+        s.lastWorkoutName = "Upper body A"
+        let recoveries: [Double] = [64, 71, 48, 80, 66, 58, 72]
+        let sleeps: [Double] = [430, 455, 390, 480, 465, 410, 467]
+        s.week = (0..<7).map { WidgetDay(date: "", recovery: recoveries[$0], sleepMin: sleeps[$0], strain: nil, steps: nil) }
         return s
     }()
 
+    /// Today's brief, when it is today's.
+    var todaysCoachText: String? { coachDate == date ? coachText : nil }
+
     /// Tonight's bedtime, when it was planned for this snapshot's day.
     var tonightBedtime: Double? { bedtimeFor == date ? bedtimeMin : nil }
+}
+
+/// One day in the widgets' week view.
+struct WidgetDay: Codable, Equatable {
+    var date: String
+    var recovery: Double?
+    var sleepMin: Double?
+    var strain: Double?
+    var steps: Double?
+
+    /// yyyy-MM-dd plus `n` days, in UTC like the app's day keys.
+    static func addDays(_ ymd: String, _ n: Int) -> String {
+        guard let d = dayFormatter.date(from: ymd) else { return ymd }
+        return dayFormatter.string(from: d.addingTimeInterval(Double(n) * 86_400))
+    }
+
+    /// "M", "T"… for the week bars.
+    var weekdayLetter: String {
+        guard let d = Self.dayFormatter.date(from: date) else { return "" }
+        let f = DateFormatter()
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.setLocalizedDateFormatFromTemplate("EEEEE")
+        return f.string(from: d)
+    }
+
+    static let dayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.calendar = Calendar(identifier: .gregorian)
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
 }
 
 /// The app group the app and the widget share. Signing apps for free Apple IDs often rename
@@ -155,6 +257,22 @@ enum WidgetFormat {
         f.timeZone = TimeZone(secondsFromGMT: 0)
         return f
     }()
+
+    /// "10k", "8.5k" for goals.
+    static func compact(_ v: Double) -> String {
+        v >= 1000 ? (v.truncatingRemainder(dividingBy: 1000) == 0 ? "\(Int(v / 1000))k" : String(format: "%.1fk", v / 1000)) : number(v)
+    }
+
+    /// "Today", "Yesterday", or "Mon 19".
+    static func day(_ ymd: String, today: String) -> String {
+        if ymd == today { return "Today" }
+        if ymd == WidgetDay.addDays(today, -1) { return "Yesterday" }
+        guard let d = WidgetDay.dayFormatter.date(from: ymd) else { return ymd }
+        let f = DateFormatter()
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.setLocalizedDateFormatFromTemplate("EEEd")
+        return f.string(from: d)
+    }
 
     /// "Updated 10:42", or the weekday too when it's from an earlier day.
     static func updated(_ snapshot: WidgetSnapshot, now: Date = Date()) -> String {

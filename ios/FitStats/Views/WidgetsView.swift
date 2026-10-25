@@ -10,11 +10,13 @@ struct WidgetsView: View {
         List {
             Section {
                 VStack(spacing: 14) {
-                    HStack(spacing: 14) {
-                        tile(width: 158) { WidgetScoresSmall(snapshot: snapshot) }
-                        tile(width: 158) { WidgetSleepSmall(snapshot: snapshot) }
-                    }
-                    tile(width: 330) { WidgetScoresMedium(snapshot: snapshot) }
+                    pair("Scores", "Sleep") { WidgetScoresSmall(snapshot: snapshot) } right: { WidgetSleepSmall(snapshot: snapshot) }
+                    pair("Steps", "Heart") { WidgetStepsSmall(snapshot: snapshot) } right: { WidgetHeartSmall(snapshot: snapshot) }
+                    pair("Stress", "Training") { WidgetStressSmall(snapshot: snapshot) } right: { WidgetTrainingSmall(snapshot: snapshot) }
+                    named("Scores") { tile(width: 330) { WidgetScoresMedium(snapshot: snapshot) } }
+                    named("Week") { tile(width: 330) { WidgetWeekMedium(snapshot: snapshot) } }
+                    named("Coach") { tile(width: 330) { WidgetCoachFace(snapshot: snapshot, lines: 5) } }
+                    named("Today") { tile(width: 330, height: 345) { WidgetTodayLarge(snapshot: snapshot) } }
                 }
                 .frame(maxWidth: .infinity)
                 .listRowBackground(Color.clear)
@@ -22,7 +24,7 @@ struct WidgetsView: View {
                 .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("widget-previews")
             } footer: {
-                Text("Scores and Sleep, for the Home Screen. Both also come in Lock Screen sizes.")
+                Text("Nine widgets for the Home Screen. Scores, Sleep, Steps and Stress also come in Lock Screen sizes. Tapping a widget opens its part of the app.")
             }
 
             Section {
@@ -63,14 +65,25 @@ struct WidgetsView: View {
         }
     }
 
-    /// Today's numbers as the widgets will show them.
+    /// Today's numbers as the widgets will show them (an empty day before today has loaded).
     private var snapshot: WidgetSnapshot {
-        let date = model.today
-        let plan = SleepPlan.plan(days: model.daysByDate, today: date,
-                                  sleepNeedMin: Double(model.status?.settings.sleepNeedMin ?? 480), wakeTimes: model.wakeTimes)
-        let row = model.daysByDate[date]?.values.mapValues { $0.anyValue } ?? [:]
-        return WidgetSnapshot(date: date, updated: Date(), row: row,
-                              bedtimeMin: plan.bedtimeMin, bedtimeFor: date)
+        model.widgetSnapshot() ?? WidgetSnapshot(date: model.today, updated: Date(), row: [:])
+    }
+
+    private func pair(_ leftName: String, _ rightName: String, @ViewBuilder _ left: () -> some View,
+                      @ViewBuilder right: () -> some View) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            named(leftName) { tile(width: 158) { left() } }
+            named(rightName) { tile(width: 158) { right() } }
+        }
+    }
+
+    /// A preview with the widget's name under it, as in the widget gallery.
+    private func named(_ name: String, @ViewBuilder _ content: () -> some View) -> some View {
+        VStack(spacing: 5) {
+            content()
+            Text(name).font(.caption2.weight(.medium)).foregroundStyle(Theme.secondary)
+        }
     }
 
     private var statusText: String {
@@ -84,10 +97,10 @@ struct WidgetsView: View {
         }
     }
 
-    private func tile(width: CGFloat, @ViewBuilder _ content: () -> some View) -> some View {
+    private func tile(width: CGFloat, height: CGFloat = 158, @ViewBuilder _ content: () -> some View) -> some View {
         content()
             .padding(14)
-            .frame(width: width, height: 158)
+            .frame(width: width, height: height)
             .background(WidgetBackground())
             .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).stroke(Theme.cardBorder))

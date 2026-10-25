@@ -998,12 +998,17 @@ final class ScreenshotTests: XCTestCase {
         }
         row.tap()
         XCTAssertTrue(element(app, "widget-previews").waitForExistence(timeout: 5), "the widgets screen did not open")
-        let sharing = element(app, "widget-sharing")
-        XCTAssertTrue(sharing.waitForExistence(timeout: 5), "no sharing status")
-        XCTAssertTrue(sharing.label.contains("Working"), "sharing status: \(sharing.label)")
         shot("126-widgets")
         app.swipeUp()
         shot("127-widgets-2")
+        app.swipeUp()
+        shot("128-widgets-3")
+        app.swipeUp()
+        shot("129-widgets-4")
+        let sharing = element(app, "widget-sharing")
+        for _ in 0..<4 where !(sharing.exists && sharing.isHittable) { app.swipeUp() }
+        XCTAssertTrue(sharing.waitForExistence(timeout: 5), "no sharing status")
+        XCTAssertTrue(sharing.label.contains("Working"), "sharing status: \(sharing.label)")
         app.terminate()
     }
 

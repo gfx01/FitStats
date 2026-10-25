@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import SwiftUI
 
@@ -53,6 +54,10 @@ final class AppModel: ObservableObject {
     @Published var journalRequest: String?
     /// A tapped weekly-summary reminder: the Coach opens the week's summary.
     @Published var weeklyRequest = false
+    /// A tapped Home Screen widget: the tab it opens ("today", "coach"…).
+    @Published var tabRequest: String?
+    /// Redraws the widgets when a new brief from the coach arrives.
+    private var briefWatch: AnyCancellable?
 
     init() {
         let configured = Bundle.main.object(forInfoDictionaryKey: "FitStatsServerURL") as? String
@@ -77,6 +82,10 @@ final class AppModel: ObservableObject {
         appKey = KeyStore.read()
         if appKey != nil { loadCache() }
         updateWidgets()
+        briefWatch = coach.$brief.removeDuplicates().dropFirst().sink { [weak self] _ in
+            // After the new value is set (@Published sends before it changes).
+            DispatchQueue.main.async { self?.updateWidgets() }
+        }
     }
 
     private func loadFixtures() {
@@ -150,6 +159,12 @@ final class AppModel: ObservableObject {
     /// Handles `fitstats://connected?...` from the sign-in sheet (or Safari, via onOpenURL).
     func handleCallback(_ url: URL) {
         guard url.scheme == "fitstats" else { return }
+        // fitstats://open?tab=coach from a Home Screen widget.
+        if url.host == "open" {
+            let tab = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "tab" }?.value
+            tabRequest = tab ?? "today"
+            return
+        }
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         func value(_ name: String) -> String? { items.first(where: { $0.name == name })?.value }
         if let error = value("error") {

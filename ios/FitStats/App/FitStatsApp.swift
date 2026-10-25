@@ -91,5 +91,11 @@ struct MainTabs: View {
         .onChange(of: model.weeklyRequest) { _, open in
             if open { tab = "coach" }
         }
+        // A tapped Home Screen widget opens its tab.
+        .onChange(of: model.tabRequest) { _, request in
+            guard let request else { return }
+            tab = request
+            model.tabRequest = nil
+        }
     }
 }
